@@ -1,0 +1,128 @@
+// Builds the transactions that write records. A record change is a
+// general-state action `{ key, oldValue?, newValue? }`: consensus applies it
+// only when `oldValue` is what the key holds now, so a change is always made
+// against a state the writer has read.
+
+/**
+ * The actions for a list of `[key, value]` writes against `state` (a view,
+ * see state.mjs). A value of undefined deletes the key.
+ */
+export async function changes(state, writes) {
+  const actions = await Promise.all(
+    writes.map(async ([key, newValue]) => {
+      const oldValue = await state.get(key);
+      return {
+        key,
+        ...(oldValue !== undefined && { oldValue }),
+        ...(newValue !== undefined && { newValue }),
+      };
+    }),
+  );
+  // Deleting a key that is not there changes nothing.
+  return actions.filter((action) => "oldValue" in action || "newValue" in action);
+}
+
+/** A transaction body carrying `actions`, signed for and paid by `owner`. */
+export function transaction({ owner, actions, fee, nonce, chainPath }) {
+  return {
+    accountActions: fee > 0n ? [{ owner, delta: -fee }] : [],
+    actions,
+    depositActions: [],
+    receiptActions: [],
+    withdrawalActions: [],
+    signers: [owner],
+    nonce,
+    chainPath: [...chainPath],
+  };
+}
+
+/** A new id for a post or comment. Ids carry no time: a post's time is its block's. */
+export const newId = () =>
+  [...crypto.getRandomValues(new Uint8Array(8))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+
+// The record conventions in the README. Each returns the `[key, value]`
+// writes for one act; a value of undefined deletes the key.
+
+const json = (value) => (value === undefined ? undefined : JSON.stringify(value));
+const flag = (on) => (on ? "1" : undefined);
+
+// Home chain.
+
+/** `a`'s profile `{ name, about, avatar? }`; `avatar` is a media CID. */
+export const profile = (a, value) => [[`user/${a}/profile`, json(value)]];
+
+/** `a` joins a community, or leaves it with `joined` false. */
+export const join = (a, community, joined = true) => [[`user/${a}/join/${community}`, flag(joined)]];
+
+/** `a`'s custom feed `name`: a list of communities, or undefined to delete it. */
+export const feed = (a, name, communities) => [[`user/${a}/feed/${name}`, json(communities)]];
+
+/** `a` follows, or with `following` false stops following, a moderator's marks in a community. */
+export const followModerator = (a, community, mod, following = true) => [
+  [`user/${a}/follow-mod/${community}/${mod}`, flag(following)],
+];
+
+/** `a` advertises a community `{ about }`, so clients can list communities. */
+export const advertise = (a, community, value) => [[`index/community/${community}/${a}`, json(value)]];
+
+// Community chains.
+
+const mediaWrites = (a, id, cids) => cids.map((cid, n) => [`user/${a}/post/${id}/media/${n}`, cid]);
+
+/**
+ * A post `{ title, body?, link?, tags? }` with the CIDs of its media, listed
+ * in the community. Undefined deletes the post and its listing (delete media
+ * with `media`).
+ */
+export const post = (a, id, value, mediaCIDs = []) => [
+  [`user/${a}/post/${id}`, json(value)],
+  [`index/post/${id}/${a}`, flag(value !== undefined)],
+  ...mediaWrites(a, id, mediaCIDs),
+];
+
+/**
+ * A comment `{ body, link? }` on the post `on` = `{ author, id }`, answering
+ * the comment `parent` = `{ author, id }` or, without it, the post. A comment
+ * is a post with no title, so votes, marks and media work the same on both.
+ */
+export const comment = (a, id, on, value, { parent, mediaCIDs = [] } = {}) => [
+  [
+    `user/${a}/post/${id}`,
+    json(
+      value && {
+        ...value,
+        on: `${on.author}/${on.id}`,
+        ...(parent && { parent: `${parent.author}/${parent.id}` }),
+      },
+    ),
+  ],
+  [`index/comment/${on.author}/${on.id}/${id}/${a}`, flag(value !== undefined)],
+  ...mediaWrites(a, id, mediaCIDs),
+];
+
+/** The `n`th media CID of `a`'s post or comment `id`; undefined deletes it. */
+export const media = (a, id, n, cid) => [[`user/${a}/post/${id}/media/${n}`, cid]];
+
+/** `voter`'s vote on `author`'s post or comment `id`: 1, -1, or 0 to take it back. */
+export const vote = (voter, author, id, direction) => [
+  [`index/vote/${author}/${id}/${voter}`, direction === 0 ? undefined : String(Math.sign(direction))],
+];
+
+/** `a` reports `author`'s post or comment `id`; an undefined reason takes it back. */
+export const report = (a, author, id, reason) => [[`index/report/${author}/${id}/${a}`, reason]];
+
+/** `mod`'s labels on `author`'s post or comment `id`; an empty list takes the mark back. */
+export const mark = (mod, author, id, labels) => [
+  [`user/${mod}/mark/${author}/${id}`, labels.length > 0 ? JSON.stringify(labels) : undefined],
+];
+
+/** `mod`'s labels on an account, covering everything it writes in the community. */
+export const markUser = (mod, a, labels) => [
+  [`user/${mod}/mark-user/${a}`, labels.length > 0 ? JSON.stringify(labels) : undefined],
+];
+
+/** `mod` offers to moderate the community: `{ rules, labels }`, or undefined to withdraw. */
+export const moderate = (mod, value) => [[`index/moderator/${mod}`, json(value)]];
+
+/** `a`'s flair in the community. */
+export const flair = (a, text) => [[`user/${a}/flair`, text]];
