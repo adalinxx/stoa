@@ -182,11 +182,11 @@ try {
   ]);
   await writes("a vote changed", BITCOIN, carol, write.vote(carol.address, textPost.author, textPost.id, 1));
 
-  await writes("moderator offer and mark", BITCOIN, mod, [
-    ...write.moderate(mod.address, { rules: "No shilling.", labels: ["spam", "nsfw"] }),
-    ...write.mark(mod.address, textPost.author, textPost.id, ["spam"]),
-  ]);
-  await writes("report", BITCOIN, carol, write.report(carol.address, textPost.author, textPost.id, "spam"));
+  // Moderation is a labelled comment; a report is one from an account no
+  // reader follows as a moderator.
+  await writes("moderator's labelled comment", BITCOIN, mod,
+    write.label(mod.address, write.newId(), textPost, ["spam"], { body: "Shilling." }));
+  await writes("report", BITCOIN, carol, write.label(carol.address, write.newId(), textPost, ["report: spam"]));
 
   // Bob writes into Alice's records: the policy refuses it.
   const forged = await submit(BITCOIN, bob, [[`user/${alice.address}/post/${linkPost.id}`, '{"title":"forged"}']]);
@@ -204,7 +204,7 @@ try {
   readers.lattice("up");
   const community = await until("the reader's node has the community", async () => {
     const now = await state(BITCOIN, readerNode);
-    return (await read.reports(now)).size === 1 && now;
+    return (await read.labelsBy(now, carol.address)).size === 1 && now;
   });
   const home = await state(HOME, readerNode);
   assert.deepEqual(await read.profile(home, alice.address), { name: "Alice", about: "bitcoin and pictures" });
@@ -247,14 +247,14 @@ try {
   console.log("reader: the thread as a tree; Bob's karma is 1");
 
   // Moderation as a reader chooses it.
-  assert.deepEqual([...(await read.moderators(community)).keys()], [mod.address]);
-  const followingMod = judge(new Map([[mod.address, await read.marks(community, mod.address)]]), { spam: "hide" });
+  const followingMod = judge(new Map([[mod.address, await read.labelsBy(community, mod.address)]]), { spam: "hide" });
   const followingNoOne = judge(new Map(), { spam: "hide" });
   assert.equal(followingMod(textPost).treatment, "hide");
   assert.equal(followingMod(linkPost).treatment, "show");
   assert.equal(followingNoOne(textPost).treatment, "show");
-  assert.deepEqual((await read.reports(community)).get(`${textPost.author}/${textPost.id}`), [[carol.address, "spam"]]);
-  console.log("reader: the spam mark hides the post for a reader who follows the moderator, and only for them");
+  const reports = (await read.thread(community, textPost.author, textPost.id)).replies.filter((c) => c.labels.length > 0);
+  assert.deepEqual(reports.map((c) => c.labels).sort(), [["report: spam"], ["spam"]]);
+  console.log("reader: the moderator's labelled comment hides the post for a reader who follows them, and only for them");
 
   // The picture, from peers through the reader's own node.
   const readersNode = readers.operator(reader.rpc);

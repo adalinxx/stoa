@@ -10,10 +10,8 @@ const parse = (value) => {
   }
 };
 const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-const labelList = (value) => {
-  const labels = parse(value);
-  return Array.isArray(labels) ? labels.filter((label) => typeof label === "string") : [];
-};
+const labelList = (labels) =>
+  Array.isArray(labels) ? labels.filter((label) => typeof label === "string") : [];
 const ref = (text) => {
   const [author, id, ...rest] = typeof text === "string" ? text.split("/") : [];
   return author && id && rest.length === 0 ? { author, id } : undefined;
@@ -47,6 +45,7 @@ export async function item(state, author, id) {
     ...(text("body") !== undefined && { body: text("body") }),
     ...(text("link") !== undefined && { link: text("link") }),
     tags: Array.isArray(record.tags) ? record.tags.filter((tag) => typeof tag === "string") : [],
+    labels: labelList(record.labels),
     ...(on && { on }),
     ...(parent && { parent }),
     media: media
@@ -118,43 +117,20 @@ export async function itemsBy(state, a) {
   return (await Promise.all(ids.map((id) => item(state, a, id)))).filter(Boolean);
 }
 
-/** The accounts offering to moderate, each with its `{ rules, labels }`. */
-export async function moderators(state) {
-  const found = new Map();
-  for await (const [key, value] of state.list("index/moderator/")) {
-    const offer = parse(value);
-    if (isObject(offer)) found.set(key.slice("index/moderator/".length), offer);
-  }
-  return found;
-}
-
 /**
- * One moderator's marks: `items` maps `"<author>/<id>"` and `accounts` maps
- * an account to the labels the moderator gave it.
+ * The labels `a`'s labelled comments put on items: `"<author>/<id>"` → labels.
+ * A labelled comment labels the comment it answers, or the post when it
+ * answers the post. One prefix scan of `a`'s items.
  */
-export async function marks(state, mod) {
-  const items = new Map();
-  const accounts = new Map();
-  for await (const [key, value] of state.list(`user/${mod}/mark/`)) {
-    const target = key.slice(`user/${mod}/mark/`.length);
-    if (ref(target)) items.set(target, labelList(value));
+export async function labelsBy(state, a) {
+  const labelled = new Map();
+  for (const comment of await itemsBy(state, a)) {
+    if (!comment.on || comment.labels.length === 0) continue;
+    const target = comment.parent ?? comment.on;
+    const key = `${target.author}/${target.id}`;
+    labelled.set(key, [...(labelled.get(key) ?? []), ...comment.labels]);
   }
-  for await (const [key, value] of state.list(`user/${mod}/mark-user/`)) {
-    accounts.set(key.slice(`user/${mod}/mark-user/`.length), labelList(value));
-  }
-  return { items, accounts };
-}
-
-/** The mod queue: `"<author>/<id>"` → the reports on it as `[reporter, reason]`. */
-export async function reports(state) {
-  const queue = new Map();
-  for await (const [key, reason] of state.list("index/report/")) {
-    const [, , author, id, reporter] = key.split("/");
-    const target = `${author}/${id}`;
-    if (!queue.has(target)) queue.set(target, []);
-    queue.get(target).push([reporter, reason]);
-  }
-  return queue;
+  return labelled;
 }
 
 /** `a`'s flair in the community, or undefined. */

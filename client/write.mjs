@@ -108,21 +108,16 @@ export const vote = (voter, author, id, direction) => [
   [`index/vote/${author}/${id}/${voter}`, direction === 0 ? undefined : String(Math.sign(direction))],
 ];
 
-/** `a` reports `author`'s post or comment `id`; an undefined reason takes it back. */
-export const report = (a, author, id, reason) => [[`index/report/${author}/${id}/${a}`, reason]];
-
-/** `mod`'s labels on `author`'s post or comment `id`; an empty list takes the mark back. */
-export const mark = (mod, author, id, labels) => [
-  [`user/${mod}/mark/${author}/${id}`, labels.length > 0 ? JSON.stringify(labels) : undefined],
-];
-
-/** `mod`'s labels on an account, covering everything it writes in the community. */
-export const markUser = (mod, a, labels) => [
-  [`user/${mod}/mark-user/${a}`, labels.length > 0 ? JSON.stringify(labels) : undefined],
-];
-
-/** `mod` offers to moderate the community: `{ rules, labels }`, or undefined to withdraw. */
-export const moderate = (mod, value) => [[`index/moderator/${mod}`, json(value)]];
+/**
+ * A labelled comment: `a` labels the post `on` (`{ author, id }`) or, when
+ * `target` is given, that comment in its thread, e.g. `["spam"]`, with an
+ * optional reason. Moderation is this and nothing more: a reader whose client
+ * follows `a` applies the labels; everyone else sees a comment. A report is
+ * the same, from an account no reader follows as a moderator. Delete or edit
+ * the comment to take it back.
+ */
+export const label = (a, id, on, labels, { target, body = "" } = {}) =>
+  comment(a, id, on, { body, labels }, target ? { parent: target } : {});
 
 /** `a`'s flair in the community. */
 export const flair = (a, text) => [[`user/${a}/flair`, text]];

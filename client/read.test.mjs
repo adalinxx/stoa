@@ -38,6 +38,7 @@ test("a post carries its link, tags and media in order", async () => {
     body: "text",
     link: "https://example.com",
     tags: ["oc"],
+    labels: [],
     media: ["c0", "c1", "c10"],
   });
   assert.equal((await read.posts(state)).length, 1);
@@ -107,28 +108,36 @@ test("deleting a post removes it and its listing", async () => {
   assert.equal(state.raw.size, 0);
 });
 
-test("marks: a reader's moderators decide what their client shows", async () => {
+test("moderation is labelled comments; a reader's followed accounts decide what their client shows", async () => {
   const state = memory();
-  await state.apply(write.moderate("mod1", { rules: "be kind", labels: ["spam", "nsfw"] }));
-  await state.apply(write.mark("mod1", "alice", "p1", ["spam"]));
-  await state.apply(write.mark("mod2", "alice", "p1", ["nsfw"]));
-  await state.apply(write.markUser("mod2", "eve", ["spam"]));
-  await state.apply(write.report("bob", "alice", "p1", "spam"));
-  await state.apply(write.report("carol", "alice", "p1", "off-topic"));
+  await state.apply(write.post("alice", "p1", { title: "Root" }));
+  await state.apply(write.comment("eve", "c1", post, { body: "buy my coin" }));
+  await state.apply(write.label("mod1", "m1", post, ["spam"], { body: "Scam link." }));
+  await state.apply(write.label("mod2", "m2", post, ["nsfw"]));
+  await state.apply(write.label("mod2", "m3", post, ["spam"], { target: { author: "eve", id: "c1" } }));
+  // A report is the same thing from an account nobody follows.
+  await state.apply(write.label("bob", "r1", post, ["report: spam"]));
 
-  assert.deepEqual([...(await read.moderators(state)).keys()], ["mod1"]);
-  assert.deepEqual(await read.reports(state), new Map([["alice/p1", [["bob", "spam"], ["carol", "off-topic"]]]]));
+  const labelled = await read.labelsBy(state, "mod2");
+  assert.deepEqual(labelled, new Map([["alice/p1", ["nsfw"]], ["eve/c1", ["spam"]]]));
 
-  const sets = async (...mods) => new Map(await Promise.all(mods.map(async (mod) => [mod, await read.marks(state, mod)])));
+  const sets = async (...mods) => new Map(await Promise.all(mods.map(async (m) => [m, await read.labelsBy(state, m)])));
   const actions = { spam: "hide", nsfw: "blur" };
-  assert.equal(judge(await sets(), actions)(post).treatment, "show");
+  assert.equal(judge(await sets(), actions)(post).treatment, "show", "a reader following no one sees everything");
   assert.equal(judge(await sets("mod2"), actions)(post).treatment, "blur");
   assert.equal(judge(await sets("mod1", "mod2"), actions)(post).treatment, "hide");
-  assert.equal(judge(await sets("mod2"), actions)({ author: "eve", id: "any" }).treatment, "hide");
-  assert.equal(judge(await sets("mod1"), {})(post).treatment, "badge", "an unnamed label gets the default");
+  assert.equal(judge(await sets("mod2"), actions)({ author: "eve", id: "c1" }).treatment, "hide", "a comment can be labelled");
+  assert.equal(judge(await sets("bob"), {})(post).treatment, "badge", "an unnamed label gets the default");
 
-  await state.apply(write.mark("mod1", "alice", "p1", []));
-  assert.equal(judge(await sets("mod1"), actions)(post).treatment, "show", "a mark taken back");
+  // Labelled comments are comments: in the thread like any other.
+  const tree = await read.thread(state, "alice", "p1");
+  assert.deepEqual(tree.replies.map((c) => c.id).sort(), ["c1", "m1", "m2", "r1"]);
+  assert.deepEqual(tree.replies.find((c) => c.id === "c1").replies.map((c) => c.id), ["m3"]);
+  assert.deepEqual(tree.replies.find((c) => c.id === "m1").labels, ["spam"]);
+
+  // Deleting the comment takes the label back.
+  await state.apply(write.comment("mod1", "m1", post, undefined));
+  assert.equal(judge(await sets("mod1"), actions)(post).treatment, "show");
 });
 
 test("home chain: profile, joins, followed moderators, communities", async () => {

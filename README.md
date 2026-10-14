@@ -9,8 +9,9 @@ decides what to show.
   `Nexus/stoa`. Anyone can create one, and communities can nest
   (`Nexus/stoa/bitcoin/lightning`).
 - Every record belongs to its author. Only the author can edit or delete it.
-- Moderators mark posts; they never delete them. Each reader chooses whose
-  marks to follow and what each label does.
+- Moderation is comments: a moderator labels a post by replying to it with
+  labels. Nothing is deleted. Each reader chooses whose labels to follow and
+  what each label does.
 - Ranking, feeds, karma and filters are computed by the client.
 
 ## Records
@@ -33,27 +34,23 @@ Home chain `Nexus/stoa`:
 | `user/<a>/profile` | `{ name, about, avatar? }`, `avatar` a media CID |
 | `user/<a>/join/<community>` | `"1"`: `<a>` reads this community |
 | `user/<a>/feed/<name>` | `["bitcoin", "rust"]`: a custom feed |
-| `user/<a>/follow-mod/<community>/<mod>` | `"1"`: `<a>` follows a moderator's marks |
+| `user/<a>/follow-mod/<community>/<mod>` | `"1"`: `<a>` follows an account's labels in a community |
 | `index/community/<community>/<a>` | `{ about }`: `<a>` lists a community so clients can find it |
 
 A community chain:
 
 | Key | Value |
 |---|---|
-| `user/<a>/post/<id>` | a post `{ title, body?, link?, tags? }`, or a comment `{ body, link?, on, parent? }` |
+| `user/<a>/post/<id>` | a post `{ title, body?, link?, tags? }`, or a comment `{ body, link?, labels?, on, parent? }` |
 | `user/<a>/post/<id>/media/<n>` | the CID of its `<n>`th image or video |
 | `index/post/<id>/<a>` | `"1"`: lists the post in the community |
 | `index/comment/<author>/<id>/<commentId>/<a>` | `"1"`: lists a comment under the post it belongs to |
 | `index/vote/<author>/<id>/<a>` | `"1"` or `"-1"`: one vote per voter; deleting it takes it back |
-| `index/report/<author>/<id>/<a>` | a reason: the mod queue |
-| `user/<mod>/mark/<author>/<id>` | `["spam"]`: a moderator's labels on an item |
-| `user/<mod>/mark-user/<a>` | `["spam"]`: a moderator's labels on an account |
-| `index/moderator/<mod>` | `{ rules, labels }`: an offer to moderate |
 | `user/<a>/flair` | text |
 
 A comment is a post without a title that names its post (`on`) and, when it
 answers a comment, that comment (`parent`), both as `<author>/<id>`. Votes,
-marks, media and edits work the same on posts and comments. Ids are random
+labels, media and edits work the same on posts and comments. Ids are random
 and carry no meaning.
 
 A listing is a claim by whoever wrote it, so a reader checks it against the
@@ -78,12 +75,18 @@ summed score of an account's items. A client may use others.
 
 ## Moderation
 
-A moderator offers to moderate (`index/moderator/<mod>`) and marks items or
-accounts with labels. A mark changes nothing on the chain. `client/moderation.mjs`
-judges each item for one reader: from the marks of the moderators they follow
-and the treatment they chose per label (show, badge, blur, collapse, hide), it
-returns the strongest treatment those labels ask for. A reader who follows no
-one sees everything.
+Moderation is a comment with labels: `{ body, labels: ["spam"], on, parent? }`.
+It labels the comment it answers, or the post when it answers the post, and a
+reason can go in its body. Nothing is removed: everyone else just sees a
+comment, and the author of the label takes it back by deleting or editing it.
+A report is the same thing from an account nobody follows as a moderator.
+
+`read.labelsBy(state, account)` gathers one account's labels in a community
+(one prefix scan of its items). `client/moderation.mjs` judges each item for
+one reader: from the labels of the accounts they follow and the treatment
+they chose per label (show, badge, blur, collapse, hide), it returns the
+strongest treatment those labels ask for. A reader who follows no one sees
+everything.
 
 ## Media
 
@@ -107,7 +110,7 @@ each node checked against its CID. `view(load, root)` is the
 `{ get, list }` interface the reads in `client/read.mjs` take.
 
 `client/write.mjs` gives the `[key, value]` writes for each act (`post`,
-`comment`, `vote`, `mark`, …). `changes(state, writes)` turns them into
+`comment`, `vote`, `label`, …). `changes(state, writes)` turns them into
 actions against the state they were read from, and `transaction(...)` is the
 body to sign and send to `POST /transactions`.
 
@@ -140,11 +143,11 @@ cd host-check && swift run host-check \
 prints the module CID.
 
 `e2e/run.mjs` runs Stoa on two real nodes: the author's host mines the home
-chain and a community, people post, comment, vote, mark and report through
+chain and a community, people post, comment, vote, label and report through
 the public submit route, and a forged write is refused. The reader's node
 joins from the author's node alone and reads the community back: posts ranked
 by block time and votes, a thread as a tree, a picture fetched from peers,
-and a moderator's mark hiding a post for the reader who follows them.
+and a moderator's labelled comment hiding a post for the reader who follows them.
 
 ```sh
 LATTICE=<lattice-node>/.build/debug/lattice \
