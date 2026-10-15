@@ -229,10 +229,6 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
   } catch (error) {
     throw new Said(readFailure(error, community));
   }
-  if (cost.fee > 0n && cost.balance !== null && cost.balance < cost.fee) {
-    throw new Said(community ? coinsMessage(community, address, cost.fee)
-      : `Saving this to your home chain costs ${cost.fee} of its coins, and you have none there yet.`);
-  }
   const changed = await write.changes(state, records);
   const record = fresh && changed.find((a) => a.key === fresh);
   if (record && record.oldValue !== undefined && record.oldValue !== record.newValue) throw new Landed();
@@ -240,6 +236,10 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
   const actions = changed.filter((a) => a.oldValue !== a.newValue);
   // Already so on the chain: nothing to sign, nothing to pay.
   if (!actions.length) return () => Promise.resolve(true);
+  if (cost.fee > 0n && cost.balance !== null && cost.balance < cost.fee) {
+    throw new Said(community ? coinsMessage(community, address, cost.fee)
+      : `Saving this to your home chain costs ${cost.fee} of its coins, and you have none there yet.`);
+  }
   status("Waiting for Lattice Wallet…");
   try {
     // The wallet chooses the nonce and sends the write, from and to its own node.
@@ -377,7 +377,7 @@ function saveChoice(records, keepLocally, what, { about = what } = {}) {
       return land(() => shown.update(`Saving ${what}: sent, not in a block yet. It may still land.`));
     })
     .then((landed) => (landed ? shown.close() : shown.update(`${Whats} was sent but hasn't landed yet. It may still land.`)))
-    .catch((error) => shown.update(`${Whats} is kept in this browser only. ${said(error)}`, { bad: true }))
+    .catch((error) => shown.update(error instanceof Unanswered ? `${Whats}: ${error.message}` : `${Whats} is kept in this browser only. ${said(error)}`, { bad: true }))
     .finally(() => keys.forEach((key) => savingKeys.delete(key)));
   return true;
 }
@@ -503,9 +503,11 @@ async function castVote(button) {
     if (error instanceof Withdrawn || !mine()) return;
     pendingVotes.delete(key);
     if (error instanceof NoWallet) return needWallet("Voting is signed by your key, so it needs the wallet.");
-    const message = error instanceof Unanswered ? error.message : `Vote not counted. ${said(error)}`;
-    // Shown until the reader leaves this page or votes here again.
-    itemErrors.set(key, { message, untilNavigation: true });
+    const quiet = error instanceof Unanswered;
+    const message = quiet ? error.message : `Vote not counted. ${said(error)}`;
+    // Shown until the reader leaves this page or votes here again; a quiet
+    // wallet's note also goes once the chain shows the vote (it may yet land).
+    itemErrors.set(key, { message, untilNavigation: true, ...(quiet && { direction }) });
     announce(message);
     return redraw();
   }
