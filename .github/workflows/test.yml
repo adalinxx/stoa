@@ -32,6 +32,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The node image has no git, which a checkout with submodules needs.
+      - run: apt-get update -qq && apt-get install -y -qq git
       # The Lattice Wallet the page connects to, at a pinned commit.
       - uses: actions/checkout@v4
         with:
