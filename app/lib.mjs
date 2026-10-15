@@ -117,7 +117,7 @@ export function postRow(p, names, { now = Date.now(), inCommunity = false } = {}
       ${link ? linkTag(link, new URL(link).host) : ""}
       <div class="meta">${inCommunity ? "" : `<a href="#/s/${encodeURIComponent(p.community)}">s/${esc(p.community)}</a>`}<span>${esc(nameOf(p.author, names))}</span>${p.pending ? pendingNote(p.pending) : when(p.time, now)}<a href="${href}">${plural(p.comments, "comment")}</a>${p.tags.map((t) => `<span class="tag">${esc(t.toUpperCase())}</span>`).join("")}${labels.length ? `<span class="tag label">${labelText(labels, names)}</span>` : ""}</div>
       ${treatment === "collapse" ? "" : p.media.map((cid) => mediaSlot(cid, p.community, treatment === "blur" || p.tags.includes("nsfw"))).join("")}
-      ${p.error ? `<p class="inline-error" role="alert">${esc(p.error)}</p>` : ""}
+      ${p.error ? `<p class="inline-error">${esc(p.error)}</p>` : ""}
     </div></article>`;
 }
 
@@ -147,7 +147,7 @@ export function commentNode(c, community, judgeItem, followed, names, now = Date
     <div class="by"><strong>${esc(nameOf(c.author, names))}</strong>${c.pending ? pendingNote(c.pending) : when(c.time, now)}${follow}</div>
     ${body}${link ? linkTag(link, link) : ""}
     <div class="acts">${c.pending ? "" : `${voteBox({ ...c, community }, { row: true })}<button type="button" data-reply="${esc(c.author)}/${esc(c.id)}">Reply</button><button type="button" data-label="${esc(c.author)}/${esc(c.id)}">Label…</button>`}</div>
-    ${c.error ? `<p class="inline-error" role="alert">${esc(c.error)}</p>` : ""}
+    ${c.error ? `<p class="inline-error">${esc(c.error)}</p>` : ""}
     ${c.replies.map((r) => commentNode(r, community, judgeItem, followed, names, now)).join("")}
   </div>`;
 }

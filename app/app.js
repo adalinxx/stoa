@@ -254,17 +254,31 @@ async function loadMine(home) {
  * home chain (it lands a block later). The notice says where it stands; if the
  * write fails the choice stays in this browser and the notice says why.
  */
+// Home-chain keys with a save in flight. A write is made against the state it
+// read, so a second change to the same key waits for the first to land.
+const savingKeys = new Set();
+const saving = (records) => records.some(([key]) => savingKeys.has(key));
+
 function saveChoice(records, keepLocally, what) {
+  if (signer() && saving(records)) {
+    notice(`Your last change to ${what} is still landing. Try again once it has.`);
+    return false;
+  }
   keepLocally();
-  if (!signer()) return;
+  if (!signer()) return true;
+  const Whats = what[0].toUpperCase() + what.slice(1);
+  const keys = records.map(([key]) => key);
+  keys.forEach((key) => savingKeys.add(key));
   const shown = notice(`Saving ${what}: approve it in Lattice Wallet.`);
   send(homePath(), records)
     .then((land) => {
       shown.update(`Saving ${what}: waiting for a block…`);
       return land(() => shown.update(`Saving ${what}: sent, not in a block yet. It may still land.`));
     })
-    .then((landed) => (landed ? shown.close() : shown.update(`${what[0].toUpperCase() + what.slice(1)} was sent but hasn't landed. It's kept in this browser.`)))
-    .catch((error) => shown.update(`${what[0].toUpperCase() + what.slice(1)} is kept in this browser only. ${error.message}`, { bad: true }));
+    .then((landed) => (landed ? shown.close() : shown.update(`${Whats} was sent but hasn't landed. It's kept in this browser.`)))
+    .catch((error) => shown.update(`${Whats} is kept in this browser only. ${error.message}`, { bad: true }))
+    .finally(() => keys.forEach((key) => savingKeys.delete(key)));
+  return true;
 }
 
 // Profile names, read from the home chain once per address.
@@ -304,14 +318,16 @@ function follow(community, address, following) {
 // Key: `<community>|<author>|<id>`.
 const pendingItems = new Map(); // posts and comments: { kind, community, author, id, value, on?, parent?, slow? }
 const pendingVotes = new Map(); // { direction, slow? }
-const itemErrors = new Map(); // a failed vote's message, shown under the item
+const itemErrors = new Map(); // { message, direction? } shown under the item, until a read shows the vote
 const keyOf = (community, author, id) => `${community}|${author}|${id}`;
 
 /** An item with the reader's pending vote applied (and any error under it). */
 function withVote(item, community) {
   const key = keyOf(community, item.author, item.id);
   const vote = pendingVotes.get(key);
-  const error = itemErrors.get(key);
+  // A "still landing" note goes once the chain shows the vote.
+  if (itemErrors.get(key)?.direction !== undefined && itemErrors.get(key).direction === (item.mine ?? 0)) itemErrors.delete(key);
+  const error = itemErrors.get(key)?.message;
   if (!vote) return error ? { ...item, error } : item;
   const was = item.mine ?? 0, now = vote.direction;
   return {
@@ -339,12 +355,18 @@ async function castVote(button) {
   } catch (error) {
     pendingVotes.delete(key);
     if (error instanceof NoWallet) return needWallet("Voting is signed by your key, so it needs the wallet.");
-    itemErrors.set(key, `Vote not counted. ${error.message}`);
+    const message = `Vote not counted. ${walletMessage(error)}`;
+    itemErrors.set(key, { message });
+    announce(message);
     return redraw();
   }
-  const landed = await land(() => {});
+  const landed = await land(() => {
+    itemErrors.set(key, { message: "Your vote is taking a while to land.", direction });
+    redraw();
+  });
   pendingVotes.delete(key);
-  if (!landed) itemErrors.set(key, "Your vote was sent but hasn't landed yet.");
+  if (landed) itemErrors.delete(key);
+  else itemErrors.set(key, { message: "Your vote was sent but hasn't landed yet. It may still land.", direction });
   refresh();
 }
 
@@ -425,7 +447,17 @@ function frame(key, html) {
   if (main.dataset.view === key) return false;
   main.dataset.view = key;
   main.innerHTML = html;
+  // What was read for the last view no longer describes the page.
+  shown = null;
   return true;
+}
+
+// Errors are said once to screen readers, when they happen, not on each redraw.
+let lastAnnounced = "";
+function announce(message) {
+  if (!message || message === lastAnnounced) return;
+  lastAnnounced = message;
+  $("#announcer").textContent = message;
 }
 
 async function showFeed(list, { title, community }, id) {
@@ -442,10 +474,12 @@ async function showFeed(list, { title, community }, id) {
   // under the pointer after a vote); a new sort or view ranks afresh.
   const order = shown?.view === "feed" && shown.title === title && shown.sort === sort ? shown.order : null;
   shown = { view: "feed", title, list, community, posts, failures: results.filter((r) => r.error), order, sort };
-  drawFeed();
+  if (shown.failures.length) announce(shown.failures.map((f) => readFailure(f.error, f.c)).join(" "));
+  redraw();
 }
 
 function drawFeed() {
+  if (!$("#feed")) return;
   const { list, community, posts, failures } = shown;
   const pending = [...pendingItems.values()].filter((p) => p.kind === "post" && list.includes(p.community))
     .filter((p) => !posts.some((q) => q.author === p.author && q.id === p.id))
@@ -464,11 +498,11 @@ function drawFeed() {
   const retry = `<button class="btn" type="button" data-retry>Try again</button><button class="btn" type="button" data-choose-node>Choose another node</button>`;
   let html = "";
   if (failures.length && !rows.length) {
-    html = `<div class="panel bad" role="alert"><h2>${failures.length === 1 ? esc(readFailure(failures[0].error, failures[0].c)) : `Couldn't read your communities from ${esc(nodeHost())}.`}</h2>
+    html = `<div class="panel bad"><h2>${failures.length === 1 ? esc(readFailure(failures[0].error, failures[0].c)) : `Couldn't read your communities from ${esc(nodeHost())}.`}</h2>
       <p>Nothing here can be shown until a node serves ${failures.length === 1 ? `s/${esc(failures[0].c)}` : "them"}. Another node may have it.</p><div class="row2">${retry}</div></div>`;
   } else {
     if (failures.length) {
-      html += `<div class="panel bad" role="alert"><p style="margin:0 0 8px">${failures.map((f) => esc(readFailure(f.error, f.c))).join(" ")} Posts from ${failures.length === 1 ? "it" : "them"} are missing below.</p><div class="row2">${retry}</div></div>`;
+      html += `<div class="panel bad"><p style="margin:0 0 8px">${failures.map((f) => esc(readFailure(f.error, f.c))).join(" ")} Posts from ${failures.length === 1 ? "it" : "them"} are missing below.</p><div class="row2">${retry}</div></div>`;
     }
     if (rows.length) {
       html += rows.map((p) => postRow(p, names, { inCommunity: Boolean(community) })).join("");
@@ -486,36 +520,42 @@ function drawFeed() {
 async function showPost({ community, author, id }, renderId) {
   const fresh = frame(`post|${community}|${author}|${id}`, `<a class="back" href="#/s/${encodeURIComponent(community)}">← s/${esc(community)}</a><div id="thread"><p class="empty">Reading from ${esc(nodeHost())}…</p></div>`);
   if (fresh) setTitle(`s/${community}`);
-  let state;
+  let tree, judgeItem;
   try {
-    state = await stateOf(chainOf(community));
+    const state = await stateOf(chainOf(community));
+    let times;
+    [tree, times, judgeItem] = await Promise.all([read.thread(state, author, id), timesOf(state), judgeFor(state, community)]);
+    const reader = signer()?.address;
+    if (tree) {
+      const withVotes = async (node) => {
+        const v = await read.votes(state, node.author, node.id);
+        Object.assign(node, { ups: v.ups, downs: v.downs, mine: reader ? v.voters.get(reader) ?? 0 : 0, time: times.get(`${node.author}/${node.id}`) ?? 0 });
+        await Promise.all(node.replies.map(withVotes));
+      };
+      await withVotes(tree);
+      const authors = [];
+      const collect = (node) => { authors.push(node.author); node.replies.forEach(collect); };
+      collect(tree);
+      await stateOf(homePath()).then((home) => loadNames(home, [...authors, ...follows(community)])).catch(() => {});
+    }
   } catch (error) {
     if (stale(renderId)) return;
     shown = null;
-    $("#thread").innerHTML = `<div class="panel bad" role="alert"><h2>${esc(readFailure(error, community))}</h2><p>This post can't be shown until a node serves s/${esc(community)}.</p><div class="row2"><button class="btn" type="button" data-retry>Try again</button><button class="btn" type="button" data-choose-node>Choose another node</button></div></div>`;
+    const failure = readFailure(error, community);
+    announce(failure);
+    $("#thread").innerHTML = `<div class="panel bad"><h2>${esc(failure)}</h2><p>This post can't be shown until a node serves all of s/${esc(community)}.</p><div class="row2"><button class="btn" type="button" data-retry>Try again</button><button class="btn" type="button" data-choose-node>Choose another node</button></div></div>`;
     return;
   }
-  const [tree, times, judgeItem] = await Promise.all([read.thread(state, author, id), timesOf(state), judgeFor(state, community)]);
-  const reader = signer()?.address;
-  if (tree) {
-    const withVotes = async (node) => {
-      const v = await read.votes(state, node.author, node.id);
-      Object.assign(node, { ups: v.ups, downs: v.downs, mine: reader ? v.voters.get(reader) ?? 0 : 0, time: times.get(`${node.author}/${node.id}`) ?? 0 });
-      await Promise.all(node.replies.map(withVotes));
-    };
-    await withVotes(tree);
-    const authors = [];
-    const collect = (node) => { authors.push(node.author); node.replies.forEach(collect); };
-    collect(tree);
-    await stateOf(homePath()).then((home) => loadNames(home, [...authors, ...follows(community)])).catch(() => {});
-  }
   if (stale(renderId)) return;
-  shown = { view: "post", community, author, id, tree, judgeItem };
-  drawThread();
+  // A refresh of the same post keeps comments where they were.
+  const commentRank = shown?.view === "post" ? shown.commentRank : null;
+  shown = { view: "post", community, author, id, tree, judgeItem, commentRank };
+  redraw();
 }
 
 /** The thread as last read, with the reader's pending comments and votes in place. */
 function drawThread() {
+  if (!$("#thread")) return;
   const { community, author, id, judgeItem } = shown;
   let tree = shown.tree && ordered(structuredClone(shown.tree));
   const pendingPost = pendingItems.get(keyOf(community, author, id));
@@ -535,6 +575,20 @@ function drawThread() {
     const parent = (p.parent && byKey.get(`${p.parent.author}/${p.parent.id}`)) || tree;
     parent.replies.push({ author: p.author, id: p.id, body: p.value.body ?? "", labels: p.value.labels ?? [], replies: [], ups: 0, downs: 0, pending: p.slow ? "slow" : "waiting" });
   }
+  // Comments keep the places they were first drawn in (a vote landing never
+  // moves one under the pointer); ones not seen before follow, in order.
+  const rankOf = shown.commentRank ?? new Map();
+  const keep = (node) => {
+    node.replies.forEach(keep);
+    node.replies = node.replies.map((r, n) => [r, n])
+      .sort(([a, i], [b, j]) => (rankOf.get(`${a.author}/${a.id}`) ?? Infinity) - (rankOf.get(`${b.author}/${b.id}`) ?? Infinity) || i - j)
+      .map(([r]) => r);
+  };
+  keep(tree);
+  const ranks = new Map();
+  const number = (node) => node.replies.forEach((r) => { ranks.set(`${r.author}/${r.id}`, ranks.size); number(r); });
+  number(tree);
+  shown.commentRank = ranks;
   const voted = (node) => {
     const n = withVote(node, community);
     n.replies = node.replies.map(voted);
@@ -552,7 +606,7 @@ function drawThread() {
       ${tree.media.map((cid) => mediaSlot(cid, community, tree.tags.includes("nsfw"))).join("")}
       ${tree.body ? `<div class="body" style="margin-top:10px">${esc(tree.body)}</div>` : ""}
       ${tree.pending ? "" : `<div class="acts" style="margin-top:10px">${voteBox({ ...tree, community }, { row: true })}<button type="button" data-reply="${esc(author)}/${esc(id)}">Reply</button><button type="button" data-label="${esc(author)}/${esc(id)}">Label…</button></div>`}
-      ${tree.error ? `<p class="inline-error" role="alert">${esc(tree.error)}</p>` : ""}
+      ${tree.error ? `<p class="inline-error">${esc(tree.error)}</p>` : ""}
     </article>
     <section class="comments" aria-label="Comments">
       ${count ? `<p class="comments-head">${plural(count, "comment")}</p>${tree.replies.map((c) => commentNode(c, community, judgeItem, follows(community), names)).join("")}`
@@ -562,8 +616,12 @@ function drawThread() {
 }
 
 function redraw() {
+  // Keyboard focus on a vote button comes back to it after the redraw.
+  const focused = document.activeElement?.closest?.("[data-vote]");
+  const again = focused && `[data-vote="${focused.dataset.vote}"][data-target="${CSS.escape(focused.dataset.target)}"]`;
   if (shown?.view === "feed") drawFeed();
   else if (shown?.view === "post") drawThread();
+  if (again) document.querySelector(again)?.focus();
 }
 
 /** Fill media slots from any node that serves the Volume; checked by CID. */
@@ -686,13 +744,20 @@ function toggleJoin(c) {
 // A write from a dialog: the dialog stays until the wallet has sent it, then
 // closes, and the write is drawn in place as pending until its block lands.
 async function sendFromDialog({ chain, records, status, button, pending, done }) {
-  button.disabled = true;
+  // While the write is on its way the dialog stays: its answer shows there.
+  const dialog = button.closest("dialog");
+  const sending = (on) => {
+    dialog.toggleAttribute("data-sending", on);
+    button.disabled = on;
+    dialog.querySelectorAll("[data-close]").forEach((b) => (b.disabled = on));
+  };
+  sending(true);
   status.classList.remove("bad");
   let land;
   try {
     land = await send(chain, records, (s) => (status.textContent = s));
   } catch (error) {
-    button.disabled = false;
+    sending(false);
     status.classList.add("bad");
     if (error instanceof NoWallet) {
       status.innerHTML = `This needs Lattice Wallet, which holds your key. <a href="https://github.com/adalinxx/lattice-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a> Your draft stays here.`;
@@ -701,7 +766,7 @@ async function sendFromDialog({ chain, records, status, button, pending, done })
     }
     return;
   }
-  button.disabled = false;
+  sending(false);
   status.textContent = "";
   pendingItems.set(pending.key, pending);
   done();
@@ -776,9 +841,13 @@ $("#reply-form").addEventListener("submit", async (event) => {
 
 /** The line in a dialog that says what a write costs before it is made. */
 async function showCost(line, community, doing) {
+  // Only the newest check may write the line (the community can change while one runs).
+  const request = String(Number(line.dataset.request ?? 0) + 1);
+  line.dataset.request = request;
+  const current = () => line.dataset.request === request;
   line.classList.remove("bad");
   const button = line.closest("form").querySelector(".btn.primary");
-  button.disabled = false;
+  if (!line.closest("dialog").hasAttribute("data-sending")) button.disabled = false;
   if (!community) return (line.textContent = "");
   if (!wallet()) {
     line.innerHTML = `${esc(doing)} needs Lattice Wallet, a free browser extension that holds your key. <a href="https://github.com/adalinxx/lattice-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a> You can write your draft now.`;
@@ -790,11 +859,13 @@ async function showCost(line, community, doing) {
   try {
     cost = await costOn(chainOf(community), reader?.address);
   } catch (error) {
+    if (!current()) return;
     line.classList.add("bad");
     line.textContent = `${readFailure(error, community)} ${doing} won't work until a node serves it.`;
     button.disabled = true;
     return;
   }
+  if (!current()) return;
   const fee = cost.fee === 0n ? "Free" : `Costs ${cost.fee} s/${community} ${cost.fee === 1n ? "coin" : "coins"}`;
   if (!reader) return (line.textContent = `${fee}. You'll connect and approve it in Lattice Wallet.`);
   if (cost.balance < cost.fee) {
@@ -819,6 +890,12 @@ function openNewPost() {
   showCost($("#np-cost"), $("#np-c").value, "Posting");
 }
 $("#open-new").onclick = openNewPost;
+document.querySelectorAll("dialog").forEach((dialog) => {
+  dialog.addEventListener("cancel", (event) => {
+    if (dialog.hasAttribute("data-sending")) event.preventDefault();
+  });
+  dialog.querySelectorAll("[data-close]").forEach((button) => (button.onclick = () => dialog.close("cancel")));
+});
 $("#np-c").addEventListener("change", () => showCost($("#np-cost"), $("#np-c").value, "Posting"));
 $("#new-form").addEventListener("submit", async (event) => {
   if (event.submitter?.value !== "post") return;
@@ -1020,7 +1097,7 @@ async function boot() {
     communities = [];
     shown = null;
     $("#main").dataset.view = "";
-    $("#main").innerHTML = `<div class="panel bad" role="alert"><h2>${esc(readFailure(error))}</h2><p>Stoa reads everything from a node. Try again, or choose another node that hosts Stoa.</p><div class="row2"><button class="btn" type="button" data-retry>Try again</button><button class="btn primary" type="button" data-choose-node>Choose another node</button></div></div>`;
+    $("#main").innerHTML = `<div class="panel bad"><h2>${esc(readFailure(error))}</h2><p>Stoa reads everything from a node. Try again, or choose another node that hosts Stoa.</p><div class="row2"><button class="btn" type="button" data-retry>Try again</button><button class="btn primary" type="button" data-choose-node>Choose another node</button></div></div>`;
     renderRail();
     renderWho();
     $("#aside").innerHTML = "";

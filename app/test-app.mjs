@@ -122,7 +122,7 @@ test("a post or comment waiting for its block says so and can't be voted on yet"
 });
 
 test("a failed vote's message shows under its item", () => {
-  assert.match(postRow(post({ error: "Vote not counted. You declined it in the wallet." }), names, { now: NOW }), /class="inline-error" role="alert">Vote not counted/);
+  assert.match(postRow(post({ error: "Vote not counted. You declined it in the wallet." }), names, { now: NOW }), /class="inline-error">Vote not counted/);
 });
 
 test("comments read best first, then oldest first", () => {

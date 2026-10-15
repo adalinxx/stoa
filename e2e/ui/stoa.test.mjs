@@ -135,7 +135,7 @@ test("a visitor without the wallet is told to install it to post", async () => {
   await page.locator("#np-post").click();
   await expect(page.locator("#np-status")).toContainText("This needs Lattice Wallet");
   await expect(page.locator("#np-t")).toHaveValue("Needs a wallet");
-  await page.locator("#new button[value=cancel]").click();
+  await page.locator("#new [data-close]").click();
   // The header offers the wallet, and says reading needs none.
   await page.getByRole("button", { name: "Get wallet" }).click();
   await expect(page.locator("#getwallet")).toBeVisible();
@@ -171,7 +171,7 @@ test("comments nest, and a vote counts once and can be taken back", async ({ pag
   await page.locator("#rp-send").click();
   // Shown at once, as waiting for its block, then as landed.
   const first = page.locator(".c", { hasText: "Section 11 holds." }).first();
-  await expect(first).toBeVisible();
+  await expect(first.locator(".pending-note")).toHaveText("Waiting for a block…");
   await landed(page);
   await first.locator("[data-reply]").first().click();
   await page.locator("#rp-b").fill("And section 6.");
@@ -200,7 +200,8 @@ test("a display name set in Settings is written to the home chain and shown for 
   await openApp(page, poster, feed);
   await page.getByRole("button", { name: "Settings" }).click();
   await page.locator("#st-name").fill("Alice");
-  await page.locator("#settings-form button[value=save]").click();
+  // Enter saves, as the form's first action.
+  await page.locator("#st-name").press("Enter");
   await expect(page.locator("#who .account-name")).toHaveText("Alice");
   // Another reader sees it once the home chain has it.
   const reader = await browser.newContext();
