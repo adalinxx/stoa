@@ -134,9 +134,9 @@ export function commentNode(c, community, judgeItem, followed, names, now = Date
   const note = c.labels.length > 0;
   const link = safeLink(c.link);
   const following = followed.includes(c.author);
-  const folded = verdict.treatment === "hide" || verdict.treatment === "collapse";
+  const folded = (verdict.treatment === "hide" || verdict.treatment === "collapse") && !c.expanded;
   const body = folded
-    ? `<p class="muted" style="margin:2px 0">Collapsed: labelled ${labelText(verdict.labels, names)} · <button class="linkish" data-expand>Show</button></p><div class="body" hidden>${esc(c.body)}</div>`
+    ? `<p class="muted" style="margin:2px 0">Collapsed: labelled ${labelText(verdict.labels, names)} · <button class="linkish" data-expand="${esc(c.author)}/${esc(c.id)}">Show</button></p><div class="body" hidden>${esc(c.body)}</div>`
     : `<div class="body">${note ? c.labels.map((l) => `<span class="tag label">${esc(l)}</span> `).join("") : ""}${esc(c.body)}</div>`;
   const follow = note
     ? following

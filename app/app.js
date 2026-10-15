@@ -263,9 +263,9 @@ async function loadMine(home) {
 const savingKeys = new Set();
 const saving = (records) => records.some(([key]) => savingKeys.has(key));
 
-function saveChoice(records, keepLocally, what) {
+function saveChoice(records, keepLocally, what, about = what) {
   if (signer() && saving(records)) {
-    const message = `Your last change to ${what} is still landing. Try again once it has.`;
+    const message = `Your last change to ${about} is still landing. Try again once it has.`;
     // A notice behind an open dialog would go unseen: say it in the dialog.
     const inDialog = document.querySelector("dialog[open] .status");
     if (inDialog) inDialog.textContent = message;
@@ -302,6 +302,9 @@ const labelActions = () => store.get("labelActions", { spam: "hide", nsfw: "blur
 let showAll = false;
 // Items the reader chose to see despite a label, for this visit.
 const revealed = new Set();
+// Collapsed comments the reader opened, and blurred media they uncovered.
+const expanded = new Set();
+const unblurred = new Set();
 
 async function judgeFor(state, community) {
   if (showAll) return () => ({ treatment: "show", labels: [] });
@@ -317,8 +320,9 @@ function follow(community, address, following) {
     store.set(`follows-off:${community}`, following ? off.filter((x) => x !== address) : [...new Set([...off, address])]);
   };
   const reader = signer();
-  if (reader) saveChoice(write.followModerator(reader.address, community, address, following), keep, "who you follow");
-  else keep();
+  if (reader) return saveChoice(write.followModerator(reader.address, community, address, following), keep, "who you follow");
+  keep();
+  return true;
 }
 
 // ------------------------------------------------- the reader's own writes
@@ -333,7 +337,12 @@ const keyOf = (community, author, id) => `${community}|${author}|${id}`;
 /** An item with the reader's pending vote applied (and any error under it). */
 function withVote(item, community) {
   const key = keyOf(community, item.author, item.id);
-  const vote = pendingVotes.get(key);
+  let vote = pendingVotes.get(key);
+  // A landed vote is drawn until a read shows it, so it never flickers back.
+  if (vote?.landed && (item.mine ?? 0) === vote.direction) {
+    pendingVotes.delete(key);
+    vote = undefined;
+  }
   // A "still landing" note goes once the chain shows the vote.
   if (itemErrors.get(key)?.direction !== undefined && itemErrors.get(key).direction === (item.mine ?? 0)) itemErrors.delete(key);
   const error = itemErrors.get(key)?.message;
@@ -342,14 +351,14 @@ function withVote(item, community) {
   return {
     ...item, mine: now, error,
     ups: item.ups - (was === 1) + (now === 1), downs: item.downs - (was === -1) + (now === -1),
-    votePending: true,
+    votePending: !vote.landed,
   };
 }
 
 async function castVote(button) {
   const [community, author, id] = button.dataset.target.split("|");
   const key = keyOf(community, author, id);
-  if (pendingVotes.has(key) || button.getAttribute("aria-disabled") === "true") return;
+  if ((pendingVotes.has(key) && !pendingVotes.get(key).landed) || button.getAttribute("aria-disabled") === "true") return;
   const box = button.closest("[data-votes]");
   const current = box.querySelector('[aria-pressed="true"]');
   const direction = current === button ? 0 : Number(button.dataset.vote);
@@ -370,7 +379,8 @@ async function castVote(button) {
     pendingVotes.delete(key);
     if (error instanceof NoWallet) return needWallet("Voting is signed by your key, so it needs the wallet.");
     const message = `Vote not counted. ${walletMessage(error)}`;
-    itemErrors.set(key, { message });
+    // Shown until the reader leaves this page or votes here again.
+    itemErrors.set(key, { message, untilNavigation: true });
     announce(message);
     return redraw();
   }
@@ -378,9 +388,13 @@ async function castVote(button) {
     itemErrors.set(key, { message: "Your vote is taking a while to land.", direction });
     redraw();
   });
-  pendingVotes.delete(key);
-  if (landed) itemErrors.delete(key);
-  else itemErrors.set(key, { message: "Your vote was sent but hasn't landed yet. It may still land.", direction });
+  if (landed) {
+    pendingVotes.set(key, { direction, landed: true });
+    itemErrors.delete(key);
+  } else {
+    pendingVotes.delete(key);
+    itemErrors.set(key, { message: "Your vote was sent but hasn't landed yet. It may still land.", direction });
+  }
   refresh();
 }
 
@@ -501,8 +515,9 @@ async function showFeed(list, { title, community }, id) {
 function drawFeed() {
   if (!$("#feed")) return;
   const { list, community, posts, failures } = shown;
+  const read = new Set(posts.map((q) => keyOf(q.community, q.author, q.id)));
+  for (const p of pendingItems.values()) if (p.kind === "post" && read.has(p.key)) pendingItems.delete(p.key);
   const pending = [...pendingItems.values()].filter((p) => p.kind === "post" && list.includes(p.community))
-    .filter((p) => !posts.some((q) => q.author === p.author && q.id === p.id))
     .map((p) => ({ ...p.value, tags: p.value.tags ?? [], media: [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, verdict: { treatment: "show", labels: [] }, pending: p.slow ? "slow" : "waiting" }));
   const keyed = (p) => `${p.community}|${p.author}|${p.id}`;
   if (shown.sort !== sort || !shown.order) {
@@ -578,6 +593,7 @@ function drawThread() {
   if (!$("#thread")) return;
   const { community, author, id, judgeItem } = shown;
   let tree = shown.tree && ordered(structuredClone(shown.tree));
+  if (tree) pendingItems.delete(keyOf(community, author, id));
   const pendingPost = pendingItems.get(keyOf(community, author, id));
   if (!tree && pendingPost) tree = { ...pendingPost.value, author, id, tags: pendingPost.value.tags ?? [], labels: [], media: [], replies: [], ups: 0, downs: 0, mine: 0, pending: pendingPost.slow ? "slow" : "waiting" };
   if (!tree) {
@@ -591,7 +607,10 @@ function drawThread() {
   index(tree);
   for (const p of pendingItems.values()) {
     if (p.kind !== "comment" || p.community !== community || p.on.author !== author || p.on.id !== id) continue;
-    if (byKey.has(`${p.author}/${p.id}`)) continue;
+    if (byKey.has(`${p.author}/${p.id}`)) {
+      pendingItems.delete(p.key);
+      continue;
+    }
     const parent = (p.parent && byKey.get(`${p.parent.author}/${p.parent.id}`)) || tree;
     parent.replies.push({ author: p.author, id: p.id, body: p.value.body ?? "", labels: p.value.labels ?? [], replies: [], ups: 0, downs: 0, pending: p.slow ? "slow" : "waiting" });
   }
@@ -611,6 +630,7 @@ function drawThread() {
   shown.commentRank = ranks;
   const voted = (node) => {
     const n = withVote(node, community);
+    n.expanded = expanded.has(`${node.author}/${node.id}`);
     n.replies = node.replies.map(voted);
     return n;
   };
@@ -650,8 +670,11 @@ function focusSelector(el = document.activeElement) {
   if (el.tagName === "A" && el.hasAttribute("href")) return `a${by("href")}`;
   return null;
 }
+// Only focus that a redraw dropped (to the body) is put back: the reader may
+// have moved on while a background read ran.
 const refocus = (selector) => {
-  if (selector && document.activeElement !== document.querySelector(selector)) document.querySelector(selector)?.focus({ preventScroll: true });
+  const lost = !document.activeElement || document.activeElement === document.body;
+  if (selector && lost) document.querySelector(selector)?.focus({ preventScroll: true });
 };
 
 function redraw(again = focusSelector()) {
@@ -660,20 +683,51 @@ function redraw(again = focusSelector()) {
   refocus(again);
 }
 
-/** Fill media slots from any node that serves the Volume; checked by CID. */
-async function loadMedia() {
-  for (const slot of document.querySelectorAll("[data-media]")) {
-    const cid = slot.dataset.media;
-    try {
-      const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${settings.node}/volumes`, { chainPath: chainOf(slot.dataset.chain) }));
+// Media read once per CID for the visit (content-addressed: it never
+// changes), so a redraw puts it straight back instead of loading it again.
+const media = new Map(); // cid → Promise<{ kind, url } | { unsupported } | null (not served)>
+// Raster images and video only: an SVG is a document that can run script.
+const MEDIA_TYPES = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|ogg))$/;
+function mediaFile(cid, community) {
+  if (!media.has(cid)) {
+    media.set(cid, (async () => {
+      const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${settings.node}/volumes`, { chainPath: chainOf(community) }));
       const volume = await volumes.get(cid);
       const file = sdk.decodeDagCbor(volume.bytes(cid));
-      if (typeof file?.type !== "string" || !(file.bytes instanceof Uint8Array) || file.bytes.length > 8 << 20) throw new Error("not media");
-      const url = URL.createObjectURL(new Blob([file.bytes], { type: file.type }));
-      const tag = file.type.startsWith("video/") ? `<video class="media" controls src="${url}"></video>` : file.type.startsWith("image/") ? `<img class="media" alt="" src="${url}">` : "";
-      if (!tag) throw new Error("not media");
-      slot.outerHTML = slot.dataset.blur === "1" ? tag.replace('class="media"', 'class="media blur" title="Tap to show" data-unblur') : tag;
-    } catch {
+      if (typeof file?.type !== "string" || !MEDIA_TYPES.test(file.type) || !(file.bytes instanceof Uint8Array) || file.bytes.length > 8 << 20) return { unsupported: true };
+      return { kind: file.type.startsWith("video/") ? "video" : "img", url: URL.createObjectURL(new Blob([file.bytes], { type: file.type })) };
+    })().catch(() => {
+      media.delete(cid); // a node may serve it later
+      return null;
+    }));
+  }
+  return media.get(cid);
+}
+const mediaTag = ({ kind, url }, cid, blur) => {
+  const blurred = blur && !unblurred.has(cid);
+  const attrs = `class="media${blurred ? " blur" : ""}" data-cid="${esc(cid)}" src="${url}"${blurred ? ' title="Tap to show" data-unblur' : ""}`;
+  return kind === "video" ? `<video ${attrs} controls></video>` : `<img ${attrs} alt="">`;
+};
+const settled = new Map(); // cid → { kind, url } once read, for drawing without a wait
+/** Fill media slots from any node that serves the Volume; checked by CID. */
+async function loadMedia() {
+  const slots = [...document.querySelectorAll("[data-media]")];
+  // Already read: in place before the next paint.
+  for (const slot of slots) {
+    const file = settled.get(slot.dataset.media);
+    if (file) slot.outerHTML = mediaTag(file, slot.dataset.media, slot.dataset.blur === "1");
+  }
+  for (const slot of slots.filter((s) => s.isConnected)) {
+    const cid = slot.dataset.media;
+    const file = await mediaFile(cid, slot.dataset.chain);
+    if (!slot.isConnected) continue;
+    if (file?.unsupported) {
+      slot.textContent = "This file isn't an image or video this page shows.";
+      slot.removeAttribute("data-media");
+    } else if (file) {
+      settled.set(cid, file);
+      slot.outerHTML = mediaTag(file, cid, slot.dataset.blur === "1");
+    } else {
       slot.textContent = "No one is serving this file right now.";
       slot.removeAttribute("data-media");
     }
@@ -687,10 +741,11 @@ function showAside() {
     return;
   }
   const n = follows(c).length;
+  const detailsOpen = $("#aside details")?.open ? " open" : "";
   $("#aside").innerHTML = `<div class="card"><h4>s/${esc(c)}</h4><p class="muted">A community with a chain of its own. Anyone can post here, and anyone can mine it.</p>
     <dl class="kv"><dt>Your coins</dt><dd id="aside-balance">${signer() ? "…" : `<button class="linkish" type="button" data-connect-or-get>Connect to see</button>`}</dd>
     <dt>Labels</dt><dd>${n ? `you follow ${plural(n, "account")}` : "you follow no one"} · <button class="linkish" type="button" data-mods="${esc(c)}">Manage</button></dd></dl>
-    <details class="more"><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></details></div>`;
+    <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></details></div>`;
   api("/api/chain/info", chainOf(c)).then((i) => ($("#aside-height").textContent = i.height ?? "starting")).catch(() => ($("#aside-height").textContent = "not served by this node"));
   const reader = signer();
   if (reader) api(`/api/state/account/${reader.address}`, chainOf(c)).then((a) => ($("#aside-balance").textContent = a.balance ?? "0")).catch(() => ($("#aside-balance").textContent = "0"));
@@ -738,10 +793,13 @@ document.addEventListener("click", async (event) => {
     revealed.add(el.dataset.reveal);
     refresh();
   } else if (el.hasAttribute("data-expand")) {
+    expanded.add(el.dataset.expand);
     el.closest("p").nextElementSibling.hidden = false;
     el.closest("p").remove();
   } else if (el.hasAttribute("data-unblur")) {
+    unblurred.add(el.dataset.cid);
     el.classList.remove("blur");
+    el.removeAttribute("data-unblur");
   } else if (el.dataset.vote) {
     castVote(el);
   } else if (el.dataset.reply || el.dataset.label) {
@@ -774,7 +832,7 @@ function toggleJoin(c) {
     store.set("left", joining ? store.get("left", []).filter((x) => x !== c) : [...new Set([...store.get("left", []), c])]);
   };
   const reader = signer();
-  if (reader) saveChoice(write.join(reader.address, c, joining), keep, joining ? `that you joined s/${c}` : `that you left s/${c}`);
+  if (reader) saveChoice(write.join(reader.address, c, joining), keep, joining ? `that you joined s/${c}` : `that you left s/${c}`, `joining s/${c}`);
   else keep();
   render();
 }
@@ -824,7 +882,9 @@ async function sendFromDialog({ status, button, build, done }) {
     pending.slow = true;
     redraw();
   });
-  if (landed) pendingItems.delete(pending.key);
+  // Kept until a read contains it (the draws drop it then), so it never
+  // vanishes between landing and the re-read.
+  if (landed) pending.landed = true;
   refresh();
 }
 
@@ -982,7 +1042,8 @@ function openMods(community) {
   const c = community ?? route.community ?? communities[0];
   if (!c) return;
   $("#mods-c").textContent = `s/${c}`;
-  $("#mods-status").textContent = "";
+  // Opening clears the status; a redraw of the open dialog keeps what it says.
+  if (!$("#mods").open) $("#mods-status").textContent = "";
   const list = follows(c);
   $("#mods-list").innerHTML = list.length
     ? list.map((a) => `<tr><td>${names.has(a) ? `<strong>${esc(names.get(a))}</strong> ` : ""}<span class="mono muted" title="${esc(a)}">${esc(short(a))}</span></td><td><button class="btn small" type="button" data-unfollow="${esc(a)}">Unfollow</button></td></tr>`).join("")
@@ -1011,8 +1072,9 @@ $("#mods-add-btn").onclick = () => {
   const address = $("#mods-add").value.trim();
   if (!address) return $("#mods-add").focus();
   if (!ADDRESS.test(address)) return ($("#mods-status").textContent = "That isn't an account address. It starts with “b” and is about 60 characters.");
-  $("#mods-add").value = "";
-  follow(c, address, true);
+  $("#mods-status").textContent = "";
+  // Kept in the box when the change has to wait, so it can be sent again.
+  if (follow(c, address, true)) $("#mods-add").value = "";
   openMods(c);
 };
 $("#mods-add").addEventListener("keydown", (event) => {
@@ -1085,7 +1147,7 @@ $("#settings-form").addEventListener("submit", (event) => {
   const name = $("#st-name").value.trim();
   const reader = signer();
   if (reader && name && name !== names.get(reader.address)) {
-    saveChoice(write.profile(reader.address, { name }), () => names.set(reader.address, name), "your name");
+    if (!saveChoice(write.profile(reader.address, { name }), () => names.set(reader.address, name), "your name")) return event.preventDefault();
     renderWho();
   }
   const moved = (node && node !== settings.node) || ($("#st-home").value.trim() && $("#st-home").value.trim() !== settings.home);
@@ -1150,6 +1212,7 @@ async function boot() {
   render();
 }
 window.addEventListener("hashchange", () => {
+  for (const [key, error] of itemErrors) if (error.untilNavigation) itemErrors.delete(key);
   window.scrollTo(0, 0);
   render();
 });

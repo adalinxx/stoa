@@ -187,10 +187,16 @@ test("comments nest, and a vote counts once and can be taken back", async ({ pag
   await expect(row.locator(".votes .score")).toHaveText("1");
   await expect(row.locator(".vote.up")).toHaveAttribute("aria-pressed", "true");
   await expect(row.locator(".votes")).not.toHaveClass(/pending/);
+  await expect(row.locator(".inline-error")).toHaveCount(0);
+  // It is on the chain: a reload reads it back, once.
+  await page.reload();
+  await expect(row.locator(".votes .score")).toHaveText("1");
+  await expect(row.locator(".vote.up")).toHaveAttribute("aria-pressed", "true");
   await row.locator(".vote.up").click();
   await expect(row.locator(".votes .score")).toHaveText("0");
   await expect(row.locator(".vote.up")).toHaveAttribute("aria-pressed", "false");
   await expect(row.locator(".votes")).not.toHaveClass(/pending/);
+  await expect(row.locator(".inline-error")).toHaveCount(0);
   // A reload reads it back from the chain.
   await page.reload();
   await expect(row.locator(".votes .score")).toHaveText("0");
