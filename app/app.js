@@ -188,7 +188,8 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
     // The wallet chooses the nonce and sends the write, from and to its own node.
     // Held, and asked, only when it is this write's turn in the wallet.
     await viaWallet(() => {
-      if (!beforeWallet()) throw new Withdrawn();
+      // Built for this account: if another is connected (or none) by its turn, it is dropped.
+      if (connected !== address || !beforeWallet()) throw new Withdrawn();
       status("Approve it in Lattice Wallet…");
       return wallet().writeRecords({ chainPath: chain, actions, fee: String(cost.fee) });
     });
@@ -419,6 +420,7 @@ async function castVote(button) {
     redraw();
     land = await send(chainOf(community), write.vote(signer().address, author, id, direction));
   } catch (error) {
+    if (error instanceof Withdrawn || !mine()) return;
     pendingVotes.delete(key);
     if (error instanceof NoWallet) return needWallet("Voting is signed by your key, so it needs the wallet.");
     const message = `Vote not counted. ${said(error)}`;
@@ -831,6 +833,11 @@ async function render() {
   }
   if (stale(id)) return;
   route = next;
+  // A navigation scrolls to the top as its view is drawn, not before.
+  if (navigated) {
+    navigated = false;
+    window.scrollTo(0, 0);
+  }
   const again = focusSelector();
   renderRail();
   renderWho();
@@ -910,7 +917,7 @@ function toggleJoin(c) {
  * makes the write once the reader's address is known. A failure is said in
  * the dialog, or in a notice if it was closed anyway.
  */
-async function sendFromDialog({ status, button, build, done }) {
+async function sendFromDialog({ status, button, build, sent = () => {}, done }) {
   const dialog = button.closest("dialog");
   // This opening of the dialog: a later one (after Cancel) is not touched.
   const opening = dialog.dataset.opening;
@@ -963,6 +970,9 @@ async function sendFromDialog({ status, button, build, done }) {
   const owner = connected;
   const ours = same();
   release();
+  if (owner !== pending.author) return;
+  // Sent: its draft is spent whether or not the dialog is still showing.
+  sent();
   if (ours) status.textContent = "";
   pendingItems.set(pending.key, pending);
   if (ours) done();
@@ -1029,8 +1039,8 @@ $("#reply-form").addEventListener("submit", async (event) => {
         pending: { key: keyOf(community, author, newId), kind: "comment", community, author, id: newId, value, on, parent: target },
       };
     },
+    sent: () => drafts.delete(draftKey),
     done: () => {
-      drafts.delete(draftKey);
       $("#reply").close();
       redraw();
     },
@@ -1099,6 +1109,14 @@ function openNewPost() {
 }
 $("#open-new").onclick = openNewPost;
 document.querySelectorAll("dialog").forEach((dialog) => {
+  // Focus goes back to what opened the dialog, found again if a redraw
+  // replaced it meanwhile (refocus acts only when focus fell to the page).
+  const show = dialog.showModal.bind(dialog);
+  dialog.showModal = () => {
+    dialog.dataset.from = focusSelector() ?? "";
+    show();
+  };
+  dialog.addEventListener("close", () => setTimeout(() => refocus(dialog.dataset.from || null), 0));
   dialog.addEventListener("cancel", (event) => {
     if (dialog.hasAttribute("data-sending")) event.preventDefault();
   });
@@ -1123,18 +1141,18 @@ $("#new-form").addEventListener("submit", async (event) => {
   }
   const tags = [...document.querySelectorAll("#new-form .checks input:checked")].map((i) => i.value);
   const value = { title, ...(link && { link }), ...($("#np-b").value.trim() && { body: $("#np-b").value.trim() }), ...(tags.length && { tags }) };
-  let sent;
+  let made;
   await sendFromDialog({
     status, button: $("#np-post"),
     build: (author) => {
       const id = write.newId();
-      sent = { author, id };
+      made = { author, id };
       return { chain: chainOf(community), records: write.post(author, id, value), pending: { key: keyOf(community, author, id), kind: "post", community, author, id, value } };
     },
+    sent: () => $("#new-form").reset(),
     done: () => {
       $("#new").close();
-      $("#new-form").reset();
-      location.hash = postHref(community, sent.author, sent.id);
+      location.hash = postHref(community, made.author, made.id);
     },
   });
 });
@@ -1314,9 +1332,10 @@ async function boot() {
   }
   render();
 }
+let navigated = false;
 window.addEventListener("hashchange", () => {
   for (const [key, error] of itemErrors) if (error.untilNavigation) itemErrors.delete(key);
-  window.scrollTo(0, 0);
+  navigated = true;
   render();
 });
 boot();
