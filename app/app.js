@@ -214,13 +214,14 @@ async function loadPosts(community) {
   );
 }
 
-async function showFeed(communitiesShown, title) {
+async function showFeed(communitiesShown, title, id) {
   $("#main").innerHTML = `<h1>${esc(title)}</h1>
     <div class="tabs">${["hot", "new", "top", "controversial"].map((s) => `<button class="tab ${s === sort ? "on" : ""}" data-sort="${s}">${s[0].toUpperCase() + s.slice(1)}</button>`).join("")}</div>
     <div id="feed"><p class="empty">Reading from ${esc(new URL(settings.node).host)}…</p></div>`;
   try {
     const all = (await Promise.all(communitiesShown.map((c) => loadPosts(c).catch(() => [])))).flat();
     await loadNames(await stateOf(homePath()), all.map((p) => p.author));
+    if (stale(id)) return;
     const ranked = rank(all, sort);
     $("#feed").innerHTML = ranked.length ? ranked.map((p) => postRow(p, names)).join("") : '<p class="empty">No posts yet. Be the first: New post.</p>';
     loadMedia();
@@ -229,7 +230,7 @@ async function showFeed(communitiesShown, title) {
   }
 }
 
-async function showPost({ community, author, id }) {
+async function showPost({ community, author, id }, renderOf) {
   $("#main").innerHTML = `<a class="tab" href="#/s/${encodeURIComponent(community)}">← s/${esc(community)}</a><div id="thread"><p class="empty">Reading…</p></div>`;
   try {
     const state = await stateOf(chainOf(community));
@@ -249,6 +250,7 @@ async function showPost({ community, author, id }) {
     const collect = (node) => { authors.push(node.author); node.replies.forEach(collect); };
     collect(tree);
     await loadNames(await stateOf(homePath()), authors);
+    if (stale(renderOf)) return;
     const link = safeLink(tree.link);
     $("#thread").innerHTML = `<div class="op">
       <div class="meta"><span>s/${esc(community)}</span><span>${esc(nameOf(author, names))}</span><span>${ago(when.get(`${author}/${id}`))}</span></div>
@@ -314,7 +316,13 @@ function showAside() {
   $("#aside-mods").onclick = () => openMods(c);
 }
 
+// Renders overlap (a navigation while the last one still reads the node);
+// only the newest one writes the page.
+let renderId = 0;
+const stale = (id) => id !== renderId;
+
 async function render() {
+  const id = ++renderId;
   route = parseRoute(location.hash);
   const home = await stateOf(homePath()).catch(() => null);
   if (home) {
@@ -322,13 +330,14 @@ async function render() {
     const me = signer();
     if (me) await loadNames(home, [me.address]);
   }
+  if (stale(id)) return;
   renderRail();
   renderWho();
   showAside();
-  if (route.view === "post") return showPost(route);
-  if (route.view === "community") return showFeed([route.community], `s/${route.community}`);
+  if (route.view === "post") return showPost(route, id);
+  if (route.view === "community") return showFeed([route.community], `s/${route.community}`, id);
   const joined = joinedList().filter((c) => communities.includes(c));
-  return showFeed(joined, "Home");
+  return showFeed(joined, "Home", id);
 }
 
 // --------------------------------------------------------------- actions
@@ -457,7 +466,7 @@ function openMods(community) {
     + `<tr><td colspan="2"><input type="text" id="new-label" placeholder="Another label, e.g. low-effort" style="max-width:260px"></td></tr>`;
   $("#mods").dataset.community = c;
   $("#showall").checked = showAll;
-  $("#mods").showModal();
+  if (!$("#mods").open) $("#mods").showModal();
 }
 $("#open-mods").onclick = () => openMods();
 $("#mods").addEventListener("click", (event) => {
