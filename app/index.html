@@ -167,6 +167,8 @@ td, th { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: lef
     <label>Your key</label>
     <p class="muted" style="font-size:12.5px;margin:0">Kept in this browser only. It signs your posts, comments, votes and labels; the Lattice Wallet will take this over.</p>
     <dl class="kv" style="margin-top:8px"><dt>Address</dt><dd class="mono" id="st-address">none</dd></dl>
+    <label for="st-name">Display name (your profile on the home chain)</label>
+    <input type="text" id="st-name" maxlength="40">
     <div class="row2" style="justify-content:flex-start"><button class="btn" type="button" id="st-generate">New key</button><button class="btn" type="button" id="st-import">Import key</button><button class="btn" type="button" id="st-export">Show private key</button></div>
     <input type="text" id="st-key" class="mono" hidden placeholder="private key, 64 hex characters">
     <div class="row2"><span class="status" id="st-status"></span><button class="btn primary" value="save">Save</button></div>
