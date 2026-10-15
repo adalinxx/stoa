@@ -84,6 +84,12 @@ async function walletHolds(context, who) {
   const page = await context.newPage();
   await page.goto(new URL("/popup/index.html", worker.url()).href);
   const created = await page.evaluate((privHex) => chrome.runtime.sendMessage({ type: "createWallet", password: "stoa-test", privHex }), who.keyHex);
+  // Their node is the stack's: chosen for Nexus, as in the wallet's Connection settings.
+  await page.evaluate(async (url) => {
+    const { settings } = await chrome.storage.local.get("settings");
+    const endpoints = { ...(settings?.endpoints ?? {}), Nexus: { url, acceptsSubmit: true, source: "user" } };
+    await chrome.storage.local.set({ settings: { ...settings, nodeMode: "custom", endpoints } });
+  }, stack.node);
   if (!created?.ok) throw new Error(`wallet setup: ${created?.error}`);
   await page.close();
   walletsSetUp.add(context);

@@ -5,7 +5,9 @@ against a private Lattice stack (`stack.mjs`): one host mining Nexus, a Stoa
 home chain and one community from a 2-second test spec, charging a fee of 1
 like the Stoa node. Each test opens its own browser with the real Lattice
 Wallet extension loaded (Chrome's `--headless=new`, which runs extensions);
-an account's key is imported into that wallet, the test connects by clicking
+an account's key is imported into that wallet, whose node is set to the
+stack's (the copy loaded is allowed to reach 127.0.0.1, as the wallet's
+Allow button would grant), the test connects by clicking
 Connect wallet, and every approval window the wallet opens is answered
 (Connect or Sign, or Decline where a test says so) and counted.
 

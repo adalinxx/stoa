@@ -4,7 +4,7 @@
 //   LATTICE=<lattice-node>/.build/debug/lattice \
 //   LATTICE_SDK=<lattice-sdk>/packages/sdk/dist/index.js \
 //   LATTICE_WALLET=<lattice-wallet>/dist node --test e2e/ui/
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { after, before, test as nodeTest } from "node:test";
@@ -15,6 +15,13 @@ import { start } from "./stack.mjs";
 
 const wallet = process.env.LATTICE_WALLET && fileURLToPath(new URL(process.env.LATTICE_WALLET, `file://${process.cwd()}/`));
 if (!wallet) throw new Error("LATTICE_WALLET: the built Lattice Wallet extension (its dist/ directory)");
+// The wallet as installed by someone who runs the stack's node: allowed to
+// reach it (what the wallet's Allow button would grant).
+const walletInstalled = mkdtempSync(`${tmpdir()}/stoa-ui-wallet-`);
+cpSync(wallet, walletInstalled, { recursive: true });
+const manifest = JSON.parse(readFileSync(`${walletInstalled}/manifest.json`, "utf8"));
+manifest.host_permissions = [...manifest.host_permissions, "http://127.0.0.1/*"];
+writeFileSync(`${walletInstalled}/manifest.json`, JSON.stringify(manifest));
 const running = await start();
 writeFileSync(new URL("./.stack.json", import.meta.url), JSON.stringify(running.info));
 const { chainPath, fund, newAccount, nodeOperator, openApp, sdk, stack, writeAs } = await import("./helpers.mjs");
@@ -36,14 +43,20 @@ after(async () => {
 async function walletBrowser() {
   const context = await chromium.launchPersistentContext(mkdtempSync(`${tmpdir()}/stoa-ui-browser-`), {
     headless: false,
-    args: ["--headless=new", `--disable-extensions-except=${wallet}`, `--load-extension=${wallet}`],
+    args: ["--headless=new", `--disable-extensions-except=${walletInstalled}`, `--load-extension=${walletInstalled}`],
   });
   context.approvals = 0;
+  context.nonces = []; // the Nonce row of each write signed, as the wallet showed it
   context.on("page", async (opened) => {
     await opened.waitForLoadState().catch(() => {});
     if (!opened.url().includes("/approve/index.html")) return;
     const answer = context.declineWrites && (await opened.getByRole("button", { name: "Sign" }).waitFor().then(() => true, () => false))
       ? "Decline" : /^(Connect|Sign)$/;
+    if (answer !== "Decline" && (await opened.getByRole("heading", { name: "Sign a write" }).count())) {
+      // Sign wakes only once the wallet has read the nonce.
+      await baseExpect(opened.getByRole("button", { name: "Sign" })).toBeEnabled({ timeout: 60_000 }).catch(() => {});
+      context.nonces.push(await opened.locator(".row", { hasText: "Nonce" }).innerText().catch(() => ""));
+    }
     await opened.getByRole("button", { name: answer }).click().catch(() => {});
     context.approvals += 1;
   });
@@ -119,8 +132,10 @@ test("a funded poster posts a link; it lands and reads back in its thread and th
   await expect(page.locator(".op h1")).toHaveText("The whitepaper");
   await expect(page.locator(".op .link")).toHaveAttribute("href", "https://bitcoin.org/bitcoin.pdf");
   await expect(page.locator(".op .body")).toHaveText("Worth a reread.");
-  // The wallet asked twice: to connect, then to sign the post.
+  // The wallet asked twice: to connect, then to sign the post, with a nonce
+  // it read from the person's own node (not one the page chose).
   expect(page.context().approvals).toBe(2);
+  expect(page.context().nonces).toEqual([expect.stringMatching(/Nonce\s+\d+ \(from 127\.0\.0\.1:26081\)/i)]);
   await page.goto(stack.app + feed);
   const row = page.locator(".post", { hasText: "The whitepaper" });
   await expect(row).toBeVisible();

@@ -98,7 +98,8 @@ async function submit(chain, records, status) {
     throw new Error(coinsMessage(where, me.address, fee));
   }
   status("Approve it in your wallet…");
-  const signed = await wallet().writeRecords({ chainPath: chain, actions, fee: String(fee), nonce: String(account?.nonce ?? 0) });
+  // The wallet chooses the nonce, from its own node.
+  const signed = await wallet().writeRecords({ chainPath: chain, actions, fee: String(fee) });
   status("Sending…");
   const response = await fetch(new URL("/transactions", settings.node), {
     method: "POST",
