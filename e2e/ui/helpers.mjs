@@ -76,15 +76,46 @@ export async function writeAs(who, chain, records) {
 /** The node's operator routes (pinning media), with its loopback cookie. */
 export const nodeOperator = () => operator(stack.rpc, readFileSync(`${stack.root}/chains/Nexus/.cookie`, "utf8"));
 
-/** Open the app as `who` (or as a visitor with no key), pointed at the stack. */
+const walletsSetUp = new WeakSet();
+/** The browser's Lattice Wallet holds `who`'s key, as if they imported it. */
+async function walletHolds(context, who) {
+  if (walletsSetUp.has(context)) return;
+  const page = await context.newPage();
+  // A message from the wallet's own page wakes its worker.
+  await page.goto(`${context.walletOrigin}/popup/index.html`);
+  const created = await page.evaluate((privHex) => chrome.runtime.sendMessage({ type: "createWallet", password: "stoa-test", privHex }), who.keyHex);
+  // Their node is the stack's: chosen for Nexus, as in the wallet's Connection settings.
+  await page.evaluate(async (url) => {
+    const { settings } = await chrome.storage.local.get("settings");
+    const endpoints = { ...(settings?.endpoints ?? {}), Nexus: { url, acceptsSubmit: true, source: "user" } };
+    await chrome.storage.local.set({ settings: { ...settings, nodeMode: "custom", endpoints } });
+  }, stack.node);
+  if (!created?.ok) throw new Error(`wallet setup: ${created?.error}`);
+  await page.close();
+  walletsSetUp.add(context);
+}
+
+/**
+ * Open the app pointed at the stack: as `who`, connected through the
+ * browser's wallet (clicking Connect wallet, as a person would), or as a
+ * visitor (null).
+ */
 export async function openApp(page, who, hash = "#/") {
-  await page.addInitScript(({ node, home, keyHex }) => {
+  await page.addInitScript(({ node, home }) => {
     if (sessionStorage.getItem("stoa-test-seeded")) return;
     sessionStorage.setItem("stoa-test-seeded", "1");
     localStorage.clear();
     localStorage.setItem("stoa:node", JSON.stringify(node));
     localStorage.setItem("stoa:home", JSON.stringify(home));
-    if (keyHex) localStorage.setItem("stoa:key", JSON.stringify(keyHex));
-  }, { node: stack.node, home: stack.home, keyHex: who?.keyHex ?? null });
+  }, { node: stack.node, home: stack.home });
+  if (who) await walletHolds(page.context(), who);
   await page.goto(stack.app + hash);
+  if (!who) return;
+  // Already connected from an earlier visit in this browser: nothing to click.
+  await page.locator("#who > *").first().waitFor({ timeout: 60_000 });
+  const connect = page.locator("#connect");
+  if (await connect.count()) {
+    await connect.click();
+    await connect.waitFor({ state: "detached", timeout: 60_000 });
+  }
 }
