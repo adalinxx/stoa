@@ -59,8 +59,8 @@ h1 { font: 600 26px/1.2 var(--display); margin: 12px 0 0; text-wrap: balance; ov
 .votes.row { flex-direction: row; gap: 2px; }
 .post .vote { height: 22px; }
 .vote { border: 0; background: none; cursor: pointer; color: var(--muted); line-height: 1; font-size: 14px; width: 30px; height: 26px; border-radius: 6px; display: grid; place-items: center; }
-.vote:hover:not(:disabled) { background: var(--surface); color: var(--ink); }
-.vote:disabled { cursor: default; }
+.vote:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--surface); color: var(--ink); }
+.vote:disabled, .vote[aria-disabled="true"] { cursor: default; }
 .vote[aria-pressed="true"].up { color: var(--accent); }
 .vote[aria-pressed="true"].down { color: var(--down); }
 .score { min-width: 2ch; text-align: center; }

@@ -179,11 +179,15 @@ async function landing(chain, records, onSlow) {
       slow = true;
       onSlow();
     }
-    const now = await stateOf(chain).catch(() => null);
-    if (!now) continue;
-    let landed = true;
-    for (const [key, value] of records) if ((await now.get(key)) !== value) landed = false;
-    if (landed) return true;
+    // A read that fails (a node serving part of the state, a blip) is one poll missed.
+    try {
+      const now = await stateOf(chain);
+      let landed = true;
+      for (const [key, value] of records) if ((await now.get(key)) !== value) landed = false;
+      if (landed) return true;
+    } catch {
+      continue;
+    }
   }
   return false;
 }
@@ -261,7 +265,12 @@ const saving = (records) => records.some(([key]) => savingKeys.has(key));
 
 function saveChoice(records, keepLocally, what) {
   if (signer() && saving(records)) {
-    notice(`Your last change to ${what} is still landing. Try again once it has.`);
+    const message = `Your last change to ${what} is still landing. Try again once it has.`;
+    // A notice behind an open dialog would go unseen: say it in the dialog.
+    const inDialog = document.querySelector("dialog[open] .status");
+    if (inDialog) inDialog.textContent = message;
+    else notice(message);
+    announce(message);
     return false;
   }
   keepLocally();
@@ -340,15 +349,20 @@ function withVote(item, community) {
 async function castVote(button) {
   const [community, author, id] = button.dataset.target.split("|");
   const key = keyOf(community, author, id);
-  if (pendingVotes.has(key)) return;
+  if (pendingVotes.has(key) || button.getAttribute("aria-disabled") === "true") return;
   const box = button.closest("[data-votes]");
   const current = box.querySelector('[aria-pressed="true"]');
   const direction = current === button ? 0 : Number(button.dataset.vote);
   itemErrors.delete(key);
   let land;
   try {
-    // Connect first if needed: the wallet asks within this click.
-    await me();
+    // Connect first if needed: the wallet asks within this click. The page
+    // was then read without the reader's own votes, so it reads again and the
+    // reader votes on what is really there.
+    if (!signer()) {
+      await connectWallet();
+      return refresh();
+    }
     pendingVotes.set(key, { direction });
     redraw();
     land = await send(chainOf(community), write.vote(signer().address, author, id, direction));
@@ -395,7 +409,9 @@ function renderRail() {
     if (on) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   });
-  $("#np-c").innerHTML = communities.map((c) => `<option value="${esc(c)}" ${c === route.community ? "selected" : ""}>s/${esc(c)}</option>`).join("");
+  // A redraw while New post is open keeps the community the reader chose.
+  const chosen = $("#new").open ? $("#np-c").value : route.community;
+  $("#np-c").innerHTML = communities.map((c) => `<option value="${esc(c)}" ${c === chosen ? "selected" : ""}>s/${esc(c)}</option>`).join("");
 }
 
 function renderWho() {
@@ -453,11 +469,15 @@ function frame(key, html) {
 }
 
 // Errors are said once to screen readers, when they happen, not on each redraw.
+// A feed's failure is said once, though each refresh finds it again; anything
+// else is said each time it happens, even when the words repeat.
 let lastAnnounced = "";
-function announce(message) {
-  if (!message || message === lastAnnounced) return;
+function announce(message, { once = false } = {}) {
+  if (!message || (once && message === lastAnnounced)) return;
   lastAnnounced = message;
-  $("#announcer").textContent = message;
+  const region = $("#announcer");
+  region.textContent = "";
+  requestAnimationFrame(() => (region.textContent = message));
 }
 
 async function showFeed(list, { title, community }, id) {
@@ -474,7 +494,7 @@ async function showFeed(list, { title, community }, id) {
   // under the pointer after a vote); a new sort or view ranks afresh.
   const order = shown?.view === "feed" && shown.title === title && shown.sort === sort ? shown.order : null;
   shown = { view: "feed", title, list, community, posts, failures: results.filter((r) => r.error), order, sort };
-  if (shown.failures.length) announce(shown.failures.map((f) => readFailure(f.error, f.c)).join(" "));
+  if (shown.failures.length) announce(shown.failures.map((f) => readFailure(f.error, f.c)).join(" "), { once: true });
   redraw();
 }
 
@@ -615,13 +635,29 @@ function drawThread() {
   loadMedia();
 }
 
-function redraw() {
-  // Keyboard focus on a vote button comes back to it after the redraw.
-  const focused = document.activeElement?.closest?.("[data-vote]");
-  const again = focused && `[data-vote="${focused.dataset.vote}"][data-target="${CSS.escape(focused.dataset.target)}"]`;
+/**
+ * A selector that finds the focused control again after a redraw replaces
+ * it, or null. Writes land in the background, so redraws come at any time.
+ */
+function focusSelector(el = document.activeElement) {
+  if (!el || el === document.body || !$(".app").contains(el)) return null;
+  const by = (attr) => `[${attr}="${CSS.escape(el.getAttribute(attr))}"]`;
+  if (el.dataset.vote) return `${by("data-vote")}${by("data-target")}`;
+  for (const attr of ["data-reply", "data-label", "data-reveal", "data-follow", "data-sort", "data-mods", "data-join"]) {
+    if (el.hasAttribute(attr)) return `${el.tagName.toLowerCase()}${by(attr)}`;
+  }
+  if (el.id) return `#${CSS.escape(el.id)}`;
+  if (el.tagName === "A" && el.hasAttribute("href")) return `a${by("href")}`;
+  return null;
+}
+const refocus = (selector) => {
+  if (selector && document.activeElement !== document.querySelector(selector)) document.querySelector(selector)?.focus({ preventScroll: true });
+};
+
+function redraw(again = focusSelector()) {
   if (shown?.view === "feed") drawFeed();
   else if (shown?.view === "post") drawThread();
-  if (again) document.querySelector(again)?.focus();
+  refocus(again);
 }
 
 /** Fill media slots from any node that serves the Volume; checked by CID. */
@@ -667,6 +703,7 @@ const stale = (id) => id !== renderId;
 
 async function render() {
   const id = ++renderId;
+  const again = focusSelector();
   route = parseRoute(location.hash);
   const home = await stateOf(homePath()).catch(() => null);
   if (home) {
@@ -678,10 +715,11 @@ async function render() {
   renderRail();
   renderWho();
   showAside();
-  if (route.view === "post") return showPost(route, id);
-  if (route.view === "community") return showFeed([route.community], { title: `s/${route.community}`, community: route.community }, id);
-  const joined = joinedList().filter((c) => communities.includes(c));
-  return showFeed(joined, { title: "Home" }, id);
+  refocus(again);
+  if (route.view === "post") await showPost(route, id);
+  else if (route.view === "community") await showFeed([route.community], { title: `s/${route.community}`, community: route.community }, id);
+  else await showFeed(joinedList().filter((c) => communities.includes(c)), { title: "Home" }, id);
+  if (!stale(id)) refocus(again);
 }
 /** Re-read the current view in place. */
 const refresh = () => render();
@@ -743,8 +781,13 @@ function toggleJoin(c) {
 
 // A write from a dialog: the dialog stays until the wallet has sent it, then
 // closes, and the write is drawn in place as pending until its block lands.
-async function sendFromDialog({ chain, records, status, button, pending, done }) {
-  // While the write is on its way the dialog stays: its answer shows there.
+/**
+ * A write from a dialog. The dialog is held (Cancel and Escape too) from the
+ * click until the wallet has sent, connecting first if need be; `build`
+ * makes the write once the reader's address is known. A failure is said in
+ * the dialog, or in a notice if it was closed anyway.
+ */
+async function sendFromDialog({ status, button, build, done }) {
   const dialog = button.closest("dialog");
   const sending = (on) => {
     dialog.toggleAttribute("data-sending", on);
@@ -753,9 +796,15 @@ async function sendFromDialog({ chain, records, status, button, pending, done })
   };
   sending(true);
   status.classList.remove("bad");
-  let land;
+  let land, pending;
   try {
-    land = await send(chain, records, (s) => (status.textContent = s));
+    const reader = await me().catch((error) => {
+      if (error instanceof NoWallet) return null;
+      throw new Error(walletMessage(error));
+    });
+    const made = build(reader?.address ?? "");
+    pending = made.pending;
+    land = await send(made.chain, made.records, (s) => (status.textContent = s));
   } catch (error) {
     sending(false);
     status.classList.add("bad");
@@ -764,6 +813,7 @@ async function sendFromDialog({ chain, records, status, button, pending, done })
     } else {
       status.textContent = error.message;
     }
+    if (!dialog.open) notice(status.textContent, { bad: true });
     return;
   }
   sending(false);
@@ -783,7 +833,8 @@ let replyTarget = null;
 const KNOWN_LABELS = ["spam", "off-topic", "nsfw", "low-effort"];
 function openReply(target, labelling) {
   const [author, id] = target.split("/");
-  replyTarget = { author, id, labelling, key: `${labelling ? "label" : "reply"}:${target}` };
+  // What is answered is fixed now, whatever the route does while the dialog is open.
+  replyTarget = { author, id, labelling, key: `${labelling ? "label" : "reply"}:${target}`, community: route.community, post: { author: route.author, id: route.id } };
   const onPost = route.author === author && route.id === id;
   const findNode = (node) => (node.author === author && node.id === id ? node : node.replies.map(findNode).find(Boolean));
   const node = shown?.tree && findNode(shown.tree);
@@ -807,30 +858,26 @@ $("#reply-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const status = $("#rp-status");
   status.classList.add("bad");
-  const { community, author: postAuthor, id: postId } = route;
-  const on = { author: postAuthor, id: postId };
+  const { community, post: on, key: draftKey } = replyTarget;
+  const { author: postAuthor, id: postId } = on;
   const target = replyTarget.author === postAuthor && replyTarget.id === postId ? undefined : { author: replyTarget.author, id: replyTarget.id };
   const typed = $("#rp-labels").value.split(",").map((l) => l.trim().toLowerCase()).filter(Boolean);
   const labels = replyTarget.labelling ? [...new Set([...[...document.querySelectorAll("#rp-chips input:checked")].map((i) => i.value), ...typed])] : [];
   const body = $("#rp-b").value.trim();
   if (replyTarget.labelling && labels.length === 0) return ($("#rp-status").textContent = "Choose at least one label.");
   if (!replyTarget.labelling && !body) return ($("#rp-status").textContent = "Write something first.");
-  let reader;
-  try {
-    reader = await me();
-  } catch (error) {
-    if (!(error instanceof NoWallet)) return (status.textContent = walletMessage(error));
-  }
-  const newId = write.newId();
-  const author = reader?.address ?? "";
-  const value = replyTarget.labelling ? { body, labels } : { body };
-  const records = replyTarget.labelling
-    ? write.label(author, newId, on, labels, { target, body })
-    : write.comment(author, newId, on, { body }, target ? { parent: target } : {});
-  const draftKey = replyTarget.key;
+  const labelling = replyTarget.labelling;
+  const value = labelling ? { body, labels } : { body };
   await sendFromDialog({
-    chain: chainOf(community), records, status, button: $("#rp-send"),
-    pending: { key: keyOf(community, author, newId), kind: "comment", community, author, id: newId, value, on, parent: target },
+    status, button: $("#rp-send"),
+    build: (author) => {
+      const newId = write.newId();
+      return {
+        chain: chainOf(community),
+        records: labelling ? write.label(author, newId, on, labels, { target, body }) : write.comment(author, newId, on, { body }, target ? { parent: target } : {}),
+        pending: { key: keyOf(community, author, newId), kind: "comment", community, author, id: newId, value, on, parent: target },
+      };
+    },
     done: () => {
       drafts.delete(draftKey);
       $("#reply").close();
@@ -914,22 +961,19 @@ $("#new-form").addEventListener("submit", async (event) => {
     return (status.textContent = "The link must start with https:// or http://");
   }
   const tags = [...document.querySelectorAll("#new-form .checks input:checked")].map((i) => i.value);
-  let reader;
-  try {
-    reader = await me();
-  } catch (error) {
-    if (!(error instanceof NoWallet)) return (status.textContent = walletMessage(error));
-  }
-  const id = write.newId();
-  const author = reader?.address ?? "";
   const value = { title, ...(link && { link }), ...($("#np-b").value.trim() && { body: $("#np-b").value.trim() }), ...(tags.length && { tags }) };
+  let sent;
   await sendFromDialog({
-    chain: chainOf(community), records: write.post(author, id, value), status, button: $("#np-post"),
-    pending: { key: keyOf(community, author, id), kind: "post", community, author, id, value },
+    status, button: $("#np-post"),
+    build: (author) => {
+      const id = write.newId();
+      sent = { author, id };
+      return { chain: chainOf(community), records: write.post(author, id, value), pending: { key: keyOf(community, author, id), kind: "post", community, author, id, value } };
+    },
     done: () => {
       $("#new").close();
       $("#new-form").reset();
-      location.hash = postHref(community, author, id);
+      location.hash = postHref(community, sent.author, sent.id);
     },
   });
 });

@@ -84,9 +84,9 @@ const target = (community, author, id) => `${esc(community)}|${esc(author)}|${es
 export function voteBox({ community, author, id, ups, downs, mine = 0, votePending = false, pending }, { row = false } = {}) {
   const t = target(community, author, id);
   const score = ups - downs;
-  // An item still waiting for its own block cannot be voted on yet, and a
-  // vote in flight settles before the next.
-  const off = pending || votePending ? " disabled" : "";
+  // An item still waiting for its own block cannot be voted on yet. A vote in
+  // flight settles before the next; its buttons keep focus (aria-disabled).
+  const off = pending ? " disabled" : votePending ? ' aria-disabled="true"' : "";
   const tip = (what) => (votePending ? "Your vote is waiting for a block" : what);
   return `<div class="votes${row ? " row" : ""}${votePending ? " pending" : ""}" data-votes="${t}">`
     + `<button type="button" class="vote up" data-vote="1" data-target="${t}" aria-pressed="${mine === 1}" aria-label="Upvote" title="${tip("Upvote")}"${off}>▲</button>`

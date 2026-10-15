@@ -108,6 +108,8 @@ test("the reader's vote shows as pressed, and a vote waiting for its block as pe
   const waiting = postRow(post({ mine: -1, votePending: true }), names, { now: NOW });
   assert.match(waiting, /class="votes pending"/);
   assert.match(waiting, /class="vote down"[^>]*aria-pressed="true"/);
+  assert.match(waiting, /class="vote up"[^>]*aria-disabled="true"/, "a vote in flight keeps its buttons focusable");
+  assert.ok(!/class="vote up"[^>]*\sdisabled/.test(waiting));
 });
 
 test("a post or comment waiting for its block says so and can't be voted on yet", () => {
