@@ -100,8 +100,13 @@ let walletTurn = Promise.resolve();
 // After a decline the wallet turns the site away for a few seconds: the next
 // request waits that out rather than failing at once.
 const DECLINE_PAUSE = 5500;
+// A wallet that never answers (reloaded or updated under an open page) must
+// not hold a dialog, or every later write, forever.
+const WALLET_SILENCE = 5 * 60_000;
+const answered = (asked) => Promise.race([asked, new Promise((_, reject) =>
+  setTimeout(() => reject(new Error("Lattice Wallet didn't answer. Reload this page and try again.")), WALLET_SILENCE))]);
 function viaWallet(ask) {
-  const run = walletTurn.then(ask, ask);
+  const run = walletTurn.then(() => answered(ask()), () => answered(ask()));
   walletTurn = run.then(() => {}, (error) =>
     /declined/i.test(String(error?.message ?? error)) ? new Promise((resolve) => setTimeout(resolve, DECLINE_PAUSE)) : undefined);
   return run;
@@ -824,7 +829,7 @@ function showAside() {
   const height = $("#aside-height"), balance = $("#aside-balance");
   api("/api/chain/info", chainOf(c)).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
   const reader = signer();
-  if (reader) api(`/api/state/account/${reader.address}`, chainOf(c)).then((a) => (balance.textContent = a.balance ?? "0")).catch(() => (balance.textContent = "0"));
+  if (reader) api(`/api/state/account/${reader.address}`, chainOf(c)).then((a) => (balance.textContent = a.balance ?? "0")).catch((error) => (balance.textContent = error.status === 404 ? "0" : "unavailable"));
 }
 
 // Renders overlap (a navigation while the last one still reads the node);
@@ -1309,7 +1314,7 @@ $("#account").addEventListener("toggle", async (event) => {
   $("#acc-coins").innerHTML = communities.map((c) => `<dt>s/${esc(c)}</dt><dd data-coins="${esc(c)}">…</dd>`).join("");
   for (const c of communities) {
     api(`/api/state/account/${reader.address}`, chainOf(c))
-      .then((a) => `${a.balance ?? 0} coins`, () => "unavailable")
+      .then((a) => `${a.balance ?? 0} coins`, (error) => (error.status === 404 ? "0 coins" : "unavailable"))
       .then((text) => { const dd = $(`#acc-coins [data-coins="${CSS.escape(c)}"]`); if (dd) dd.textContent = text; });
   }
 });
