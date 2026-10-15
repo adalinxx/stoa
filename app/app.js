@@ -156,9 +156,10 @@ const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(h
 async function costOn(chain, address) {
   const [info, account] = await Promise.all([
     api("/api/chain/info", chain),
-    address ? api(`/api/state/account/${address}`, chain).catch(() => null) : null,
+    // No account yet (404) holds nothing; any other failure leaves it unknown (null).
+    address ? api(`/api/state/account/${address}`, chain).catch((error) => (error.status === 404 ? {} : null)) : {},
   ]);
-  return { fee: BigInt(info.minRelayFee ?? 0), balance: BigInt(account?.balance ?? 0) };
+  return { fee: BigInt(info.minRelayFee ?? 0), balance: account ? BigInt(account.balance ?? 0) : null };
 }
 
 /**
@@ -166,6 +167,7 @@ async function costOn(chain, address) {
  * of its landing (true once every write reads back; `onSlow` after a minute
  * without it). Throws NoWallet, the no-coins message, or what the wallet said.
  */
+/** `records` may be a function of the chain state the write is made against. */
 async function send(chain, records, status = () => {}, beforeWallet = () => true) {
   const { address } = await me();
   status("Preparing…");
@@ -176,10 +178,11 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
   } catch (error) {
     throw new Said(readFailure(error, community));
   }
-  if (cost.fee > 0n && cost.balance < cost.fee) {
+  if (cost.fee > 0n && cost.balance !== null && cost.balance < cost.fee) {
     throw new Said(community ? coinsMessage(community, address, cost.fee)
       : `Saving this to your home chain costs ${cost.fee} of its coins, and you have none there yet.`);
   }
+  if (typeof records === "function") records = await records(state);
   // A key already holding its new value is no change: nothing to sign for it.
   const actions = (await write.changes(state, records)).filter((a) => a.oldValue !== a.newValue);
   // Already so on the chain: nothing to sign, nothing to pay.
@@ -296,7 +299,11 @@ async function loadMine(home) {
 const savingKeys = new Set();
 const saving = (records) => records.some(([key]) => savingKeys.has(key));
 
-function saveChoice(records, keepLocally, what, { about = what, kept = true, undo = () => {} } = {}) {
+/**
+ * `records` names the keys; `build`, if given, makes the writes from the
+ * state they are made against (for a value that merges with what is there).
+ */
+function saveChoice(records, keepLocally, what, { about = what, kept = true, undo = () => {}, build } = {}) {
   if (signer() && saving(records)) {
     const message = `Your last change to ${about} is still landing. Try again once it has.`;
     // A notice behind an open dialog would go unseen: say it in the dialog.
@@ -315,7 +322,7 @@ function saveChoice(records, keepLocally, what, { about = what, kept = true, und
   const keys = records.map(([key]) => key);
   keys.forEach((key) => savingKeys.add(key));
   const shown = notice(`Saving ${what}: approve it in Lattice Wallet.`);
-  send(homePath(), records)
+  send(homePath(), build ?? records)
     .then((land) => {
       shown.update(`Saving ${what}: waiting for a block…`);
       return land(() => shown.update(`Saving ${what}: sent, not in a block yet. It may still land.`));
@@ -334,11 +341,9 @@ function saveChoice(records, keepLocally, what, { about = what, kept = true, und
 
 // Profile names, read from the home chain once per address.
 const names = new Map();
-const profiles = new Map(); // address → the profile as read, so a name change keeps the rest
 async function loadNames(home, addresses) {
   await Promise.all([...new Set(addresses)].filter((a) => !names.has(a)).map(async (a) => {
     const profile = await read.profile(home, a).catch(() => undefined);
-    if (profile) profiles.set(a, profile);
     if (typeof profile?.name === "string" && profile.name.trim()) names.set(a, profile.name.trim().slice(0, 40));
   }));
 }
@@ -945,10 +950,13 @@ async function sendFromDialog({ status, button, build, sent = () => {}, done }) 
     dialog.toggleAttribute("data-sending", on);
     dialog.querySelectorAll("[data-close]").forEach((b) => (b.disabled = on));
   };
+  // Locking moved focus off the clicked control; it goes back when unlocked.
+  const focused = document.activeElement;
   const release = () => {
     if (dialog.dataset.opening !== opening) return;
     busy(false);
     held(false);
+    if (dialog.open && (!document.activeElement || document.activeElement === document.body)) focused?.focus();
   };
   busy(true);
   status.classList.remove("bad");
@@ -1089,6 +1097,7 @@ async function showCost(line, community, doing) {
   if (!current()) return;
   const fee = cost.fee === 0n ? "Free" : `Costs ${cost.fee} s/${community} ${cost.fee === 1n ? "coin" : "coins"}`;
   if (!reader) return (line.textContent = `${fee}. You'll connect and approve it in Lattice Wallet.`);
+  if (cost.balance === null) return (line.textContent = `${fee}. Couldn't read your balance; you'll approve it in Lattice Wallet.`);
   if (cost.balance < cost.fee) {
     line.classList.add("bad");
     line.innerHTML = `${esc(coinsMessage(community, reader.address, cost.fee))} <button class="linkish" type="button" data-copy-address>Copy address</button>`;
@@ -1282,7 +1291,11 @@ $("#settings-form").addEventListener("submit", (event) => {
   if (reader && name && name !== names.get(reader.address)) {
     const before = names.get(reader.address);
     const undo = () => (before === undefined ? names.delete(reader.address) : names.set(reader.address, before));
-    if (!saveChoice(write.profile(reader.address, { ...(profiles.get(reader.address) ?? {}), name }), () => names.set(reader.address, name), "your name", { kept: false, undo })) return event.preventDefault();
+    // The rest of the profile is read from the same state the write is made
+    // against, so nothing on the chain is lost or reverted.
+    const address = reader.address;
+    const build = async (home) => write.profile(address, { ...((await read.profile(home, address)) ?? {}), name });
+    if (!saveChoice(write.profile(address, {}), () => names.set(address, name), "your name", { kept: false, undo, build })) return event.preventDefault();
     renderWho();
   }
   const moved = (node && node !== settings.node) || ($("#st-home").value.trim() && $("#st-home").value.trim() !== settings.home);
