@@ -58,9 +58,19 @@ class NoWallet extends Error {
   }
 }
 
+/** The reader's account changed: what was pending or noted was theirs. */
+function setConnected(address) {
+  if (address !== connected) {
+    pendingVotes.clear();
+    pendingItems.clear();
+    itemErrors.clear();
+  }
+  connected = address;
+}
+
 async function connectWallet() {
   if (!wallet()) throw new NoWallet();
-  connected = await wallet().connect();
+  setConnected(await wallet().connect());
   renderWho();
   return signer();
 }
@@ -71,7 +81,8 @@ const me = async () => signer() ?? (await connectWallet());
 /** What the wallet said, in the page's words. */
 function walletMessage(error) {
   const text = String(error?.message ?? error);
-  if (/declin|reject|denied|cancel/i.test(text)) return "You declined it in the wallet. Nothing was sent.";
+  if (/just declined|ask again in a moment/i.test(text)) return "Lattice Wallet waits a few seconds after a decline. Try again in a moment.";
+  if (/declined|rejected|denied/i.test(text)) return "You declined it in the wallet. Nothing was sent.";
   if (/locked/i.test(text)) return "Unlock Lattice Wallet, then try again.";
   return text;
 }
@@ -165,7 +176,9 @@ async function send(chain, records, status = () => {}) {
     // The wallet chooses the nonce and sends the write, from and to its own node.
     await viaWallet(() => wallet().writeRecords({ chainPath: chain, actions, fee: String(cost.fee) }));
   } catch (error) {
-    throw new Error(walletMessage(error));
+    // Sent, though the node did not confirm it: it is on its way, and the
+    // landing poll decides. Calling it a failure would invite a second copy.
+    if (!/may still land/i.test(String(error?.message ?? error))) throw new Error(walletMessage(error));
   }
   return (onSlow = () => {}) => landing(chain, records, onSlow);
 }
@@ -263,7 +276,7 @@ async function loadMine(home) {
 const savingKeys = new Set();
 const saving = (records) => records.some(([key]) => savingKeys.has(key));
 
-function saveChoice(records, keepLocally, what, about = what) {
+function saveChoice(records, keepLocally, what, { about = what, kept = true } = {}) {
   if (signer() && saving(records)) {
     const message = `Your last change to ${about} is still landing. Try again once it has.`;
     // A notice behind an open dialog would go unseen: say it in the dialog.
@@ -284,8 +297,8 @@ function saveChoice(records, keepLocally, what, about = what) {
       shown.update(`Saving ${what}: waiting for a block…`);
       return land(() => shown.update(`Saving ${what}: sent, not in a block yet. It may still land.`));
     })
-    .then((landed) => (landed ? shown.close() : shown.update(`${Whats} was sent but hasn't landed. It's kept in this browser.`)))
-    .catch((error) => shown.update(`${Whats} is kept in this browser only. ${error.message}`, { bad: true }))
+    .then((landed) => (landed ? shown.close() : shown.update(`${Whats} was sent but hasn't landed yet. It may still land.`)))
+    .catch((error) => shown.update(kept ? `${Whats} is kept in this browser only. ${error.message}` : `${Whats} wasn't saved. ${error.message}`, { bad: true }))
     .finally(() => keys.forEach((key) => savingKeys.delete(key)));
   return true;
 }
@@ -356,7 +369,7 @@ function withVote(item, community) {
 }
 
 async function castVote(button) {
-  const [community, author, id] = button.dataset.target.split("|");
+  const [community, author, id] = button.dataset.target.split("|").map(decodeURIComponent);
   const key = keyOf(community, author, id);
   if ((pendingVotes.has(key) && !pendingVotes.get(key).landed) || button.getAttribute("aria-disabled") === "true") return;
   const box = button.closest("[data-votes]");
@@ -759,7 +772,9 @@ const stale = (id) => id !== renderId;
 async function render() {
   const id = ++renderId;
   const again = focusSelector();
-  route = parseRoute(location.hash);
+  // The page acts on the route it shows: the new one takes over only when it
+  // is drawn, not while its reads run under the old page.
+  const next = parseRoute(location.hash);
   const home = await stateOf(homePath()).catch(() => null);
   if (home) {
     await loadMine(home).catch(() => {});
@@ -767,6 +782,7 @@ async function render() {
     if (reader) await loadNames(home, [reader.address]).catch(() => {});
   }
   if (stale(id)) return;
+  route = next;
   renderRail();
   renderWho();
   showAside();
@@ -832,7 +848,7 @@ function toggleJoin(c) {
     store.set("left", joining ? store.get("left", []).filter((x) => x !== c) : [...new Set([...store.get("left", []), c])]);
   };
   const reader = signer();
-  if (reader) saveChoice(write.join(reader.address, c, joining), keep, joining ? `that you joined s/${c}` : `that you left s/${c}`, `joining s/${c}`);
+  if (reader) saveChoice(write.join(reader.address, c, joining), keep, joining ? `that you joined s/${c}` : `that you left s/${c}`, { about: `joining s/${c}` });
   else keep();
   render();
 }
@@ -1129,7 +1145,7 @@ $("#st-connect").onclick = () =>
   connectWallet().then(() => { renderAccount(); render(); }).catch((error) => ($("#st-status").textContent = walletMessage(error)));
 async function disconnect() {
   await wallet()?.disconnect().catch(() => {});
-  connected = null;
+  setConnected(null);
   renderAccount();
   render();
 }
@@ -1147,7 +1163,7 @@ $("#settings-form").addEventListener("submit", (event) => {
   const name = $("#st-name").value.trim();
   const reader = signer();
   if (reader && name && name !== names.get(reader.address)) {
-    if (!saveChoice(write.profile(reader.address, { name }), () => names.set(reader.address, name), "your name")) return event.preventDefault();
+    if (!saveChoice(write.profile(reader.address, { name }), () => names.set(reader.address, name), "your name", { kept: false })) return event.preventDefault();
     renderWho();
   }
   const moved = (node && node !== settings.node) || ($("#st-home").value.trim() && $("#st-home").value.trim() !== settings.home);
@@ -1196,7 +1212,7 @@ $("#acc-disconnect").onclick = () => {
 // ------------------------------------------------------------------ boot
 
 async function boot() {
-  connected = (await wallet()?.address().catch(() => null)) ?? null;
+  setConnected((await wallet()?.address().catch(() => null)) ?? null);
   try {
     communities = (await api("/api/chain/children", homePath())).directories ?? [];
   } catch (error) {

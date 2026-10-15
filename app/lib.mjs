@@ -75,7 +75,8 @@ export function ordered(node) {
 const labelText = (labels, names) => labels.map((l) => `${esc(l.label)} by ${esc(nameOf(l.by, names))}`).join(", ");
 const linkTag = (link, text) =>
   `<a class="link" href="${esc(link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(text)} ↗</a>`;
-const target = (community, author, id) => `${esc(community)}|${esc(author)}|${esc(id)}`;
+// Each part encoded: an id (free text, written by anyone) cannot add a "|".
+const target = (community, author, id) => esc([community, author, id].map(encodeURIComponent).join("|"));
 
 /**
  * Up, score, down for a post or comment. `mine` is the reader's vote (1, -1

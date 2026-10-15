@@ -133,3 +133,9 @@ test("comments read best first, then oldest first", () => {
   assert.deepEqual(tree.replies.map((r) => r.id), ["liked", "old", "new"]);
   assert.deepEqual(tree.replies[0].replies.map((r) => r.id), ["a", "b"], "no time read: oldest");
 });
+
+test("an id with a | cannot shift what a vote is for", () => {
+  const html = postRow(post({ id: "x|y" }), names, { now: NOW });
+  const targetAttr = html.match(/data-target="([^"]+)"/)[1];
+  assert.deepEqual(targetAttr.split("|").map(decodeURIComponent), ["bitcoin", "bafy-alice-address", "x|y"]);
+});
