@@ -123,11 +123,16 @@ async function submit(chain, records, status) {
 // The reader's choices: on their home chain once written there, in this
 // browser until then (or when writing them fails).
 let mine = { joined: [], follows: new Map() };
-const follows = (community) => [...new Set([...(mine.follows.get(community) ?? []), ...store.get(`follows:${community}`, [])])];
+// What the reader undid wins over the chain until the chain catches up.
+const follows = (community) => {
+  const off = store.get(`follows-off:${community}`, []);
+  return [...new Set([...(mine.follows.get(community) ?? []), ...store.get(`follows:${community}`, [])])].filter((a) => !off.includes(a));
+};
 const joinedList = () => {
   const local = store.get("joined", null);
-  if (mine.joined.length) return [...new Set([...mine.joined, ...(local ?? [])])];
-  return local ?? communities;
+  const left = store.get("left", []);
+  const list = mine.joined.length ? [...new Set([...mine.joined, ...(local ?? [])])] : local ?? communities;
+  return list.filter((c) => !left.includes(c));
 };
 
 /** Read the reader's joins and followed labels from the home chain. */
@@ -139,14 +144,15 @@ async function loadMine(home) {
   mine = { joined, follows: new Map(followed) };
 }
 
-/** Write a reader choice to the home chain; keep it in the browser if that fails. */
-async function saveChoice(records, keepLocally) {
+/**
+ * A reader choice: kept in the browser and shown at once, then written to the
+ * home chain in the background (it lands a block later). If the write fails
+ * the choice stays in the browser and the reader is told why.
+ */
+function saveChoice(records, keepLocally) {
   keepLocally();
-  try {
-    await submit(homePath(), records, () => {});
-  } catch (error) {
-    alertBox(`Kept in this browser only: ${error.message}`);
-  }
+  if (!signer()) return;
+  submit(homePath(), records, () => {}).catch((error) => alertBox(`Kept in this browser only: ${error.message}`));
 }
 
 // Profile names, read from the home chain once per address.
@@ -293,16 +299,15 @@ function showAside() {
   const me = signer();
   if (me) api(`/api/state/account/${me.address}`, chainOf(c)).then((a) => ($("#aside-balance").textContent = a.balance ?? "0")).catch(() => ($("#aside-balance").textContent = "0"));
   else $("#aside-balance").textContent = "no key";
-  $("#join").onclick = async () => {
+  $("#join").onclick = () => {
     const me = signer();
     const joining = !joinedList().includes(c);
     const keep = () => {
       const list = joinedList();
       store.set("joined", joining ? [...list, c] : list.filter((x) => x !== c));
-      if (!joining) mine.joined = mine.joined.filter((x) => x !== c);
+      store.set("left", joining ? store.get("left", []).filter((x) => x !== c) : [...new Set([...store.get("left", []), c])]);
     };
-    $("#join").disabled = true;
-    if (me) await saveChoice(write.join(me.address, c, joining), keep);
+    if (me) saveChoice(write.join(me.address, c, joining), keep);
     else keep();
     render();
   };
@@ -462,10 +467,12 @@ $("#mods").addEventListener("click", (event) => {
     const a = unfollow.dataset.unfollow;
     const keep = () => {
       store.set(`follows:${c}`, store.get(`follows:${c}`, []).filter((x) => x !== a));
-      mine.follows.set(c, (mine.follows.get(c) ?? []).filter((x) => x !== a));
+      store.set(`follows-off:${c}`, [...new Set([...store.get(`follows-off:${c}`, []), a])]);
     };
     const me = signer();
-    (me ? saveChoice(write.followModerator(me.address, c, a, false), keep) : Promise.resolve(keep())).then(() => openMods(c));
+    if (me) saveChoice(write.followModerator(me.address, c, a, false), keep);
+    else keep();
+    openMods(c);
   }
   const seg = event.target.closest("[data-label-action]");
   if (seg && event.target.tagName === "BUTTON") {
@@ -478,9 +485,14 @@ $("#mods-add-btn").onclick = () => {
   const address = $("#mods-add").value.trim();
   $("#mods-add").value = "";
   if (!address) return;
-  const keep = () => store.set(`follows:${c}`, [...new Set([...store.get(`follows:${c}`, []), address])]);
+  const keep = () => {
+    store.set(`follows:${c}`, [...new Set([...store.get(`follows:${c}`, []), address])]);
+    store.set(`follows-off:${c}`, store.get(`follows-off:${c}`, []).filter((x) => x !== address));
+  };
   const me = signer();
-  (me ? saveChoice(write.followModerator(me.address, c, address), keep) : Promise.resolve(keep())).then(() => openMods(c));
+  if (me) saveChoice(write.followModerator(me.address, c, address), keep);
+  else keep();
+  openMods(c);
 };
 $("#mods").addEventListener("close", () => {
   const label = $("#new-label")?.value.trim();
@@ -526,7 +538,7 @@ $("#settings-form").addEventListener("submit", (event) => {
   const name = $("#st-name").value.trim();
   const me = signer();
   if (me && name && name !== names.get(me.address)) {
-    saveChoice(write.profile(me.address, { name }), () => names.set(me.address, name)).then(render);
+    saveChoice(write.profile(me.address, { name }), () => names.set(me.address, name));
   }
   settings.node = $("#st-node").value.trim().replace(/\/$/, "") || settings.node;
   settings.home = $("#st-home").value.trim() || settings.home;
