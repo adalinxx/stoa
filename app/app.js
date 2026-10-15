@@ -63,6 +63,12 @@ class Unanswered extends Error {
     super("Lattice Wallet hasn't answered. If its window is still open, answer it there; if not, reload this page and try again.");
   }
 }
+/** A draft's record already holds something else: an earlier send of it landed. */
+class Landed extends Error {
+  constructor() {
+    super("An earlier send of this landed while the wallet was quiet. Send again to post this as a new one.");
+  }
+}
 /** The reader closed the dialog before the wallet was asked: nothing to say. */
 class Withdrawn extends Error {}
 
@@ -198,7 +204,9 @@ async function costOn(chain, address) {
     // account it has no record of (nothing held); any other failure is unknown.
     address ? api(`/api/state/account/${address}`, chain).catch((error) => (error.status === 404 ? {} : null)) : {},
   ]);
-  return { fee: whole(info.minRelayFee) ?? 0n, balance: account ? whole(account.balance) : null };
+  const fee = whole(info.minRelayFee);
+  if (fee === null) throw new Error("its fee isn't a whole number of coins");
+  return { fee, balance: account ? whole(account.balance) : null };
 }
 
 /**
@@ -206,7 +214,12 @@ async function costOn(chain, address) {
  * of its landing (true once every write reads back; `onSlow` after a minute
  * without it). Throws NoWallet, the no-coins message, or what the wallet said.
  */
-async function send(chain, records, status = () => {}, beforeWallet = () => true) {
+/**
+ * `fresh`: the key of a draft's record, which this write may create (or
+ * rewrite identically) but never change: if it holds something else, an
+ * earlier send landed, and Landed is thrown rather than editing it.
+ */
+async function send(chain, records, status = () => {}, beforeWallet = () => true, fresh) {
   const { address } = await me();
   status("Preparing…");
   const community = communityOf(chain);
@@ -220,8 +233,11 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
     throw new Said(community ? coinsMessage(community, address, cost.fee)
       : `Saving this to your home chain costs ${cost.fee} of its coins, and you have none there yet.`);
   }
+  const changed = await write.changes(state, records);
+  const record = fresh && changed.find((a) => a.key === fresh);
+  if (record && record.oldValue !== undefined && record.oldValue !== record.newValue) throw new Landed();
   // A key already holding its new value is no change: nothing to sign for it.
-  const actions = (await write.changes(state, records)).filter((a) => a.oldValue !== a.newValue);
+  const actions = changed.filter((a) => a.oldValue !== a.newValue);
   // Already so on the chain: nothing to sign, nothing to pay.
   if (!actions.length) return () => Promise.resolve(true);
   status("Waiting for Lattice Wallet…");
@@ -235,7 +251,7 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
       return wallet().writeRecords({ chainPath: chain, actions, fee: String(cost.fee) });
     });
   } catch (error) {
-    if (error instanceof Withdrawn) throw error;
+    if (error instanceof Withdrawn || error instanceof Unanswered) throw error;
     // Sent, though the node did not confirm it: it is on its way, and the
     // landing poll decides. Calling it a failure would invite a second copy.
     if (!/may still land/i.test(String(error?.message ?? error))) throw new Said(walletMessage(error));
@@ -988,7 +1004,7 @@ function toggleJoin(c) {
  * makes the write once the reader's address is known. A failure is said in
  * the dialog, or in a notice if it was closed anyway.
  */
-async function sendFromDialog({ status, button, build, sent = () => {}, done }) {
+async function sendFromDialog({ status, button, build, sent = () => {}, forget = () => {}, done }) {
   const dialog = button.closest("dialog");
   // This opening of the dialog: a later one (after Cancel) is not touched.
   const opening = dialog.dataset.opening;
@@ -1028,10 +1044,12 @@ async function sendFromDialog({ status, button, build, sent = () => {}, done }) 
       if (!same()) return false;
       held(true);
       return true;
-    });
+    }, made.fresh);
   } catch (error) {
     release();
     if (error instanceof Withdrawn) return;
+    // The draft's id is taken by what landed: the next send gets a new one.
+    if (error instanceof Landed) forget();
     if (!same()) {
       if (!(error instanceof NoWallet)) notice(said(error), { bad: true });
       return;
@@ -1121,6 +1139,7 @@ $("#reply-form").addEventListener("submit", async (event) => {
       return {
         chain: chainOf(community),
         records: labelling ? write.label(author, newId, on, labels, { target, body }) : write.comment(author, newId, on, { body }, target ? { parent: target } : {}),
+        fresh: `user/${author}/post/${newId}`,
         pending: { key: keyOf(community, author, newId), kind: "comment", community, author, id: newId, value, on, parent: target },
       };
     },
@@ -1128,6 +1147,7 @@ $("#reply-form").addEventListener("submit", async (event) => {
       drafts.delete(draftKey);
       draftIds.delete(draftKey);
     },
+    forget: () => draftIds.delete(draftKey),
     done: () => {
       $("#reply").close();
       redraw();
@@ -1235,14 +1255,15 @@ $("#new-form").addEventListener("submit", async (event) => {
   await sendFromDialog({
     status, button: $("#np-post"),
     build: (author) => {
-      const id = draftId("new-post");
+      const id = draftId(`new-post:${community}`);
       made = { author, id };
-      return { chain: chainOf(community), records: write.post(author, id, value), pending: { key: keyOf(community, author, id), kind: "post", community, author, id, value } };
+      return { chain: chainOf(community), records: write.post(author, id, value), fresh: `user/${author}/post/${id}`, pending: { key: keyOf(community, author, id), kind: "post", community, author, id, value } };
     },
     sent: () => {
       $("#new-form").reset();
-      draftIds.delete("new-post");
+      draftIds.delete(`new-post:${community}`);
     },
+    forget: () => draftIds.delete(`new-post:${community}`),
     done: () => {
       $("#new").close();
       location.hash = postHref(community, made.author, made.id);
