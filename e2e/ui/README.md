@@ -12,8 +12,10 @@ Connect wallet, and every approval window the wallet opens is answered
 (Connect or Sign, or Decline where a test says so) and counted.
 
 Covered: the community list; a visitor without the wallet told to install
-it; the no-coins message (no faucet); a write declined in the wallet not
-sent; posting a
+it (keeping their draft, and when they vote); the no-coins message before
+writing (no faucet); a write declined in the wallet not sent; a community the
+node does not serve shown as such, not as empty; writes shown at once as
+pending and settling when their block lands; posting a
 link post and reading it back in its thread and the feed; nested comments;
 voting and taking a vote back; a display name written to the home chain and
 seen by another reader; labels hiding a post only for a reader who follows
