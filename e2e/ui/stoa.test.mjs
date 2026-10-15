@@ -45,6 +45,9 @@ async function walletBrowser() {
     headless: false,
     args: ["--headless=new", `--disable-extensions-except=${walletInstalled}`, `--load-extension=${walletInstalled}`],
   });
+  // The wallet's address, read while its worker runs (Chrome stops an idle one).
+  const [worker] = context.serviceWorkers().length ? context.serviceWorkers() : [await context.waitForEvent("serviceworker")];
+  context.walletOrigin = new URL(worker.url()).origin;
   context.approvals = 0;
   context.nonces = []; // the Nonce row of each write signed, as the wallet showed it
   context.on("page", async (opened) => {

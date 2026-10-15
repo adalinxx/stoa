@@ -80,9 +80,9 @@ const walletsSetUp = new WeakSet();
 /** The browser's Lattice Wallet holds `who`'s key, as if they imported it. */
 async function walletHolds(context, who) {
   if (walletsSetUp.has(context)) return;
-  const [worker] = context.serviceWorkers().length ? context.serviceWorkers() : [await context.waitForEvent("serviceworker")];
   const page = await context.newPage();
-  await page.goto(new URL("/popup/index.html", worker.url()).href);
+  // A message from the wallet's own page wakes its worker.
+  await page.goto(`${context.walletOrigin}/popup/index.html`);
   const created = await page.evaluate((privHex) => chrome.runtime.sendMessage({ type: "createWallet", password: "stoa-test", privHex }), who.keyHex);
   // Their node is the stack's: chosen for Nexus, as in the wallet's Connection settings.
   await page.evaluate(async (url) => {
