@@ -57,6 +57,12 @@ const signer = () => (connected ? { address: connected } : null);
 /** An error already in the page's words (its text may hold a community name). */
 class Said extends Error {}
 const said = (error) => (error instanceof Said ? error.message : walletMessage(error));
+/** The wallet went quiet: the write may yet be signed in a window still open. */
+class Unanswered extends Error {
+  constructor() {
+    super("Lattice Wallet hasn't answered. If its window is still open, answer it there; if not, reload this page and try again.");
+  }
+}
 /** The reader closed the dialog before the wallet was asked: nothing to say. */
 class Withdrawn extends Error {}
 
@@ -106,7 +112,7 @@ const DECLINE_PAUSE = 5500;
 // site, so trying again cannot send it twice.
 const WALLET_SILENCE = 5 * 60_000;
 const answered = (asked) => Promise.race([asked, new Promise((_, reject) =>
-  setTimeout(() => reject(new Error("Lattice Wallet hasn't answered. If its window is still open, answer it there; if not, reload this page and try again.")), WALLET_SILENCE))]);
+  setTimeout(() => reject(new Unanswered()), WALLET_SILENCE))]);
 function viaWallet(ask) {
   const run = walletTurn.then(() => answered(ask()), () => answered(ask()));
   walletTurn = run.then(() => {}, (error) =>
@@ -161,6 +167,13 @@ async function timesOf(state) {
 
 const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(homePath().length).join("/") : null);
 
+/** An amount from the node as a whole number of coins (missing is 0), or null if it isn't one. */
+function whole(value) {
+  if (value === undefined || value === null) return 0n;
+  if (typeof value === "number" ? !Number.isSafeInteger(value) || value < 0 : !/^\d+$/.test(String(value))) return null;
+  return BigInt(value);
+}
+
 /**
  * What `address` holds on `chain`, or null when it can't be told. The node
  * answers 404 both for an account it has no record of (0) and for a chain it
@@ -173,11 +186,7 @@ async function balanceOn(chain, address) {
     return null;
   }
   return api(`/api/state/account/${address}`, chain).then((a) => {
-    try {
-      return BigInt(a.balance ?? 0);
-    } catch {
-      return null; // not a whole number: nothing to show
-    }
+    return whole(a.balance);
   }, (error) => (error.status === 404 ? 0n : null));
 }
 
@@ -189,7 +198,7 @@ async function costOn(chain, address) {
     // account it has no record of (nothing held); any other failure is unknown.
     address ? api(`/api/state/account/${address}`, chain).catch((error) => (error.status === 404 ? {} : null)) : {},
   ]);
-  return { fee: BigInt(info.minRelayFee ?? 0), balance: account ? BigInt(account.balance ?? 0) : null };
+  return { fee: whole(info.minRelayFee) ?? 0n, balance: account ? whole(account.balance) : null };
 }
 
 /**
@@ -369,8 +378,9 @@ let nameRedraw = null;
 const nameArrived = () => {
   clearTimeout(nameRedraw);
   nameRedraw = setTimeout(() => {
-    redraw();
+    const again = focusSelector();
     renderWho();
+    redraw(again);
   }, 300);
 };
 async function loadNames(addresses) {
@@ -477,7 +487,7 @@ async function castVote(button) {
     if (error instanceof Withdrawn || !mine()) return;
     pendingVotes.delete(key);
     if (error instanceof NoWallet) return needWallet("Voting is signed by your key, so it needs the wallet.");
-    const message = `Vote not counted. ${said(error)}`;
+    const message = error instanceof Unanswered ? error.message : `Vote not counted. ${said(error)}`;
     // Shown until the reader leaves this page or votes here again.
     itemErrors.set(key, { message, untilNavigation: true });
     announce(message);
@@ -1056,6 +1066,14 @@ async function sendFromDialog({ status, button, build, sent = () => {}, done }) 
 }
 
 const drafts = new Map();
+// A draft keeps one record id until it is sent, so sending it again (after a
+// wallet that went quiet, then signed the first) rewrites the same record
+// instead of adding a second copy.
+const draftIds = new Map(); // draft key → id
+const draftId = (key) => {
+  if (!draftIds.has(key)) draftIds.set(key, write.newId());
+  return draftIds.get(key);
+};
 let replyTarget = null;
 const KNOWN_LABELS = ["spam", "off-topic", "nsfw", "low-effort"];
 function openReply(target, labelling) {
@@ -1099,14 +1117,17 @@ $("#reply-form").addEventListener("submit", async (event) => {
   await sendFromDialog({
     status, button: $("#rp-send"),
     build: (author) => {
-      const newId = write.newId();
+      const newId = draftId(draftKey);
       return {
         chain: chainOf(community),
         records: labelling ? write.label(author, newId, on, labels, { target, body }) : write.comment(author, newId, on, { body }, target ? { parent: target } : {}),
         pending: { key: keyOf(community, author, newId), kind: "comment", community, author, id: newId, value, on, parent: target },
       };
     },
-    sent: () => drafts.delete(draftKey),
+    sent: () => {
+      drafts.delete(draftKey);
+      draftIds.delete(draftKey);
+    },
     done: () => {
       $("#reply").close();
       redraw();
@@ -1214,11 +1235,14 @@ $("#new-form").addEventListener("submit", async (event) => {
   await sendFromDialog({
     status, button: $("#np-post"),
     build: (author) => {
-      const id = write.newId();
+      const id = draftId("new-post");
       made = { author, id };
       return { chain: chainOf(community), records: write.post(author, id, value), pending: { key: keyOf(community, author, id), kind: "post", community, author, id, value } };
     },
-    sent: () => $("#new-form").reset(),
+    sent: () => {
+      $("#new-form").reset();
+      draftIds.delete("new-post");
+    },
     done: () => {
       $("#new").close();
       location.hash = postHref(community, made.author, made.id);
