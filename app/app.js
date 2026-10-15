@@ -101,12 +101,12 @@ let walletTurn = Promise.resolve();
 // request waits that out rather than failing at once.
 const DECLINE_PAUSE = 5500;
 // A wallet that never answers (reloaded or updated under an open page) must
-// not hold a dialog, or every later write, forever. Silence is not a "no":
-// the window may still be open and signed later, so the write is treated as
-// on its way ("may still land", see send) and the landing poll decides.
+// not hold a dialog, or every later write, forever. The draft is kept: while
+// an old window is still open the wallet refuses a second request from the
+// site, so trying again cannot send it twice.
 const WALLET_SILENCE = 5 * 60_000;
 const answered = (asked) => Promise.race([asked, new Promise((_, reject) =>
-  setTimeout(() => reject(new Error("Lattice Wallet hasn't answered; if you approve it there, it may still land.")), WALLET_SILENCE))]);
+  setTimeout(() => reject(new Error("Lattice Wallet hasn't answered. If its window is still open, answer it there; if not, reload this page and try again.")), WALLET_SILENCE))]);
 function viaWallet(ask) {
   const run = walletTurn.then(() => answered(ask()), () => answered(ask()));
   walletTurn = run.then(() => {}, (error) =>
@@ -172,7 +172,13 @@ async function balanceOn(chain, address) {
   } catch {
     return null;
   }
-  return api(`/api/state/account/${address}`, chain).then((a) => BigInt(a.balance ?? 0), (error) => (error.status === 404 ? 0n : null));
+  return api(`/api/state/account/${address}`, chain).then((a) => {
+    try {
+      return BigInt(a.balance ?? 0);
+    } catch {
+      return null; // not a whole number: nothing to show
+    }
+  }, (error) => (error.status === 404 ? 0n : null));
 }
 
 /** What writing on `chain` costs the reader, and what they hold there. */
@@ -358,6 +364,15 @@ const names = new Map();
 // failed to read is dropped so a later render tries again; a change of node
 // or Moniker chain starts a new set, and older lookups write nothing.
 let lookups = new Map(); // address → Promise
+// Names that come in after a render stopped waiting are drawn in one redraw.
+let nameRedraw = null;
+const nameArrived = () => {
+  clearTimeout(nameRedraw);
+  nameRedraw = setTimeout(() => {
+    redraw();
+    renderWho();
+  }, 300);
+};
 async function loadNames(addresses) {
   const set = lookups;
   const wanted = [...new Set(addresses)].filter((a) => !set.has(a));
@@ -365,12 +380,18 @@ async function loadNames(addresses) {
     const moniker = stateOf(settings.moniker.split("/"));
     for (const a of wanted) {
       set.set(a, moniker.then((state) => cardName(state, a)).then(
-        (name) => name && set === lookups && names.set(a, name),
+        (name) => {
+          if (!name || set !== lookups) return;
+          names.set(a, name);
+          nameArrived();
+        },
         () => set.delete(a),
       ));
     }
   }
-  await Promise.all([...new Set(addresses)].map((a) => set.get(a)));
+  // A render waits for its names a moment at most: they are a nicety, and one
+  // stalled read must not hold every page that shows that author.
+  await Promise.race([Promise.all([...new Set(addresses)].map((a) => set.get(a))), new Promise((resolve) => setTimeout(resolve, 2000))]);
 }
 const labelActions = () => store.get("labelActions", { spam: "hide", nsfw: "blur", "off-topic": "collapse" });
 let showAll = false;
