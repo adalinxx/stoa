@@ -47,7 +47,15 @@ export const pathHTML = (path) => path.map(esc).join("/<wbr>");
 
 /** `#/`, `#/s/<community>`, `#/s/<community>/<author>/<id>`. */
 export function parseRoute(hash) {
-  const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+  // A malformed escape (a hand-edited link) is taken as written, not thrown.
+  const decode = (part) => {
+    try {
+      return decodeURIComponent(part);
+    } catch {
+      return part;
+    }
+  };
+  const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decode);
   if (parts[0] === "s" && parts.length >= 4) return { view: "post", community: parts[1], author: parts[2], id: parts[3] };
   if (parts[0] === "s" && parts[1]) return { view: "community", community: parts[1] };
   return { view: "home" };

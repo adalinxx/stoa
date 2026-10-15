@@ -180,7 +180,8 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
     throw new Said(community ? coinsMessage(community, address, cost.fee)
       : `Saving this to your home chain costs ${cost.fee} of its coins, and you have none there yet.`);
   }
-  const actions = await write.changes(state, records);
+  // A key already holding its new value is no change: nothing to sign for it.
+  const actions = (await write.changes(state, records)).filter((a) => a.oldValue !== a.newValue);
   // Already so on the chain: nothing to sign, nothing to pay.
   if (!actions.length) return () => Promise.resolve(true);
   status("Waiting for Lattice Wallet…");
@@ -333,9 +334,11 @@ function saveChoice(records, keepLocally, what, { about = what, kept = true, und
 
 // Profile names, read from the home chain once per address.
 const names = new Map();
+const profiles = new Map(); // address → the profile as read, so a name change keeps the rest
 async function loadNames(home, addresses) {
   await Promise.all([...new Set(addresses)].filter((a) => !names.has(a)).map(async (a) => {
     const profile = await read.profile(home, a).catch(() => undefined);
+    if (profile) profiles.set(a, profile);
     if (typeof profile?.name === "string" && profile.name.trim()) names.set(a, profile.name.trim().slice(0, 40));
   }));
 }
@@ -477,11 +480,15 @@ function renderRail() {
 
 function renderWho() {
   const reader = signer();
-  $("#who").innerHTML = reader
+  const html = reader
     ? `<button class="btn" type="button" id="account-btn" popovertarget="account" title="${esc(reader.address)}"><span class="account-name">${esc(nameOf(reader.address, names))}</span><span aria-hidden="true">▾</span></button>`
     : wallet()
       ? '<button class="btn" type="button" id="connect">Connect wallet</button>'
       : '<button class="btn" type="button" id="get-wallet">Get wallet</button>';
+  // Unchanged, it is left as is: an open account menu keeps its button.
+  if ($("#who").dataset.html === html) return;
+  $("#who").dataset.html = html;
+  $("#who").innerHTML = html;
   $("#connect")?.addEventListener("click", () =>
     connectWallet().then(render).catch((error) => notice(`Not connected. ${walletMessage(error)}`, { bad: true })));
   $("#get-wallet")?.addEventListener("click", () => needWallet());
@@ -716,7 +723,8 @@ function focusIn(el) {
   if (!el || el === document.body || !$(".app").contains(el)) return null;
   const by = (attr) => `[${attr}="${CSS.escape(el.getAttribute(attr))}"]`;
   if (el.dataset.vote) return `${by("data-vote")}${by("data-target")}`;
-  for (const attr of ["data-reply", "data-label", "data-reveal", "data-follow", "data-sort", "data-mods", "data-join"]) {
+  if (el.tagName === "SUMMARY") return "summary";
+  for (const attr of ["data-reply", "data-label", "data-reveal", "data-follow", "data-sort", "data-mods", "data-join", "data-connect-or-get", "data-cid"]) {
     if (el.hasAttribute(attr)) return `${el.tagName.toLowerCase()}${by(attr)}`;
   }
   if (el.id) return `#${CSS.escape(el.id)}`;
@@ -763,7 +771,7 @@ function mediaFile(cid, community) {
 }
 const mediaTag = ({ kind, url }, cid, blur) => {
   const blurred = blur && !unblurred.has(cid);
-  const attrs = `class="media${blurred ? " blur" : ""}" data-cid="${esc(cid)}" src="${url}"${blurred ? ' title="Tap to show" data-unblur' : ""}`;
+  const attrs = `class="media${blurred ? " blur" : ""}" data-cid="${esc(cid)}" src="${url}"${blurred ? ' title="Tap to show" data-unblur tabindex="0" role="button" aria-label="Blurred: show it"' : ""}`;
   return kind === "video" ? `<video ${attrs} controls></video>` : `<img ${attrs} alt="">`;
 };
 const settled = new Map(); // cid → { kind, url } once read, for drawing without a wait
@@ -810,9 +818,11 @@ function showAside() {
     <dl class="kv"><dt>Your coins</dt><dd id="aside-balance">${signer() ? "…" : `<button class="linkish" type="button" data-connect-or-get>Connect to see</button>`}</dd>
     <dt>Labels</dt><dd>${n ? `you follow ${plural(n, "account")}` : "you follow no one"} · <button class="linkish" type="button" data-mods="${esc(c)}">Manage</button></dd></dl>
     <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></details></div>`;
-  api("/api/chain/info", chainOf(c)).then((i) => ($("#aside-height").textContent = i.height ?? "starting")).catch(() => ($("#aside-height").textContent = "not served by this node"));
+  // Each read fills only the aside it was made for.
+  const height = $("#aside-height"), balance = $("#aside-balance");
+  api("/api/chain/info", chainOf(c)).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
   const reader = signer();
-  if (reader) api(`/api/state/account/${reader.address}`, chainOf(c)).then((a) => ($("#aside-balance").textContent = a.balance ?? "0")).catch(() => ($("#aside-balance").textContent = "0"));
+  if (reader) api(`/api/state/account/${reader.address}`, chainOf(c)).then((a) => (balance.textContent = a.balance ?? "0")).catch(() => (balance.textContent = "0"));
 }
 
 // Renders overlap (a navigation while the last one still reads the node);
@@ -871,7 +881,7 @@ document.addEventListener("click", async (event) => {
   } else if (el.hasAttribute("data-unblur")) {
     unblurred.add(el.dataset.cid);
     el.classList.remove("blur");
-    el.removeAttribute("data-unblur");
+    for (const attr of ["data-unblur", "role", "aria-label", "title"]) el.removeAttribute(attr);
   } else if (el.dataset.vote) {
     castVote(el);
   } else if (el.dataset.reply || el.dataset.label) {
@@ -922,9 +932,12 @@ async function sendFromDialog({ status, button, build, sent = () => {}, done }) 
   // This opening of the dialog: a later one (after Cancel) is not touched.
   const opening = dialog.dataset.opening;
   const same = () => dialog.open && dialog.dataset.opening === opening;
+  // The write is built from the fields at the click: they lock with the
+  // button, so no edit made meanwhile is silently left out.
   const busy = (on) => {
     dialog.toggleAttribute("data-busy", on);
     button.disabled = on;
+    dialog.querySelectorAll("input, textarea, select").forEach((field) => (field.disabled = on));
   };
   // Held (Cancel and Escape too) only while the wallet is asked; until then
   // the reader may still cancel, and nothing is sent if they do.
@@ -1095,6 +1108,7 @@ function opened(dialog) {
   dialog.removeAttribute("data-sending");
   dialog.querySelectorAll("[data-close]").forEach((b) => (b.disabled = false));
   dialog.querySelector(".btn.primary").disabled = false;
+  dialog.querySelectorAll("input, textarea, select").forEach((field) => (field.disabled = false));
 }
 
 function openNewPost() {
@@ -1268,7 +1282,7 @@ $("#settings-form").addEventListener("submit", (event) => {
   if (reader && name && name !== names.get(reader.address)) {
     const before = names.get(reader.address);
     const undo = () => (before === undefined ? names.delete(reader.address) : names.set(reader.address, before));
-    if (!saveChoice(write.profile(reader.address, { name }), () => names.set(reader.address, name), "your name", { kept: false, undo })) return event.preventDefault();
+    if (!saveChoice(write.profile(reader.address, { ...(profiles.get(reader.address) ?? {}), name }), () => names.set(reader.address, name), "your name", { kept: false, undo })) return event.preventDefault();
     renderWho();
   }
   const moved = (node && node !== settings.node) || ($("#st-home").value.trim() && $("#st-home").value.trim() !== settings.home);
@@ -1308,6 +1322,8 @@ $("#acc-copy").onclick = async () => {
 $("#acc-settings").onclick = () => {
   $("#account").hidePopover();
   openSettings();
+  // Opened from the account menu: focus returns to its button.
+  $("#settings").dataset.from = "#who #account-btn";
 };
 $("#acc-disconnect").onclick = () => {
   $("#account").hidePopover();
@@ -1333,6 +1349,13 @@ async function boot() {
   render();
 }
 let navigated = false;
+// Blurred media is a button to the keyboard too.
+document.addEventListener("keydown", (event) => {
+  if ((event.key === "Enter" || event.key === " ") && event.target.hasAttribute?.("data-unblur")) {
+    event.preventDefault();
+    event.target.click();
+  }
+});
 window.addEventListener("hashchange", () => {
   for (const [key, error] of itemErrors) if (error.untilNavigation) itemErrors.delete(key);
   navigated = true;

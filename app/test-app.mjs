@@ -23,6 +23,7 @@ test("routes", () => {
   assert.deepEqual(parseRoute(""), { view: "home" });
   assert.deepEqual(parseRoute("#/s/bitcoin"), { view: "community", community: "bitcoin" });
   assert.deepEqual(parseRoute("#/s/bitcoin/bafy%2Fx/p1"), { view: "post", community: "bitcoin", author: "bafy/x", id: "p1" });
+  assert.deepEqual(parseRoute("#/s/bit%E0coin"), { view: "community", community: "bit%E0coin" }, "a malformed escape does not throw");
 });
 
 test("times and names", () => {
@@ -116,7 +117,7 @@ test("a post or comment waiting for its block says so and can't be voted on yet"
   const html = postRow(post({ pending: "waiting" }), names, { now: NOW });
   assert.match(html, /class="post pending"/);
   assert.match(html, /Waiting for a block/);
-  assert.match(html, /data-vote="1"[^>]*disabled/);
+  assert.match(html, /data-vote="1"[^>]*\sdisabled[\s>]/);
   assert.match(postRow(post({ pending: "slow" }), names, { now: NOW }), /It may still land/);
   const comment = commentNode({ author: "bafy-alice-address", id: "c9", body: "hi", labels: [], ups: 0, downs: 0, replies: [], pending: "waiting" }, "bitcoin", judge(new Map(), {}), [], names, NOW);
   assert.match(comment, /Waiting for a block/);
