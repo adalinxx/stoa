@@ -124,13 +124,14 @@ body to sign and send to `POST /transactions`.
 ## Chains
 
 `chain/spec.json` is the spec every Stoa chain is created from; it names the
-policy module by CID. A node hosts the home chain and a community with:
+policy module by CID, and `chain/stoa_policy.wasm` is that module, built from
+`policy/` (rebuild and replace both when the policy changes). A node hosts the home chain and a community with:
 
 ```sh
 lattice child create Nexus/stoa --spec chain/spec.json \
-  --policy-module policy/target/wasm32-unknown-unknown/release/stoa_policy.wasm
+  --policy-module chain/stoa_policy.wasm
 lattice child create Nexus/stoa/bitcoin --spec chain/spec.json \
-  --policy-module policy/target/wasm32-unknown-unknown/release/stoa_policy.wasm
+  --policy-module chain/stoa_policy.wasm
 ```
 
 ## Tests
@@ -148,6 +149,9 @@ cd host-check && swift run host-check \
 
 `host-check` replays every policy test through Lattice's own evaluator and
 prints the module CID.
+
+`e2e/ui/` drives the real page in headless Chromium against a private stack;
+see `e2e/ui/README.md`.
 
 `e2e/run.mjs` runs Stoa on two real nodes: the author's host mines the home
 chain and a community, people post, comment, vote, label and report through
