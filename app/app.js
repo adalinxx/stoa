@@ -181,12 +181,19 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
       : `Saving this to your home chain costs ${cost.fee} of its coins, and you have none there yet.`);
   }
   const actions = await write.changes(state, records);
-  if (!beforeWallet()) throw new Withdrawn();
-  status("Approve it in Lattice Wallet…");
+  // Already so on the chain: nothing to sign, nothing to pay.
+  if (!actions.length) return () => Promise.resolve(true);
+  status("Waiting for Lattice Wallet…");
   try {
     // The wallet chooses the nonce and sends the write, from and to its own node.
-    await viaWallet(() => wallet().writeRecords({ chainPath: chain, actions, fee: String(cost.fee) }));
+    // Held, and asked, only when it is this write's turn in the wallet.
+    await viaWallet(() => {
+      if (!beforeWallet()) throw new Withdrawn();
+      status("Approve it in Lattice Wallet…");
+      return wallet().writeRecords({ chainPath: chain, actions, fee: String(cost.fee) });
+    });
   } catch (error) {
+    if (error instanceof Withdrawn) throw error;
     // Sent, though the node did not confirm it: it is on its way, and the
     // landing poll decides. Calling it a failure would invite a second copy.
     if (!/may still land/i.test(String(error?.message ?? error))) throw new Said(walletMessage(error));
@@ -292,9 +299,12 @@ function saveChoice(records, keepLocally, what, { about = what, kept = true, und
     const message = `Your last change to ${about} is still landing. Try again once it has.`;
     // A notice behind an open dialog would go unseen: say it in the dialog.
     const inDialog = document.querySelector("dialog[open] .status");
-    if (inDialog) inDialog.textContent = message;
-    else notice(message);
-    announce(message);
+    if (inDialog) {
+      inDialog.textContent = message;
+      announce(message);
+    } else {
+      notice(message);
+    }
     return false;
   }
   keepLocally();
@@ -738,7 +748,12 @@ function mediaFile(cid, community) {
       if (typeof file?.type !== "string" || !MEDIA_TYPES.test(file.type) || !(file.bytes instanceof Uint8Array) || file.bytes.length > 8 << 20) return { unsupported: true };
       return { kind: file.type.startsWith("video/") ? "video" : "img", url: URL.createObjectURL(new Blob([file.bytes], { type: file.type })) };
     })().catch(() => {
-      media.delete(cid); // a node may serve it later
+      // Not served now; asked again after a while, not on every redraw.
+      unserved.add(cid);
+      setTimeout(() => {
+        media.delete(cid);
+        unserved.delete(cid);
+      }, 60_000);
       return null;
     }));
   }
@@ -750,6 +765,11 @@ const mediaTag = ({ kind, url }, cid, blur) => {
   return kind === "video" ? `<video ${attrs} controls></video>` : `<img ${attrs} alt="">`;
 };
 const settled = new Map(); // cid → { kind, url } once read, for drawing without a wait
+const unserved = new Set(); // CIDs no node served on the last try
+const notServed = (slot) => {
+  slot.textContent = "No one is serving this file right now.";
+  slot.removeAttribute("data-media");
+};
 /** Fill media slots from any node that serves the Volume; checked by CID. */
 async function loadMedia() {
   const slots = [...document.querySelectorAll("[data-media]")];
@@ -757,11 +777,13 @@ async function loadMedia() {
   for (const slot of slots) {
     const file = settled.get(slot.dataset.media);
     if (file) slot.outerHTML = mediaTag(file, slot.dataset.media, slot.dataset.blur === "1");
+    else if (unserved.has(slot.dataset.media)) notServed(slot);
   }
-  for (const slot of slots.filter((s) => s.isConnected)) {
+  // The rest are read side by side, each filled as it arrives.
+  await Promise.all(slots.filter((s) => s.isConnected && s.dataset.media).map(async (slot) => {
     const cid = slot.dataset.media;
     const file = await mediaFile(cid, slot.dataset.chain);
-    if (!slot.isConnected) continue;
+    if (!slot.isConnected) return;
     if (file?.unsupported) {
       slot.textContent = "This file isn't an image or video this page shows.";
       slot.removeAttribute("data-media");
@@ -769,10 +791,9 @@ async function loadMedia() {
       settled.set(cid, file);
       slot.outerHTML = mediaTag(file, cid, slot.dataset.blur === "1");
     } else {
-      slot.textContent = "No one is serving this file right now.";
-      slot.removeAttribute("data-media");
+      notServed(slot);
     }
-  }
+  }));
 }
 
 function showAside() {
@@ -799,7 +820,6 @@ const stale = (id) => id !== renderId;
 
 async function render() {
   const id = ++renderId;
-  const again = focusSelector();
   // The page acts on the route it shows: the new one takes over only when it
   // is drawn, not while its reads run under the old page.
   const next = parseRoute(location.hash);
@@ -811,6 +831,7 @@ async function render() {
   }
   if (stale(id)) return;
   route = next;
+  const again = focusSelector();
   renderRail();
   renderWho();
   showAside();

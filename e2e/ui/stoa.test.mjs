@@ -149,6 +149,8 @@ test("a funded poster posts a link; it lands and reads back in its thread and th
   await newPost(page, { title: "The whitepaper", link: "https://bitcoin.org/bitcoin.pdf", body: "Worth a reread." });
   await expect(page).toHaveURL(new RegExp(`#/s/${community}/${poster.address}/`));
   postURL = page.url();
+  // Read back from the chain, not the page's own pending copy.
+  await landed(page);
   await expect(page.locator(".op h1")).toHaveText("The whitepaper");
   await expect(page.locator(".op .link")).toHaveAttribute("href", "https://bitcoin.org/bitcoin.pdf");
   await expect(page.locator(".op .body")).toHaveText("Worth a reread.");
