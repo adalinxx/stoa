@@ -52,6 +52,12 @@ let connected = null;
 const wallet = () => window.lattice ?? null;
 const signer = () => (connected ? { address: connected } : null);
 
+/** An error already in the page's words (its text may hold a community name). */
+class Said extends Error {}
+const said = (error) => (error instanceof Said ? error.message : walletMessage(error));
+/** The reader closed the dialog before the wallet was asked: nothing to say. */
+class Withdrawn extends Error {}
+
 class NoWallet extends Error {
   constructor() {
     super("This needs Lattice Wallet.");
@@ -89,9 +95,13 @@ function walletMessage(error) {
 
 // The wallet takes one request from a page at a time: writes wait their turn.
 let walletTurn = Promise.resolve();
+// After a decline the wallet turns the site away for a few seconds: the next
+// request waits that out rather than failing at once.
+const DECLINE_PAUSE = 5500;
 function viaWallet(ask) {
   const run = walletTurn.then(ask, ask);
-  walletTurn = run.catch(() => {});
+  walletTurn = run.then(() => {}, (error) =>
+    /declined/i.test(String(error?.message ?? error)) ? new Promise((resolve) => setTimeout(resolve, DECLINE_PAUSE)) : undefined);
   return run;
 }
 
@@ -156,7 +166,7 @@ async function costOn(chain, address) {
  * of its landing (true once every write reads back; `onSlow` after a minute
  * without it). Throws NoWallet, the no-coins message, or what the wallet said.
  */
-async function send(chain, records, status = () => {}) {
+async function send(chain, records, status = () => {}, beforeWallet = () => true) {
   const { address } = await me();
   status("Preparing…");
   const community = communityOf(chain);
@@ -164,13 +174,14 @@ async function send(chain, records, status = () => {}) {
   try {
     [state, cost] = await Promise.all([stateOf(chain), costOn(chain, address)]);
   } catch (error) {
-    throw new Error(readFailure(error, community));
+    throw new Said(readFailure(error, community));
   }
   if (cost.fee > 0n && cost.balance < cost.fee) {
-    throw new Error(community ? coinsMessage(community, address, cost.fee)
+    throw new Said(community ? coinsMessage(community, address, cost.fee)
       : `Saving this to your home chain costs ${cost.fee} of its coins, and you have none there yet.`);
   }
   const actions = await write.changes(state, records);
+  if (!beforeWallet()) throw new Withdrawn();
   status("Approve it in Lattice Wallet…");
   try {
     // The wallet chooses the nonce and sends the write, from and to its own node.
@@ -178,7 +189,7 @@ async function send(chain, records, status = () => {}) {
   } catch (error) {
     // Sent, though the node did not confirm it: it is on its way, and the
     // landing poll decides. Calling it a failure would invite a second copy.
-    if (!/may still land/i.test(String(error?.message ?? error))) throw new Error(walletMessage(error));
+    if (!/may still land/i.test(String(error?.message ?? error))) throw new Said(walletMessage(error));
   }
   return (onSlow = () => {}) => landing(chain, records, onSlow);
 }
@@ -276,7 +287,7 @@ async function loadMine(home) {
 const savingKeys = new Set();
 const saving = (records) => records.some(([key]) => savingKeys.has(key));
 
-function saveChoice(records, keepLocally, what, { about = what, kept = true } = {}) {
+function saveChoice(records, keepLocally, what, { about = what, kept = true, undo = () => {} } = {}) {
   if (signer() && saving(records)) {
     const message = `Your last change to ${about} is still landing. Try again once it has.`;
     // A notice behind an open dialog would go unseen: say it in the dialog.
@@ -298,7 +309,13 @@ function saveChoice(records, keepLocally, what, { about = what, kept = true } = 
       return land(() => shown.update(`Saving ${what}: sent, not in a block yet. It may still land.`));
     })
     .then((landed) => (landed ? shown.close() : shown.update(`${Whats} was sent but hasn't landed yet. It may still land.`)))
-    .catch((error) => shown.update(kept ? `${Whats} is kept in this browser only. ${error.message}` : `${Whats} wasn't saved. ${error.message}`, { bad: true }))
+    .catch((error) => {
+      if (!kept) {
+        undo();
+        renderWho();
+      }
+      shown.update(kept ? `${Whats} is kept in this browser only. ${said(error)}` : `${Whats} wasn't saved. ${said(error)}`, { bad: true });
+    })
     .finally(() => keys.forEach((key) => savingKeys.delete(key)));
   return true;
 }
@@ -376,6 +393,9 @@ async function castVote(button) {
   const current = box.querySelector('[aria-pressed="true"]');
   const direction = current === button ? 0 : Number(button.dataset.vote);
   itemErrors.delete(key);
+  // What follows belongs to this account: a switch meanwhile drops it.
+  const owner = connected;
+  const mine = () => connected === owner;
   let land;
   try {
     // Connect first if needed: the wallet asks within this click. The page
@@ -391,16 +411,18 @@ async function castVote(button) {
   } catch (error) {
     pendingVotes.delete(key);
     if (error instanceof NoWallet) return needWallet("Voting is signed by your key, so it needs the wallet.");
-    const message = `Vote not counted. ${walletMessage(error)}`;
+    const message = `Vote not counted. ${said(error)}`;
     // Shown until the reader leaves this page or votes here again.
     itemErrors.set(key, { message, untilNavigation: true });
     announce(message);
     return redraw();
   }
   const landed = await land(() => {
+    if (!mine()) return;
     itemErrors.set(key, { message: "Your vote is taking a while to land.", direction });
     redraw();
   });
+  if (!mine()) return;
   if (landed) {
     pendingVotes.set(key, { direction, landed: true });
     itemErrors.delete(key);
@@ -673,6 +695,12 @@ function drawThread() {
  * it, or null. Writes land in the background, so redraws come at any time.
  */
 function focusSelector(el = document.activeElement) {
+  const found = focusIn(el);
+  // Within the region it was in, so an aside button is not taken for its twin in the title bar.
+  const region = el?.closest?.("#aside, #main, #who, nav.rail");
+  return found && region ? `${region.id ? `#${region.id}` : "nav.rail"} ${found}` : found;
+}
+function focusIn(el) {
   if (!el || el === document.body || !$(".app").contains(el)) return null;
   const by = (attr) => `[${attr}="${CSS.escape(el.getAttribute(attr))}"]`;
   if (el.dataset.vote) return `${by("data-vote")}${by("data-target")}`;
@@ -863,41 +891,66 @@ function toggleJoin(c) {
  */
 async function sendFromDialog({ status, button, build, done }) {
   const dialog = button.closest("dialog");
-  const sending = (on) => {
-    dialog.toggleAttribute("data-sending", on);
+  // This opening of the dialog: a later one (after Cancel) is not touched.
+  const opening = dialog.dataset.opening;
+  const same = () => dialog.open && dialog.dataset.opening === opening;
+  const busy = (on) => {
+    dialog.toggleAttribute("data-busy", on);
     button.disabled = on;
+  };
+  // Held (Cancel and Escape too) only while the wallet is asked; until then
+  // the reader may still cancel, and nothing is sent if they do.
+  const held = (on) => {
+    dialog.toggleAttribute("data-sending", on);
     dialog.querySelectorAll("[data-close]").forEach((b) => (b.disabled = on));
   };
-  sending(true);
+  const release = () => {
+    if (dialog.dataset.opening !== opening) return;
+    busy(false);
+    held(false);
+  };
+  busy(true);
   status.classList.remove("bad");
   let land, pending;
   try {
     const reader = await me().catch((error) => {
       if (error instanceof NoWallet) return null;
-      throw new Error(walletMessage(error));
+      throw new Said(walletMessage(error));
     });
     const made = build(reader?.address ?? "");
     pending = made.pending;
-    land = await send(made.chain, made.records, (s) => (status.textContent = s));
+    land = await send(made.chain, made.records, (s) => same() && (status.textContent = s), () => {
+      if (!same()) return false;
+      held(true);
+      return true;
+    });
   } catch (error) {
-    sending(false);
+    release();
+    if (error instanceof Withdrawn) return;
+    if (!same()) {
+      if (!(error instanceof NoWallet)) notice(said(error), { bad: true });
+      return;
+    }
     status.classList.add("bad");
     if (error instanceof NoWallet) {
       status.innerHTML = `This needs Lattice Wallet, which holds your key. <a href="https://github.com/adalinxx/lattice-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a> Your draft stays here.`;
     } else {
-      status.textContent = error.message;
+      status.textContent = said(error);
     }
-    if (!dialog.open) notice(status.textContent, { bad: true });
     return;
   }
-  sending(false);
-  status.textContent = "";
+  const owner = connected;
+  const ours = same();
+  release();
+  if (ours) status.textContent = "";
   pendingItems.set(pending.key, pending);
-  done();
+  if (ours) done();
+  else redraw();
   const landed = await land(() => {
     pending.slow = true;
     redraw();
   });
+  if (connected !== owner) return;
   // Kept until a read contains it (the draws drop it then), so it never
   // vanishes between landing and the re-read.
   if (landed) pending.landed = true;
@@ -910,6 +963,7 @@ const KNOWN_LABELS = ["spam", "off-topic", "nsfw", "low-effort"];
 function openReply(target, labelling) {
   const [author, id] = target.split("/");
   // What is answered is fixed now, whatever the route does while the dialog is open.
+  opened($("#reply"));
   replyTarget = { author, id, labelling, key: `${labelling ? "label" : "reply"}:${target}`, community: route.community, post: { author: route.author, id: route.id } };
   const onPost = route.author === author && route.id === id;
   const findNode = (node) => (node.author === author && node.id === id ? node : node.replies.map(findNode).find(Boolean));
@@ -970,7 +1024,7 @@ async function showCost(line, community, doing) {
   const current = () => line.dataset.request === request;
   line.classList.remove("bad");
   const button = line.closest("form").querySelector(".btn.primary");
-  if (!line.closest("dialog").hasAttribute("data-sending")) button.disabled = false;
+  if (!line.closest("dialog").hasAttribute("data-busy")) button.disabled = false;
   if (!community) return (line.textContent = "");
   if (!wallet()) {
     line.innerHTML = `${esc(doing)} needs Lattice Wallet, a free browser extension that holds your key. <a href="https://github.com/adalinxx/lattice-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a> You can write your draft now.`;
@@ -1003,8 +1057,18 @@ async function showCost(line, community, doing) {
   line.textContent = `${fee} · you have ${cost.balance}. You'll approve it in Lattice Wallet.`;
 }
 
+/** A new opening of a dialog: a send still running from an earlier one leaves it alone. */
+function opened(dialog) {
+  dialog.dataset.opening = String(Number(dialog.dataset.opening ?? 0) + 1);
+  dialog.removeAttribute("data-busy");
+  dialog.removeAttribute("data-sending");
+  dialog.querySelectorAll("[data-close]").forEach((b) => (b.disabled = false));
+  dialog.querySelector(".btn.primary").disabled = false;
+}
+
 function openNewPost() {
   if (!communities.length) return notice("There are no communities to post in yet.");
+  opened($("#new"));
   $("#np-status").textContent = "";
   $("#np-status").classList.remove("bad");
   if (route.community && communities.includes(route.community)) $("#np-c").value = route.community;
@@ -1163,7 +1227,9 @@ $("#settings-form").addEventListener("submit", (event) => {
   const name = $("#st-name").value.trim();
   const reader = signer();
   if (reader && name && name !== names.get(reader.address)) {
-    if (!saveChoice(write.profile(reader.address, { name }), () => names.set(reader.address, name), "your name", { kept: false })) return event.preventDefault();
+    const before = names.get(reader.address);
+    const undo = () => (before === undefined ? names.delete(reader.address) : names.set(reader.address, before));
+    if (!saveChoice(write.profile(reader.address, { name }), () => names.set(reader.address, name), "your name", { kept: false, undo })) return event.preventDefault();
     renderWho();
   }
   const moved = (node && node !== settings.node) || ($("#st-home").value.trim() && $("#st-home").value.trim() !== settings.home);
