@@ -51,7 +51,9 @@ async function walletBrowser() {
   context.walletOrigin = worker.url().split("/").slice(0, 3).join("/");
   context.approvals = 0;
   context.nonces = []; // the Nonce row of each write signed, as the wallet showed it
-  context.on("page", async (opened) => {
+  // A window still being answered when its test closes the browser is let go.
+  context.on("page", (opened) => respond(opened).catch(() => {}));
+  async function respond(opened) {
     await opened.waitForLoadState().catch(() => {});
     if (!opened.url().includes("/approve/index.html")) return;
     const answer = context.declineWrites && (await opened.getByRole("button", { name: "Sign" }).waitFor().then(() => true, () => false))
@@ -63,7 +65,7 @@ async function walletBrowser() {
     }
     await opened.getByRole("button", { name: answer }).click().catch(() => {});
     context.approvals += 1;
-  });
+  }
   return context;
 }
 
