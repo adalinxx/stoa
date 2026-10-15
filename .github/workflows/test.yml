@@ -32,6 +32,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The Lattice Wallet the page connects to, at a pinned commit.
+      - uses: actions/checkout@v4
+        with:
+          repository: adalinxx/lattice-wallet
+          ref: 600ae7c7f1a2a98b09f489b7be9266a239c4b031
+          path: lattice-wallet
+          submodules: recursive
+      - name: Build the Lattice Wallet
+        working-directory: lattice-wallet
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
       - name: Install Playwright's Chromium
         working-directory: e2e/ui
         run: |
@@ -42,4 +54,5 @@ jobs:
         env:
           LATTICE: /usr/local/bin/lattice
           LATTICE_SDK: ${{ github.workspace }}/app/vendor/lattice-sdk.js
+          LATTICE_WALLET: ${{ github.workspace }}/lattice-wallet/dist
         run: npm test

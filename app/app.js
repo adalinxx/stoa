@@ -37,18 +37,19 @@ const WINDOW_DAYS = 14;
 
 // ---------------------------------------------------------------- signer
 
-/** The reader's key. The Lattice Wallet will provide the same two members. */
+// The reader's account: the address the Lattice Wallet gave this site. The
+// wallet holds the key and asks the reader to approve every write.
+let connected = null;
+const wallet = () => window.lattice ?? null;
 function signer() {
-  const hex = store.get("key", null);
-  if (!hex) return null;
-  const account = sdk.accountFromPrivateKey(fromHex(hex));
-  return {
-    address: account.address,
-    sign: (body) => sdk.signTransactionBody(body, account.privateKey),
-  };
+  return connected ? { address: connected } : null;
 }
-const toHex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
-const fromHex = (hex) => Uint8Array.from(hex.match(/../g).map((b) => parseInt(b, 16)));
+async function connectWallet() {
+  if (!wallet()) throw new Error("Install the Lattice Wallet extension to post, comment and vote.");
+  connected = await wallet().connect();
+  renderWho();
+  return signer();
+}
 
 // --------------------------------------------------------------- network
 
@@ -83,9 +84,8 @@ async function timesOf(state) {
 
 /** Sign, submit and wait until every write reads back. */
 async function submit(chain, records, status) {
-  const me = signer();
-  if (!me) throw new Error("Make or import a key in Settings first.");
-  status("Signing…");
+  const me = signer() ?? (await connectWallet());
+  status("Preparing…");
   const state = await stateOf(chain);
   const actions = await write.changes(state, records);
   const [account, info] = await Promise.all([
@@ -97,13 +97,13 @@ async function submit(chain, records, status) {
     const where = chain.length > homePath().length ? chain.slice(homePath().length).join("/") : "the home chain";
     throw new Error(coinsMessage(where, me.address, fee));
   }
-  const body = write.transaction({ owner: me.address, actions, fee, nonce: BigInt(account?.nonce ?? 0), chainPath: chain });
-  const { publicKey, signature } = me.sign(body);
+  status("Approve it in your wallet…");
+  const signed = await wallet().writeRecords({ chainPath: chain, actions, fee: String(fee), nonce: String(account?.nonce ?? 0) });
   status("Sending…");
   const response = await fetch(new URL("/transactions", settings.node), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(sdk.transactionPayload({ [publicKey]: signature }, body)),
+    body: JSON.stringify(signed.payload),
   });
   if (!response.ok) throw new Error(`The node refused it: ${(await response.text()).slice(0, 200)}`);
   status("Waiting for a block…");
@@ -193,7 +193,10 @@ function renderRail() {
 
 function renderWho() {
   const me = signer();
-  $("#who").innerHTML = me ? `<span class="muted" title="${esc(me.address)}">${esc(nameOf(me.address, names))}</span>` : '<span class="muted">No key</span>';
+  $("#who").innerHTML = me
+    ? `<span class="muted" title="${esc(me.address)}">${esc(nameOf(me.address, names))}</span>`
+    : '<button class="btn" type="button" id="connect">Connect wallet</button>';
+  $("#connect")?.addEventListener("click", () => connectWallet().then(render).catch((error) => alertBox(error.message)));
 }
 
 /** One community's posts with their votes, comment counts and block times. */
@@ -360,8 +363,12 @@ document.addEventListener("click", async (event) => {
     el.classList.remove("blur");
   } else if (el.dataset.vote) {
     const [community, author, id] = el.dataset.target.split("|");
-    const me = signer();
-    if (!me) return alertBox("Make or import a key in Settings first.");
+    let me;
+    try {
+      me = signer() ?? (await connectWallet());
+    } catch (error) {
+      return alertBox(error.message);
+    }
     const direction = el.classList.contains("on") ? 0 : Number(el.dataset.vote);
     el.disabled = true;
     try {
@@ -400,7 +407,6 @@ function openReply(target, labelling) {
 $("#reply-form").addEventListener("submit", async (event) => {
   if (event.submitter?.value !== "send") return;
   event.preventDefault();
-  const me = signer();
   const { community, author: postAuthor, id: postId } = route;
   const on = { author: postAuthor, id: postId };
   const target = replyTarget.author === postAuthor && replyTarget.id === postId ? undefined : { author: replyTarget.author, id: replyTarget.id };
@@ -409,7 +415,7 @@ $("#reply-form").addEventListener("submit", async (event) => {
   if (!replyTarget.labelling && !$("#rp-b").value.trim()) return ($("#rp-status").textContent = "Write something first.");
   $("#rp-send").disabled = true;
   try {
-    if (!me) throw new Error("Make or import a key in Settings first.");
+    const me = signer() ?? (await connectWallet());
     const records = replyTarget.labelling
       ? write.label(me.address, write.newId(), on, labels, { target, body: $("#rp-b").value.trim() })
       : write.comment(me.address, write.newId(), on, { body: $("#rp-b").value.trim() }, target ? { parent: target } : {});
@@ -430,7 +436,6 @@ $("#open-new").onclick = () => {
 $("#new-form").addEventListener("submit", async (event) => {
   if (event.submitter?.value !== "post") return;
   event.preventDefault();
-  const me = signer();
   const community = $("#np-c").value;
   const title = $("#np-t").value.trim();
   const link = $("#np-l").value.trim();
@@ -439,7 +444,7 @@ $("#new-form").addEventListener("submit", async (event) => {
   const tags = [...document.querySelectorAll("#new-form .checks input:checked")].map((i) => i.value);
   $("#np-post").disabled = true;
   try {
-    if (!me) throw new Error("Make or import a key in Settings first.");
+    const me = signer() ?? (await connectWallet());
     const id = write.newId();
     const value = { title, ...(link && { link }), ...($("#np-b").value.trim() && { body: $("#np-b").value.trim() }), ...(tags.length && { tags }) };
     await submit(chainOf(community), write.post(me.address, id, value), (s) => ($("#np-status").textContent = s));
@@ -513,37 +518,27 @@ $("#mods").addEventListener("close", () => {
 $("#open-settings").onclick = () => {
   $("#st-node").value = settings.node;
   $("#st-home").value = settings.home;
-  $("#st-address").textContent = signer()?.address ?? "none";
-  $("#st-name").value = names.get(signer()?.address) ?? "";
-  $("#st-key").hidden = true;
   $("#st-status").textContent = "";
+  renderAccount();
   $("#settings").showModal();
 };
-$("#st-generate").onclick = () => {
-  store.set("key", toHex(sdk.generatePrivateKey()));
-  $("#st-address").textContent = signer().address;
-  $("#st-status").textContent = "New key made and kept in this browser.";
-};
-$("#st-import").onclick = () => {
-  $("#st-key").hidden = false;
-  $("#st-key").value = "";
-  $("#st-key").focus();
-};
-$("#st-export").onclick = () => {
-  $("#st-key").hidden = false;
-  $("#st-key").value = store.get("key", "");
+function renderAccount() {
+  $("#st-address").textContent = signer()?.address ?? (wallet() ? "not connected" : "no wallet installed");
+  $("#st-name").value = names.get(signer()?.address) ?? "";
+  $("#st-name").disabled = !signer();
+  $("#st-connect").hidden = !wallet() || !!signer();
+  $("#st-disconnect").hidden = !signer();
+}
+$("#st-connect").onclick = () =>
+  connectWallet().then(renderAccount).catch((error) => ($("#st-status").textContent = error.message));
+$("#st-disconnect").onclick = async () => {
+  await wallet()?.disconnect();
+  connected = null;
+  renderAccount();
+  renderWho();
 };
 $("#settings-form").addEventListener("submit", (event) => {
   if (event.submitter?.value !== "save") return;
-  const key = $("#st-key").value.trim().toLowerCase();
-  if (!$("#st-key").hidden && key && key !== store.get("key", "")) {
-    if (!/^[0-9a-f]{64}$/.test(key)) {
-      event.preventDefault();
-      $("#st-status").textContent = "A key is 64 hex characters.";
-      return;
-    }
-    store.set("key", key);
-  }
   const name = $("#st-name").value.trim();
   const me = signer();
   if (me && name && name !== names.get(me.address)) {
@@ -560,6 +555,7 @@ $("#settings-form").addEventListener("submit", (event) => {
 // ------------------------------------------------------------------ boot
 
 async function boot() {
+  connected = (await wallet()?.address().catch(() => null)) ?? null;
   try {
     communities = (await api("/api/chain/children", homePath())).directories ?? [];
   } catch (error) {

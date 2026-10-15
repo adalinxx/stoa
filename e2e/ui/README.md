@@ -3,9 +3,15 @@
 The real page (`app/`) in headless Chromium, driven through Playwright,
 against a private Lattice stack (`stack.mjs`): one host mining Nexus, a Stoa
 home chain and one community from a 2-second test spec, charging a fee of 1
-like the Stoa node. Each test opens its own browser context.
+like the Stoa node. Each test opens its own browser with the real Lattice
+Wallet extension loaded (Chrome's `--headless=new`, which runs extensions);
+an account's key is imported into that wallet, the test connects by clicking
+Connect wallet, and every approval window the wallet opens is answered
+(Connect or Sign, or Decline where a test says so) and counted.
 
-Covered: the community list; the no-coins message (no faucet); posting a
+Covered: the community list; a visitor without the wallet told to install
+it; the no-coins message (no faucet); a write declined in the wallet not
+sent; posting a
 link post and reading it back in its thread and the feed; nested comments;
 voting and taking a vote back; a display name written to the home chain and
 seen by another reader; labels hiding a post only for a reader who follows
@@ -16,7 +22,8 @@ newer one without writing over it.
 ```sh
 cd e2e/ui && npm ci && npx playwright install chromium
 LATTICE=<lattice-node>/.build/debug/lattice \
-LATTICE_SDK=$PWD/../../app/vendor/lattice-sdk.js npm test
+LATTICE_SDK=$PWD/../../app/vendor/lattice-sdk.js \
+LATTICE_WALLET=<lattice-wallet>/dist npm test
 ```
 
 The suite runs under `node --test` with the Playwright library: Playwright

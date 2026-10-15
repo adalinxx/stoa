@@ -17,7 +17,8 @@ decides what to show.
 ## Web app
 
 `app/` is Stoa in the browser: a static page that reads every record by CID
-from a node, ranks and filters in the page, and signs with the reader's key.
+from a node, ranks and filters in the page, and asks the reader's Lattice
+Wallet to sign each write.
 It is published at https://adalinxx.github.io/stoa/app/ and reads the Stoa
 trial chains (`Nexus/testnet/stoa-3dc425`) by default; see `app/README.md`.
 

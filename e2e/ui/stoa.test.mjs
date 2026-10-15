@@ -2,14 +2,19 @@
 // private Lattice stack (stack.mjs). Run with node --test; see README.
 //
 //   LATTICE=<lattice-node>/.build/debug/lattice \
-//   LATTICE_SDK=<lattice-sdk>/packages/sdk/dist/index.js node --test e2e/ui/
-import { writeFileSync } from "node:fs";
+//   LATTICE_SDK=<lattice-sdk>/packages/sdk/dist/index.js \
+//   LATTICE_WALLET=<lattice-wallet>/dist node --test e2e/ui/
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { after, before, test as nodeTest } from "node:test";
 import { chromium, expect as baseExpect } from "@playwright/test";
 import { mediaVolume } from "../../client/media.mjs";
 import * as write from "../../client/write.mjs";
 import { start } from "./stack.mjs";
 
+const wallet = process.env.LATTICE_WALLET && fileURLToPath(new URL(process.env.LATTICE_WALLET, `file://${process.cwd()}/`));
+if (!wallet) throw new Error("LATTICE_WALLET: the built Lattice Wallet extension (its dist/ directory)");
 const running = await start();
 writeFileSync(new URL("./.stack.json", import.meta.url), JSON.stringify(running.info));
 const { chainPath, fund, newAccount, nodeOperator, openApp, sdk, stack, writeAs } = await import("./helpers.mjs");
@@ -21,11 +26,35 @@ after(async () => {
   await running.stop();
 });
 
-/** A test with a fresh browser context and page, as Playwright Test gives. */
+/**
+ * A browser with the Lattice Wallet installed (LATTICE_WALLET: its built
+ * dist/), in Chrome's headless mode that runs extensions. The person here
+ * approves whatever the wallet asks: each approval window gets Connect or
+ * Sign clicked (or Decline, for writes, once a test sets declineWrites), and
+ * is counted.
+ */
+async function walletBrowser() {
+  const context = await chromium.launchPersistentContext(mkdtempSync(`${tmpdir()}/stoa-ui-browser-`), {
+    headless: false,
+    args: ["--headless=new", `--disable-extensions-except=${wallet}`, `--load-extension=${wallet}`],
+  });
+  context.approvals = 0;
+  context.on("page", async (opened) => {
+    await opened.waitForLoadState().catch(() => {});
+    if (!opened.url().includes("/approve/index.html")) return;
+    const answer = context.declineWrites && (await opened.getByRole("button", { name: "Sign" }).waitFor().then(() => true, () => false))
+      ? "Decline" : /^(Connect|Sign)$/;
+    await opened.getByRole("button", { name: answer }).click().catch(() => {});
+    context.approvals += 1;
+  });
+  return context;
+}
+
+/** A test with a fresh browser (wallet installed, not set up) and page. */
 const test = (name, body) =>
   nodeTest(name, { timeout: 300_000 }, async () => {
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    const context = await walletBrowser();
+    const page = context.pages()[0] ?? (await context.newPage());
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
@@ -61,7 +90,7 @@ async function newPost(page, { title, link, body }) {
 test("a visitor reads the community list from the node", async ({ page }) => {
   await openApp(page, null);
   await expect(page.locator("#communities")).toContainText(community);
-  await expect(page.locator("#who")).toHaveText("No key");
+  await expect(page.locator("#who")).toHaveText("Connect wallet");
 });
 
 test("an account without coins is told to receive or mine them; there is no faucet", async ({ page }) => {
@@ -69,6 +98,16 @@ test("an account without coins is told to receive or mine them; there is no fauc
   await openApp(page, broke, feed);
   await newPost(page, { title: "Will not land" });
   await expect(page.locator("#np-status")).toContainText(`Receive some at ${broke.address}, or mine s/${community}`);
+});
+
+test("a visitor without the wallet is told to install it to post", async () => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await openApp(page, null, feed);
+  await expect(page.locator("#who")).toHaveText("Connect wallet");
+  await newPost(page, { title: "Needs a wallet" });
+  await expect(page.locator("#np-status")).toContainText("Install the Lattice Wallet extension");
+  await context.close();
 });
 
 test("a funded poster posts a link; it lands and reads back in its thread and the feed", async ({ page }) => {
@@ -80,6 +119,8 @@ test("a funded poster posts a link; it lands and reads back in its thread and th
   await expect(page.locator(".op h1")).toHaveText("The whitepaper");
   await expect(page.locator(".op .link")).toHaveAttribute("href", "https://bitcoin.org/bitcoin.pdf");
   await expect(page.locator(".op .body")).toHaveText("Worth a reread.");
+  // The wallet asked twice: to connect, then to sign the post.
+  expect(page.context().approvals).toBe(2);
   await page.goto(stack.app + feed);
   const row = page.locator(".post", { hasText: "The whitepaper" });
   await expect(row).toBeVisible();
@@ -222,4 +263,15 @@ test("an earlier render that finishes last does not write over a newer one", asy
   await page.waitForTimeout(5000);
   await expect(hidden).toBeVisible({ timeout: 1000 });
   await expect(page.locator(".post", { hasText: "The whitepaper" })).toHaveCount(0);
+});
+
+test("a write declined in the wallet is not sent", async ({ page }) => {
+  await openApp(page, poster, feed);
+  page.context().declineWrites = true;
+  await newPost(page, { title: "Declined in the wallet" });
+  await expect(page.locator("#np-status")).toContainText("declined");
+  expect(page.context().approvals).toBe(2);
+  await page.goto(stack.app + feed);
+  await expect(page.locator(".post").first()).toBeVisible();
+  await expect(page.locator(".post", { hasText: "Declined in the wallet" })).toHaveCount(0);
 });
