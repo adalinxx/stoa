@@ -98,15 +98,8 @@ async function submit(chain, records, status) {
     throw new Error(coinsMessage(where, me.address, fee));
   }
   status("Approve it in your wallet…");
-  // The wallet chooses the nonce, from its own node.
-  const signed = await wallet().writeRecords({ chainPath: chain, actions, fee: String(fee) });
-  status("Sending…");
-  const response = await fetch(new URL("/transactions", settings.node), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(signed.payload),
-  });
-  if (!response.ok) throw new Error(`The node refused it: ${(await response.text()).slice(0, 200)}`);
+  // The wallet chooses the nonce and sends the write, from and to its own node.
+  await wallet().writeRecords({ chainPath: chain, actions, fee: String(fee) });
   status("Waiting for a block…");
   for (let tries = 0; tries < 120; tries++) {
     await new Promise((resolve) => setTimeout(resolve, 3000));
