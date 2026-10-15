@@ -11,7 +11,7 @@ import { after, before, test as nodeTest } from "node:test";
 import { chromium, expect as baseExpect } from "@playwright/test";
 import { mediaVolume } from "../../client/media.mjs";
 import * as write from "../../client/write.mjs";
-import { start } from "./stack.mjs";
+import { MONIKER, start } from "./stack.mjs";
 
 const wallet = process.env.LATTICE_WALLET && fileURLToPath(new URL(process.env.LATTICE_WALLET, `file://${process.cwd()}/`));
 if (!wallet) throw new Error("LATTICE_WALLET: the built Lattice Wallet extension (its dist/ directory)");
@@ -61,13 +61,16 @@ async function walletBrowser() {
     if (answer !== "Decline" && (await opened.getByRole("heading", { name: "Sign a write" }).count())) {
       // Sign wakes only once the wallet has read the nonce.
       await baseExpect(opened.getByRole("button", { name: "Sign" })).toBeEnabled({ timeout: 60_000 }).catch(() => {});
-      context.nonces.push(await opened.locator(".row", { hasText: "Nonce" }).innerText().catch(() => ""));
+      context.nonces.push(await opened.locator(".row", { hasText: "Nonce" }).textContent().catch(() => ""));
     }
     await opened.getByRole("button", { name: answer }).click().catch(() => {});
     context.approvals += 1;
   }
   return context;
 }
+
+/** Every write of the reader's that the page shows as pending has landed. */
+const landed = (page) => expect(page.locator(".pending-note")).toHaveCount(0);
 
 /** A test with a fresh browser (wallet installed, not set up) and page. */
 const test = (name, body) =>
@@ -112,20 +115,31 @@ test("a visitor reads the community list from the node", async ({ page }) => {
   await expect(page.locator("#who")).toHaveText("Connect wallet");
 });
 
-test("an account without coins is told to receive or mine them; there is no faucet", async ({ page }) => {
+test("an account without coins is told, before writing, to receive or mine them; there is no faucet", async ({ page }) => {
   const broke = newAccount();
   await openApp(page, broke, feed);
-  await newPost(page, { title: "Will not land" });
-  await expect(page.locator("#np-status")).toContainText(`Receive some at ${broke.address}, or mine s/${community}`);
+  await page.getByRole("button", { name: "New post" }).click();
+  await expect(page.locator("#np-cost")).toContainText(`and you have none. Receive some at your address (${broke.address.slice(0, 8)}…${broke.address.slice(-4)}), or mine s/${community}`);
+  await expect(page.locator("#np-post")).toBeDisabled();
 });
 
 test("a visitor without the wallet is told to install it to post", async () => {
   const context = await browser.newContext();
   const page = await context.newPage();
   await openApp(page, null, feed);
-  await expect(page.locator("#who")).toHaveText("Connect wallet");
-  await newPost(page, { title: "Needs a wallet" });
-  await expect(page.locator("#np-status")).toContainText("Install the Lattice Wallet extension");
+  await expect(page.locator("#who")).toHaveText("Get wallet");
+  await page.getByRole("button", { name: "New post" }).click();
+  await expect(page.locator("#np-cost")).toContainText("Posting needs Lattice Wallet");
+  await page.locator("#np-c").selectOption(community);
+  await page.locator("#np-t").fill("Needs a wallet");
+  await page.locator("#np-post").click();
+  await expect(page.locator("#np-status")).toContainText("This needs Lattice Wallet");
+  await expect(page.locator("#np-t")).toHaveValue("Needs a wallet");
+  await page.locator("#new [data-close]").click();
+  // The header offers the wallet, and says reading needs none.
+  await page.getByRole("button", { name: "Get wallet" }).click();
+  await expect(page.locator("#getwallet")).toBeVisible();
+  await expect(page.locator("#getwallet")).toContainText("Reading needs nothing");
   await context.close();
 });
 
@@ -135,18 +149,20 @@ test("a funded poster posts a link; it lands and reads back in its thread and th
   await newPost(page, { title: "The whitepaper", link: "https://bitcoin.org/bitcoin.pdf", body: "Worth a reread." });
   await expect(page).toHaveURL(new RegExp(`#/s/${community}/${poster.address}/`));
   postURL = page.url();
+  // Read back from the chain, not the page's own pending copy: a block time shows.
+  await expect(page.locator(".op .meta time")).toBeVisible();
   await expect(page.locator(".op h1")).toHaveText("The whitepaper");
   await expect(page.locator(".op .link")).toHaveAttribute("href", "https://bitcoin.org/bitcoin.pdf");
   await expect(page.locator(".op .body")).toHaveText("Worth a reread.");
   // The wallet asked twice: to connect, then to sign the post, with a nonce
   // it read from the person's own node (not one the page chose).
   expect(page.context().approvals).toBe(2);
-  expect(page.context().nonces).toEqual([expect.stringMatching(/Nonce\s+\d+ \(from 127\.0\.0\.1:26081\)/i)]);
+  expect(page.context().nonces).toEqual([expect.stringMatching(/Nonce\s*\d+ \(from 127\.0\.0\.1:26081\)/i)]);
   await page.goto(stack.app + feed);
   const row = page.locator(".post", { hasText: "The whitepaper" });
   await expect(row).toBeVisible();
   await expect(row.locator(".link")).toHaveText("bitcoin.org ↗");
-  await expect(row.locator(".meta")).toContainText(/\dm/);
+  await expect(row.locator(".meta")).toContainText(/just now|\dm ago/);
 });
 
 test("comments nest, and a vote counts once and can be taken back", async ({ page }) => {
@@ -155,39 +171,55 @@ test("comments nest, and a vote counts once and can be taken back", async ({ pag
   await page.locator(".op [data-reply]").click();
   await page.locator("#rp-b").fill("Section 11 holds.");
   await page.locator("#rp-send").click();
+  // Shown at once, as waiting for its block, then as landed.
   const first = page.locator(".c", { hasText: "Section 11 holds." }).first();
-  await expect(first).toBeVisible();
+  await expect(first.locator(".pending-note")).toHaveText("Waiting for a block…");
+  await landed(page);
   await first.locator("[data-reply]").first().click();
   await page.locator("#rp-b").fill("And section 6.");
   await page.locator("#rp-send").click();
   await expect(first.locator(".c", { hasText: "And section 6." })).toBeVisible();
+  await landed(page);
 
   await page.goto(stack.app + feed);
   const row = page.locator(".post", { hasText: "The whitepaper" });
   await expect(row.locator(".meta")).toContainText("2 comments");
+  // A vote counts at once, waits for its block, then settles.
   await row.locator(".vote.up").click();
-  await expect(row.locator(".votes span")).toHaveText("1");
-  await expect(row.locator(".vote.up")).toHaveClass(/on/);
+  await expect(row.locator(".votes .score")).toHaveText("1");
+  await expect(row.locator(".vote.up")).toHaveAttribute("aria-pressed", "true");
+  await expect(row.locator(".votes")).not.toHaveClass(/pending/);
+  await expect(row.locator(".inline-error")).toHaveCount(0);
+  // It is on the chain: a reload reads it back, once.
+  await page.reload();
+  await expect(row.locator(".votes .score")).toHaveText("1");
+  await expect(row.locator(".vote.up")).toHaveAttribute("aria-pressed", "true");
   await row.locator(".vote.up").click();
-  await expect(row.locator(".votes span")).toHaveText("0");
-  await expect(row.locator(".vote.up")).not.toHaveClass(/on/);
+  await expect(row.locator(".votes .score")).toHaveText("0");
+  await expect(row.locator(".vote.up")).toHaveAttribute("aria-pressed", "false");
+  await expect(row.locator(".votes")).not.toHaveClass(/pending/);
+  await expect(row.locator(".inline-error")).toHaveCount(0);
+  // A reload reads it back from the chain.
+  await page.reload();
+  await expect(row.locator(".votes .score")).toHaveText("0");
 });
 
-test("a display name set in Settings is written to the home chain and shown for the author", async ({ page }) => {
-  await openApp(page, poster, feed);
-  await page.getByRole("button", { name: "Settings" }).click();
-  await page.locator("#st-name").fill("Alice");
-  await page.locator("#settings-form button[value=save]").click();
-  await expect(page.locator("#who")).toHaveText("Alice");
-  // Another reader sees it once the home chain has it.
+test("an author's name comes from their Moniker card; Stoa keeps no profile of its own", async ({ page }) => {
+  await fund(poster.address, 20n, [MONIKER]);
+  await writeAs(poster, MONIKER, [[`user/${poster.address}/profile`, JSON.stringify({ name: "Alice", description: "bitcoin" })]]);
+  // A reader sees the name on Alice's posts.
   const reader = await browser.newContext();
   const other = await reader.newPage();
   await openApp(other, null, feed);
-  await expect(async () => {
-    await other.reload();
-    await expect(other.locator(".post", { hasText: "The whitepaper" }).locator(".meta")).toContainText("Alice", { timeout: 5000 });
-  }).toPass({ timeout: 120_000 });
+  await expect(other.locator(".post", { hasText: "The whitepaper" }).locator(".meta")).toContainText("Alice");
   await reader.close();
+  // Alice sees it on her account; Settings has no name to set.
+  await openApp(page, poster, feed);
+  await expect(page.locator("#who .account-name")).toHaveText("Alice");
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.locator("#settings")).toContainText("Your name comes from your Moniker profile");
+  // The only fields are the node and chains, under Advanced.
+  await expect(page.locator("#settings input:not(#st-advanced input)")).toHaveCount(0);
 });
 
 test("labels hide a post only for a reader who follows the labeller, at once, and Show reveals it", async ({ page }) => {
@@ -199,6 +231,7 @@ test("labels hide a post only for a reader who follows the labeller, at once, an
   await page.locator("#rp-b").fill("Testing labels.");
   await page.locator("#rp-send").click();
   await expect(page.locator(".c.note", { hasText: "Testing labels." })).toBeVisible();
+  await landed(page);
 
   // The poster follows the labeller: the post hides without a reload.
   await openApp(page, poster, feed);
@@ -240,6 +273,15 @@ test("an image a node serves is shown; one nobody serves says so", async ({ page
   await openApp(page, null, feed);
   await expect(page.locator(".post", { hasText: "A picture" }).first().locator("img.media")).toBeVisible();
   await expect(page.locator(".post", { hasText: "A lost picture" })).toContainText("No one is serving this file right now.");
+
+  // A visitor without the wallet who votes is asked to get it, and told why.
+  const bare = await browser.newContext();
+  const visitor = await bare.newPage();
+  await openApp(visitor, null, feed);
+  await visitor.locator(".post .vote.up").first().click();
+  await expect(visitor.locator("#getwallet")).toBeVisible();
+  await expect(visitor.locator("#gw-why")).toContainText("Voting is signed by your key");
+  await bare.close();
 });
 
 test("Top orders by score and New by block time", async ({ page }) => {
@@ -295,4 +337,14 @@ test("a write declined in the wallet is not sent", async ({ page }) => {
   await page.goto(stack.app + feed);
   await expect(page.locator(".post").first()).toBeVisible();
   await expect(page.locator(".post", { hasText: "Declined in the wallet" })).toHaveCount(0);
+});
+
+test("a community the node does not serve says so, with a way out, instead of looking empty", async ({ page }) => {
+  await openApp(page, null, "#/s/nowhere");
+  const panel = page.locator(".panel.bad");
+  await expect(panel).toContainText("doesn't serve s/nowhere");
+  await expect(page.getByText("No posts")).toHaveCount(0);
+  await panel.getByRole("button", { name: "Choose another node" }).click();
+  await expect(page.locator("#st-node")).toBeVisible();
+  await expect(page.locator("#st-node")).toBeFocused();
 });

@@ -130,9 +130,8 @@ try {
   );
   console.log("Nexus, Nexus/stoa and Nexus/stoa/bitcoin are mined");
 
-  // The home chain: who Alice is and what she reads.
-  await writes("profile and join on the home chain", HOME, alice, [
-    ...write.profile(alice.address, { name: "Alice", about: "bitcoin and pictures" }),
+  // The home chain: what Alice reads.
+  await writes("join on the home chain", HOME, alice, [
     ...write.join(alice.address, "bitcoin"),
     ...write.advertise(alice.address, "bitcoin", { about: "Bitcoin talk" }),
   ]);
@@ -207,10 +206,9 @@ try {
     return (await read.labelsBy(now, carol.address)).size === 1 && now;
   });
   const home = await state(HOME, readerNode);
-  assert.deepEqual(await read.profile(home, alice.address), { name: "Alice", about: "bitcoin and pictures" });
   assert.deepEqual(await read.joined(home, alice.address), ["bitcoin"]);
   assert.deepEqual([...(await read.communities(home)).keys()], ["bitcoin"]);
-  console.log("reader: profile, joins and communities from the home chain");
+  console.log("reader: joins and communities from the home chain");
 
   // Posts with their votes and block times, ranked.
   const times = blockTimes(sdk, community.volumes);

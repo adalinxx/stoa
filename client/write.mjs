@@ -48,9 +48,6 @@ const flag = (on) => (on ? "1" : undefined);
 
 // Home chain.
 
-/** `a`'s profile `{ name, about, avatar? }`; `avatar` is a media CID. */
-export const profile = (a, value) => [[`user/${a}/profile`, json(value)]];
-
 /** `a` joins a community, or leaves it with `joined` false. */
 export const join = (a, community, joined = true) => [[`user/${a}/join/${community}`, flag(joined)]];
 

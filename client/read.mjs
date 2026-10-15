@@ -138,12 +138,6 @@ export const flair = (state, a) => state.get(`user/${a}/flair`);
 
 // Home chain.
 
-/** `a`'s profile, or undefined. */
-export async function profile(state, a) {
-  const value = parse(await state.get(`user/${a}/profile`));
-  return isObject(value) ? value : undefined;
-}
-
 /** The communities `a` has joined. */
 export async function joined(state, a) {
   const prefix = `user/${a}/join/`;

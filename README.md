@@ -35,11 +35,14 @@ transaction that writes it. There are two shapes:
 That rule is the chain's only rule (`policy/`). Everything below is a
 convention clients share; values are JSON strings.
 
+Stoa keeps no profile. An author's name is the `name` on their card on
+Moniker (`Nexus/moniker`), the profile chain every Lattice app shares: the
+key `user/<a>/profile` there. Without a card, an author is shown by address.
+
 Home chain `Nexus/stoa`:
 
 | Key | Value |
 |---|---|
-| `user/<a>/profile` | `{ name, about, avatar? }`, `avatar` a media CID |
 | `user/<a>/join/<community>` | `"1"`: `<a>` reads this community |
 | `user/<a>/feed/<name>` | `["bitcoin", "rust"]`: a custom feed |
 | `user/<a>/follow-mod/<community>/<mod>` | `"1"`: `<a>` follows an account's labels in a community |
