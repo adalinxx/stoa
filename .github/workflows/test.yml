@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: adalinxx/lattice-wallet
-          ref: 0794c97bffd59554de3bf45d5249d309b0fbd988
+          ref: 1db6263a5587c9f1b5f79465e369ad5ce6c4431a
           path: lattice-wallet
           submodules: recursive
       - name: Build the Lattice Wallet
