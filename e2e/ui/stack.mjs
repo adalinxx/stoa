@@ -1,5 +1,6 @@
 // A private Stoa stack for the UI tests: one Lattice host mining Nexus, the
-// home chain and one community from a fast test spec, with public reads and
+// home chain, one community and a Moniker chain (where names come from) from
+// a fast test spec, with public reads and
 // submits, and a static server for the repository so the real app/ page runs
 // against it.
 //
@@ -15,6 +16,9 @@ import { fileURLToPath } from "node:url";
 export const HOME = ["Nexus", "stoa"];
 export const COMMUNITY = "bitcoin";
 export const CHAIN = [...HOME, COMMUNITY];
+// Names: a card at user/<a>/profile. Stoa's owner-only policy stands in for
+// Moniker's own here; the page only reads the card.
+export const MONIKER = ["Nexus", "moniker"];
 const here = (path) => fileURLToPath(new URL(path, import.meta.url));
 const repo = here("../../");
 const ports = { listen: 26001, rpc: 26080, publicRead: 26081, web: 26090 };
@@ -74,11 +78,11 @@ export async function start() {
   lattice("up");
   // The built module chain/spec.json names by CID (rebuild it with the policy).
   const policy = here("../../chain/stoa_policy.wasm");
-  for (const chain of [HOME, CHAIN]) {
+  for (const chain of [HOME, CHAIN, MONIKER]) {
     lattice("child", "create", chain.join("/"), "--spec", here("./spec.json"), "--policy-module", policy);
   }
   configure((t) => {
-    t.mine.recipients = { [HOME.join("/")]: miner.address, [CHAIN.join("/")]: miner.address };
+    t.mine.recipients = { [HOME.join("/")]: miner.address, [CHAIN.join("/")]: miner.address, [MONIKER.join("/")]: miner.address };
   });
   lattice("mine", "start");
   const node = `http://127.0.0.1:${ports.publicRead}`;
@@ -86,7 +90,8 @@ export async function start() {
     const r = await fetch(`${node}/api/state/account/${miner.address}?chainPath=${chain.join("/")}`);
     return r.ok ? BigInt((await r.json()).balance ?? 0) : 0n;
   };
-  await until("the home chain and the community fund the miner", async () => (await balance(HOME)) > 1000n && (await balance(CHAIN)) > 1000n);
+  await until("the home chain, the community and Moniker fund the miner", async () =>
+    (await balance(HOME)) > 1000n && (await balance(CHAIN)) > 1000n && (await balance(MONIKER)) > 1000n);
   const web = await serve(ports.web);
   const info = {
     root, node, rpc: `http://127.0.0.1:${ports.rpc}`, app: `http://127.0.0.1:${ports.web}/app/`,

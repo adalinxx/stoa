@@ -195,7 +195,7 @@ td:last-child { text-align: right; }
   <dl class="kv" id="acc-coins" style="margin-top:10px"></dl>
   <div class="menu">
     <button class="btn" type="button" id="acc-copy">Copy address</button>
-    <button class="btn" type="button" id="acc-settings">Name and settings</button>
+    <button class="btn" type="button" id="acc-settings">Settings</button>
     <button class="btn" type="button" id="acc-disconnect">Disconnect</button>
   </div>
 </div>
@@ -275,15 +275,15 @@ td:last-child { text-align: right; }
     <p class="hint" id="st-account-hint"></p>
     <dl class="kv" style="margin-top:8px" id="st-address-row"><dt>Address</dt><dd class="mono" id="st-address"></dd></dl>
     <div class="row2" style="justify-content:flex-start;margin-top:10px"><button class="btn" type="button" id="st-connect">Connect wallet</button><button class="btn" type="button" id="st-disconnect">Disconnect</button></div>
-    <label for="st-name">Display name</label>
-    <input type="text" id="st-name" maxlength="40" autocomplete="nickname">
-    <p class="hint" id="st-name-hint"></p>
+    <p class="hint">Your name comes from your Moniker profile, which every Lattice app shares.</p>
     <details class="more" id="st-advanced">
-      <summary>Node and home chain</summary>
+      <summary>Node and chains</summary>
       <label for="st-node">Node <span class="muted">(any node hosting Stoa; your own is the trustless choice)</span></label>
       <input type="url" id="st-node" autocomplete="url">
       <label for="st-home">Stoa home chain</label>
       <input type="text" id="st-home" autocomplete="off">
+      <label for="st-moniker">Moniker chain <span class="muted">(where names come from)</span></label>
+      <input type="text" id="st-moniker" autocomplete="off">
     </details>
     <div class="row2"><span class="status" id="st-status" role="status"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" value="save">Save</button></div>
   </form>

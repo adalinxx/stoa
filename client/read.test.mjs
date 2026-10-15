@@ -140,16 +140,14 @@ test("moderation is labelled comments; a reader's followed accounts decide what 
   assert.equal(judge(await sets("mod1"), actions)(post).treatment, "show");
 });
 
-test("home chain: profile, joins, followed moderators, communities", async () => {
+test("home chain: joins, followed moderators, communities", async () => {
   const state = memory();
-  await state.apply(write.profile("alice", { name: "Alice", about: "hi" }));
   await state.apply(write.join("alice", "bitcoin"));
   await state.apply(write.join("alice", "bitcoin/lightning"));
   await state.apply(write.join("alice", "rust"));
   await state.apply(write.join("alice", "rust", false));
   await state.apply(write.followModerator("alice", "bitcoin", "mod1"));
   await state.apply(write.advertise("bob", "bitcoin/lightning", { about: "LN" }));
-  assert.deepEqual(await read.profile(state, "alice"), { name: "Alice", about: "hi" });
   assert.deepEqual(await read.joined(state, "alice"), ["bitcoin", "bitcoin/lightning"]);
   assert.deepEqual(await read.followedModerators(state, "alice", "bitcoin"), ["mod1"]);
   assert.deepEqual(await read.communities(state), new Map([["bitcoin/lightning", new Map([["bob", { about: "LN" }]])]]));

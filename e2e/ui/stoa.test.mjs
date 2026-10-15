@@ -11,7 +11,7 @@ import { after, before, test as nodeTest } from "node:test";
 import { chromium, expect as baseExpect } from "@playwright/test";
 import { mediaVolume } from "../../client/media.mjs";
 import * as write from "../../client/write.mjs";
-import { start } from "./stack.mjs";
+import { MONIKER, start } from "./stack.mjs";
 
 const wallet = process.env.LATTICE_WALLET && fileURLToPath(new URL(process.env.LATTICE_WALLET, `file://${process.cwd()}/`));
 if (!wallet) throw new Error("LATTICE_WALLET: the built Lattice Wallet extension (its dist/ directory)");
@@ -204,22 +204,21 @@ test("comments nest, and a vote counts once and can be taken back", async ({ pag
   await expect(row.locator(".votes .score")).toHaveText("0");
 });
 
-test("a display name set in Settings is written to the home chain and shown for the author", async ({ page }) => {
-  await openApp(page, poster, feed);
-  await page.getByRole("button", { name: "Settings" }).click();
-  await page.locator("#st-name").fill("Alice");
-  // Enter saves, as the form's first action.
-  await page.locator("#st-name").press("Enter");
-  await expect(page.locator("#who .account-name")).toHaveText("Alice");
-  // Another reader sees it once the home chain has it.
+test("an author's name comes from their Moniker card; Stoa keeps no profile of its own", async ({ page }) => {
+  await fund(poster.address, 20n, [MONIKER]);
+  await writeAs(poster, MONIKER, [[`user/${poster.address}/profile`, JSON.stringify({ name: "Alice", description: "bitcoin" })]]);
+  // A reader sees the name on Alice's posts.
   const reader = await browser.newContext();
   const other = await reader.newPage();
   await openApp(other, null, feed);
-  await expect(async () => {
-    await other.reload();
-    await expect(other.locator(".post", { hasText: "The whitepaper" }).locator(".meta")).toContainText("Alice", { timeout: 5000 });
-  }).toPass({ timeout: 120_000 });
+  await expect(other.locator(".post", { hasText: "The whitepaper" }).locator(".meta")).toContainText("Alice");
   await reader.close();
+  // Alice sees it on her account; Settings has no name to set.
+  await openApp(page, poster, feed);
+  await expect(page.locator("#who .account-name")).toHaveText("Alice");
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.locator("#settings")).toContainText("Your name comes from your Moniker profile");
+  await expect(page.locator("#settings input[autocomplete=nickname]")).toHaveCount(0);
 });
 
 test("labels hide a post only for a reader who follows the labeller, at once, and Show reveals it", async ({ page }) => {

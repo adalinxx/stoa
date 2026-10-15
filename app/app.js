@@ -7,6 +7,7 @@ import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
 import { blockTimes } from "../client/time.mjs";
+import { cardName, MONIKER_CHAIN } from "../client/moniker.mjs";
 import * as write from "../client/write.mjs";
 import { coinsMessage, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, safeLink, short, voteBox, when } from "./lib.mjs";
 
@@ -31,6 +32,7 @@ const store = {
 const settings = {
   node: store.get("node", "https://lattice-testnet-stoa.fly.dev"),
   home: store.get("home", "Nexus/testnet/stoa-3dc425"),
+  moniker: store.get("moniker", MONIKER_CHAIN),
 };
 const homePath = () => settings.home.split("/");
 const chainOf = (community) => [...homePath(), ...community.split("/")];
@@ -167,7 +169,6 @@ async function costOn(chain, address) {
  * of its landing (true once every write reads back; `onSlow` after a minute
  * without it). Throws NoWallet, the no-coins message, or what the wallet said.
  */
-/** `records` may be a function of the chain state the write is made against. */
 async function send(chain, records, status = () => {}, beforeWallet = () => true) {
   const { address } = await me();
   status("Preparing…");
@@ -182,7 +183,6 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
     throw new Said(community ? coinsMessage(community, address, cost.fee)
       : `Saving this to your home chain costs ${cost.fee} of its coins, and you have none there yet.`);
   }
-  if (typeof records === "function") records = await records(state);
   // A key already holding its new value is no change: nothing to sign for it.
   const actions = (await write.changes(state, records)).filter((a) => a.oldValue !== a.newValue);
   // Already so on the chain: nothing to sign, nothing to pay.
@@ -299,11 +299,7 @@ async function loadMine(home) {
 const savingKeys = new Set();
 const saving = (records) => records.some(([key]) => savingKeys.has(key));
 
-/**
- * `records` names the keys; `build`, if given, makes the writes from the
- * state they are made against (for a value that merges with what is there).
- */
-function saveChoice(records, keepLocally, what, { about = what, kept = true, undo = () => {}, build } = {}) {
+function saveChoice(records, keepLocally, what, { about = what } = {}) {
   if (signer() && saving(records)) {
     const message = `Your last change to ${about} is still landing. Try again once it has.`;
     // A notice behind an open dialog would go unseen: say it in the dialog.
@@ -322,29 +318,30 @@ function saveChoice(records, keepLocally, what, { about = what, kept = true, und
   const keys = records.map(([key]) => key);
   keys.forEach((key) => savingKeys.add(key));
   const shown = notice(`Saving ${what}: approve it in Lattice Wallet.`);
-  send(homePath(), build ?? records)
+  send(homePath(), records)
     .then((land) => {
       shown.update(`Saving ${what}: waiting for a block…`);
       return land(() => shown.update(`Saving ${what}: sent, not in a block yet. It may still land.`));
     })
     .then((landed) => (landed ? shown.close() : shown.update(`${Whats} was sent but hasn't landed yet. It may still land.`)))
-    .catch((error) => {
-      if (!kept) {
-        undo();
-        renderWho();
-      }
-      shown.update(kept ? `${Whats} is kept in this browser only. ${said(error)}` : `${Whats} wasn't saved. ${said(error)}`, { bad: true });
-    })
+    .catch((error) => shown.update(`${Whats} is kept in this browser only. ${said(error)}`, { bad: true }))
     .finally(() => keys.forEach((key) => savingKeys.delete(key)));
   return true;
 }
 
-// Profile names, read from the home chain once per address.
+// Names from Moniker cards, read once per address per visit. A node that
+// does not serve Moniker leaves everyone shown by address.
 const names = new Map();
-async function loadNames(home, addresses) {
-  await Promise.all([...new Set(addresses)].filter((a) => !names.has(a)).map(async (a) => {
-    const profile = await read.profile(home, a).catch(() => undefined);
-    if (typeof profile?.name === "string" && profile.name.trim()) names.set(a, profile.name.trim().slice(0, 40));
+const looked = new Set();
+async function loadNames(addresses) {
+  const wanted = [...new Set(addresses)].filter((a) => !looked.has(a));
+  if (!wanted.length) return;
+  const moniker = await stateOf(settings.moniker.split("/")).catch(() => null);
+  if (!moniker) return;
+  await Promise.all(wanted.map(async (a) => {
+    looked.add(a);
+    const name = await cardName(moniker, a).catch(() => undefined);
+    if (name) names.set(a, name);
   }));
 }
 const labelActions = () => store.get("labelActions", { spam: "hide", nsfw: "blur", "off-topic": "collapse" });
@@ -561,7 +558,7 @@ async function showFeed(list, { title, community }, id) {
   const results = await Promise.all(list.map((c) => loadPosts(c).then((posts) => ({ c, posts }), (error) => ({ c, error }))));
   const posts = results.flatMap((r) => r.posts ?? []);
   const labellers = list.flatMap((c) => follows(c));
-  await stateOf(homePath()).then((home) => loadNames(home, [...posts.map((p) => p.author), ...labellers])).catch(() => {});
+  await loadNames([...posts.map((p) => p.author), ...labellers]).catch(() => {});
   if (stale(id)) return;
   // A refresh keeps rows where the reader last saw them (a post never moves
   // under the pointer after a vote); a new sort or view ranks afresh.
@@ -630,7 +627,7 @@ async function showPost({ community, author, id }, renderId) {
       const authors = [];
       const collect = (node) => { authors.push(node.author); node.replies.forEach(collect); };
       collect(tree);
-      await stateOf(homePath()).then((home) => loadNames(home, [...authors, ...follows(community)])).catch(() => {});
+      await loadNames([...authors, ...follows(community)]).catch(() => {});
     }
   } catch (error) {
     if (stale(renderId)) return;
@@ -844,7 +841,7 @@ async function render() {
   if (home) {
     await loadMine(home).catch(() => {});
     const reader = signer();
-    if (reader) await loadNames(home, [reader.address]).catch(() => {});
+    if (reader) await loadNames([reader.address]).catch(() => {});
   }
   if (stale(id)) return;
   route = next;
@@ -1247,6 +1244,7 @@ $("#mods").addEventListener("close", () => {
 function openSettings({ advanced = false } = {}) {
   $("#st-node").value = settings.node;
   $("#st-home").value = settings.home;
+  $("#st-moniker").value = settings.moniker;
   $("#st-status").textContent = "";
   $("#st-advanced").open = advanced;
   renderAccount();
@@ -1261,9 +1259,6 @@ function renderAccount() {
       : 'Lattice Wallet, a browser extension, holds your key. <a href="https://github.com/adalinxx/lattice-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a>';
   $("#st-address-row").hidden = !reader;
   $("#st-address").textContent = reader?.address ?? "";
-  $("#st-name").value = names.get(reader?.address) ?? "";
-  $("#st-name").disabled = !reader;
-  $("#st-name-hint").textContent = reader ? "Public, on the home chain. Saving a new name asks your wallet to approve it." : "Connect your wallet to set a name.";
   $("#st-connect").hidden = !wallet() || Boolean(reader);
   $("#st-disconnect").hidden = !reader;
 }
@@ -1286,24 +1281,18 @@ $("#settings-form").addEventListener("submit", (event) => {
     $("#st-status").textContent = "The node must be a web address, like https://node.example.";
     return $("#st-node").focus();
   }
-  const name = $("#st-name").value.trim();
-  const reader = signer();
-  if (reader && name && name !== names.get(reader.address)) {
-    const before = names.get(reader.address);
-    const undo = () => (before === undefined ? names.delete(reader.address) : names.set(reader.address, before));
-    // The rest of the profile is read from the same state the write is made
-    // against, so nothing on the chain is lost or reverted.
-    const address = reader.address;
-    const build = async (home) => write.profile(address, { ...((await read.profile(home, address)) ?? {}), name });
-    if (!saveChoice(write.profile(address, {}), () => names.set(address, name), "your name", { kept: false, undo, build })) return event.preventDefault();
-    renderWho();
-  }
-  const moved = (node && node !== settings.node) || ($("#st-home").value.trim() && $("#st-home").value.trim() !== settings.home);
+  const home = $("#st-home").value.trim(), moniker = $("#st-moniker").value.trim();
+  const moved = (node && node !== settings.node) || (home && home !== settings.home) || (moniker && moniker !== settings.moniker);
   if (!moved) return;
   settings.node = node || settings.node;
-  settings.home = $("#st-home").value.trim() || settings.home;
+  settings.home = home || settings.home;
+  settings.moniker = moniker || settings.moniker;
   store.set("node", settings.node);
   store.set("home", settings.home);
+  store.set("moniker", settings.moniker);
+  // Names are read again, from the node and Moniker chain now chosen.
+  names.clear();
+  looked.clear();
   timeIndexes.clear();
   $("#main").dataset.view = "";
   boot();
