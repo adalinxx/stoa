@@ -14,6 +14,13 @@ decides what to show.
   what each label does.
 - Ranking, feeds, karma and filters are computed by the client.
 
+## Web app
+
+`app/` is Stoa in the browser: a static page that reads every record by CID
+from a node, ranks and filters in the page, and signs with the reader's key.
+It is published at https://adalinxx.github.io/stoa/app/ and reads the Stoa
+trial chains (`Nexus/testnet/stoa-3dc425`) by default; see `app/README.md`.
+
 ## Records
 
 Every key belongs to the account named in it, and that account must sign the

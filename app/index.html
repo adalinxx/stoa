@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stoa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap">
+<style>
+:root {
+  --bg: #f3f4f2; --surface: #ffffff; --ink: #1d2422; --muted: #5d6764; --line: #dde1de;
+  --accent: #2f7d6d; --accent-soft: #e2efeb; --down: #9a5b45; --warn: #8a6d1d; --warn-soft: #f6efd9;
+  --display: "Spectral", Georgia, serif; --body: "Public Sans", system-ui, sans-serif; --mono: "JetBrains Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --bg: #121615; --surface: #1a201e; --ink: #e5ebe8; --muted: #9aa5a1; --line: #2b3331;
+  --accent: #5fb8a3; --accent-soft: #1f3530; --down: #d08b72; --warn: #d9b65c; --warn-soft: #2e2918; color-scheme: dark; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--body); }
+a { color: inherit; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--mono); font-size: 12px; }
+.muted { color: var(--muted); }
+.app { max-width: 1100px; margin: 0 auto; padding-inline: 16px; display: grid; grid-template-columns: 220px minmax(0, 1fr) 260px; gap: 24px; padding-block: 8px 48px; }
+header.top { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding-block: 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.brand { font-family: var(--display); font-size: 24px; font-weight: 600; text-decoration: none; }
+.spacer { flex: 1; }
+.btn { border: 1px solid var(--line); background: var(--surface); padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn:hover { border-color: var(--accent); }
+.btn:disabled { opacity: .5; cursor: default; }
+.who { font-size: 13px; display: flex; gap: 6px; align-items: center; }
+nav.rail { font-size: 14px; }
+nav.rail h3 { font: 600 11px var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 16px 0 6px; }
+.tree { list-style: none; margin: 0; padding: 0; }
+.tree a { display: block; padding: 5px 8px; border-radius: 6px; text-decoration: none; }
+.tree a:hover { background: var(--surface); }
+.tree a.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+main { min-width: 0; }
+h1 { font: 600 26px/1.2 var(--display); margin: 12px 0 0; text-wrap: balance; }
+.tabs { display: flex; gap: 4px; margin: 12px 0; flex-wrap: wrap; }
+.tab { border: 0; background: none; padding: 6px 10px; border-radius: 6px; cursor: pointer; color: var(--muted); text-decoration: none; }
+.tab.on { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: inset 0 0 0 1px var(--line); }
+.post { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.votes { display: flex; flex-direction: column; align-items: center; gap: 2px; font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 600; }
+.vote { border: 0; background: none; cursor: pointer; padding: 2px; color: var(--muted); line-height: 1; font-size: 15px; }
+.vote.on.up { color: var(--accent); } .vote.on.down { color: var(--down); }
+.post h2 { font: 600 19px/1.3 var(--display); margin: 0; text-wrap: balance; }
+.post h2 a { text-decoration: none; } .post h2 a:hover { color: var(--accent); }
+.meta { font-size: 12.5px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.link { font-size: 12.5px; color: var(--accent); text-decoration: none; word-break: break-all; }
+.tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); }
+.media { margin-top: 8px; max-width: 420px; border-radius: 8px; display: block; }
+.media.missing { aspect-ratio: 16 / 9; display: grid; place-items: center; font-size: 12px; color: var(--muted); background: repeating-linear-gradient(45deg, var(--surface), var(--surface) 8px, var(--bg) 8px, var(--bg) 16px); border: 1px dashed var(--line); }
+.blur { filter: blur(18px); cursor: pointer; }
+.hidden-row { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.linkish { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-top: 12px; font-size: 13.5px; }
+.card h4 { margin: 0 0 6px; font: 600 15px var(--display); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 12.5px; margin: 0; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; word-break: break-all; }
+.op { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-top: 12px; }
+.op .body, .c .body { white-space: pre-wrap; word-wrap: break-word; }
+.c { padding: 8px 0 4px 12px; border-left: 2px solid var(--line); margin-top: 8px; }
+.c.note { border-left-color: var(--accent); }
+.c .who { color: var(--muted); font-size: 12.5px; }
+.acts { font-size: 12.5px; color: var(--muted); display: flex; gap: 12px; margin-top: 4px; flex-wrap: wrap; }
+.acts button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0; }
+.acts button:hover { color: var(--accent); }
+.empty, .error { padding: 24px 0; color: var(--muted); }
+.error { color: var(--down); }
+dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); width: min(560px, calc(100vw - 32px)); padding: 20px; }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog h3 { margin: 0; font: 600 20px var(--display); }
+label { display: block; font-size: 12.5px; color: var(--muted); margin: 10px 0 4px; }
+input[type=text], input[type=url], textarea, select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
+textarea { min-height: 90px; resize: vertical; }
+.row2 { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; align-items: center; flex-wrap: wrap; }
+.row2 .muted { margin-right: auto; font-size: 12.5px; }
+.checks { display: flex; gap: 14px; font-size: 13.5px; flex-wrap: wrap; }
+.checks label { display: inline-flex; gap: 6px; margin: 0; color: var(--ink); }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+td, th { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; flex-wrap: wrap; }
+.seg button { border: 0; background: var(--surface); padding: 4px 8px; font-size: 12px; cursor: pointer; }
+.seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.status { font-size: 12.5px; color: var(--muted); min-height: 1.2em; }
+@media (max-width: 900px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  nav.rail { order: -1; } nav.rail h3 { display: none; }
+  nav.rail .tree { display: flex; gap: 4px; overflow-x: auto; }
+  aside { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <a class="brand" href="#/">Stoa</a>
+    <span class="spacer"></span>
+    <button class="btn" id="open-mods">Moderation</button>
+    <button class="btn" id="open-settings">Settings</button>
+    <button class="btn primary" id="open-new">New post</button>
+    <span class="who" id="who"></span>
+  </header>
+  <nav class="rail" aria-label="Communities">
+    <ul class="tree"><li><a href="#/" data-nav="home">Home</a></li></ul>
+    <h3>Communities</h3>
+    <ul class="tree" id="communities"><li class="muted" style="padding:5px 8px">Loading…</li></ul>
+  </nav>
+  <main id="main"></main>
+  <aside id="aside"></aside>
+</div>
+
+<dialog id="new">
+  <form method="dialog" id="new-form">
+    <h3>New post</h3>
+    <label for="np-c">Community</label>
+    <select id="np-c"></select>
+    <label for="np-t">Title</label>
+    <input type="text" id="np-t" required maxlength="300">
+    <label for="np-l">Link (optional)</label>
+    <input type="url" id="np-l" placeholder="https://">
+    <label for="np-b">Text (optional)</label>
+    <textarea id="np-b"></textarea>
+    <label>Tags</label>
+    <div class="checks"><label><input type="checkbox" value="oc"> OC</label><label><input type="checkbox" value="nsfw"> NSFW</label><label><input type="checkbox" value="spoiler"> Spoiler</label></div>
+    <p class="muted" style="font-size:12.5px">Images and video: attach them by running your own node (its operator routes keep and share the file). This page reads them from any node that serves them.</p>
+    <div class="row2"><span class="status" id="np-status"></span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" id="np-post" value="post">Post</button></div>
+  </form>
+</dialog>
+
+<dialog id="reply">
+  <form method="dialog" id="reply-form">
+    <h3 id="reply-title">Reply</h3>
+    <label for="rp-b">Text</label>
+    <textarea id="rp-b"></textarea>
+    <div id="rp-labels-wrap" hidden>
+      <label for="rp-labels">Labels (comma-separated, e.g. spam, off-topic)</label>
+      <input type="text" id="rp-labels">
+    </div>
+    <div class="row2"><span class="status" id="rp-status"></span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" id="rp-send" value="send">Send</button></div>
+  </form>
+</dialog>
+
+<dialog id="mods">
+  <form method="dialog">
+    <h3>Moderation in <span id="mods-c"></span></h3>
+    <p class="muted" style="font-size:13px">Moderation is comments: anyone can reply to a post with labels. You choose whose labels this page follows and what each label does. Nothing is removed from the chain. These choices are kept in this browser.</p>
+    <table><tbody id="mods-list"></tbody></table>
+    <label for="mods-add">Follow another account's labels here</label>
+    <div style="display:flex;gap:8px"><input type="text" id="mods-add" placeholder="Account address"><button class="btn" type="button" id="mods-add-btn">Follow</button></div>
+    <h4 style="margin:16px 0 6px;font:600 15px var(--display)">What each label does</h4>
+    <table><tbody id="label-actions"></tbody></table>
+    <div class="row2"><label style="margin:0 auto 0 0;display:inline-flex;gap:6px;color:var(--ink)"><input type="checkbox" id="showall"> Show everything</label><button class="btn primary" value="ok">Done</button></div>
+  </form>
+</dialog>
+
+<dialog id="settings">
+  <form method="dialog" id="settings-form">
+    <h3>Settings</h3>
+    <label for="st-node">Node (any node hosting Stoa; your own is the trustless choice)</label>
+    <input type="url" id="st-node">
+    <label for="st-home">Stoa home chain</label>
+    <input type="text" id="st-home">
+    <label>Your key</label>
+    <p class="muted" style="font-size:12.5px;margin:0">Kept in this browser only. It signs your posts, comments, votes and labels; the Lattice Wallet will take this over.</p>
+    <dl class="kv" style="margin-top:8px"><dt>Address</dt><dd class="mono" id="st-address">none</dd></dl>
+    <div class="row2" style="justify-content:flex-start"><button class="btn" type="button" id="st-generate">New key</button><button class="btn" type="button" id="st-import">Import key</button><button class="btn" type="button" id="st-export">Show private key</button></div>
+    <input type="text" id="st-key" class="mono" hidden placeholder="private key, 64 hex characters">
+    <div class="row2"><span class="status" id="st-status"></span><button class="btn primary" value="save">Save</button></div>
+  </form>
+</dialog>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

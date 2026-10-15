@@ -6,12 +6,21 @@
 // what is acceptable, is the client's business.
 //
 // One file is one block: DAG-CBOR `{ type, bytes }`, its CID the Volume root.
+//
+// Browser-safe: base64 through btoa/atob, which Node has too.
+
+const toBase64 = (bytes) => {
+  let text = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(text);
+};
+const fromBase64 = (text) => Uint8Array.from(atob(text), (ch) => ch.charCodeAt(0));
 
 /** The Volume for a file, in the shape `POST /pins` takes. */
 export function mediaVolume(sdk, type, bytes) {
   const block = sdk.encodeDagCbor({ bytes, type });
   const cid = sdk.cidV1DagCbor(block);
-  return { cid, entries: { [cid]: Buffer.from(block).toString("base64") } };
+  return { cid, entries: { [cid]: toBase64(block) } };
 }
 
 /**
@@ -22,7 +31,12 @@ export function mediaVolume(sdk, type, bytes) {
 export function readMedia(sdk, volume, { accept, maxBytes }) {
   const encoded = volume.entries?.[volume.cid];
   if (typeof encoded !== "string") return undefined;
-  const block = Buffer.from(encoded, "base64");
+  let block;
+  try {
+    block = fromBase64(encoded);
+  } catch {
+    return undefined;
+  }
   if (!sdk.verifyCID(volume.cid, block)) return undefined;
   let file;
   try {
@@ -40,7 +54,7 @@ export function readMedia(sdk, volume, { accept, maxBytes }) {
  * the cookie file the node writes at every start.
  */
 export function operator(rpc, cookie) {
-  const headers = { Authorization: `Basic ${Buffer.from(cookie).toString("base64")}` };
+  const headers = { Authorization: `Basic ${toBase64(new TextEncoder().encode(cookie))}` };
   const call = async (method, path, body, { absent } = {}) => {
     const response = await fetch(new URL(path, rpc), {
       method,
