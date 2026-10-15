@@ -8,9 +8,11 @@ export const MONIKER_CHAIN = "Nexus/moniker";
 
 /** The display name on `a`'s Moniker card (trimmed, at most 40 characters), or undefined. */
 export async function cardName(state, a) {
+  // A failed read throws (it may work later); only a card that doesn't parse is "no name".
+  const value = await state.get(`user/${a}/profile`);
   let card;
   try {
-    card = JSON.parse(await state.get(`user/${a}/profile`));
+    card = JSON.parse(value);
   } catch {
     return undefined;
   }

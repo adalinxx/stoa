@@ -218,7 +218,8 @@ test("an author's name comes from their Moniker card; Stoa keeps no profile of i
   await expect(page.locator("#who .account-name")).toHaveText("Alice");
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.locator("#settings")).toContainText("Your name comes from your Moniker profile");
-  await expect(page.locator("#settings input[autocomplete=nickname]")).toHaveCount(0);
+  // The only fields are the node and chains, under Advanced.
+  await expect(page.locator("#settings input:not(#st-advanced input)")).toHaveCount(0);
 });
 
 test("labels hide a post only for a reader who follows the labeller, at once, and Show reveals it", async ({ page }) => {

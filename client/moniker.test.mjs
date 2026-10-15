@@ -18,4 +18,5 @@ test("a name is read from the Moniker card, untrusted", async () => {
   assert.equal(await cardName(state, "dave"), "x".repeat(40));
   assert.equal(await cardName(state, "erin"), undefined);
   assert.equal(await cardName(state, "nobody"), undefined);
+  await assert.rejects(cardName({ get: async () => { throw new Error("volume not served"); } }, "alice"), /volume not served/, "a failed read is not \"no card\"");
 });

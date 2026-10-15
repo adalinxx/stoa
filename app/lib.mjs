@@ -6,7 +6,7 @@ export const esc = (s) =>
 
 export const short = (address) => (address ? `${address.slice(0, 8)}…${address.slice(-4)}` : "");
 
-/** An author's name: their profile's, else their shortened address. */
+/** An author's name: from their Moniker card, else their shortened address. */
 export const nameOf = (address, names) => names.get(address) ?? short(address);
 
 /** `n` and the word, singular for one. */

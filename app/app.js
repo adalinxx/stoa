@@ -101,10 +101,12 @@ let walletTurn = Promise.resolve();
 // request waits that out rather than failing at once.
 const DECLINE_PAUSE = 5500;
 // A wallet that never answers (reloaded or updated under an open page) must
-// not hold a dialog, or every later write, forever.
+// not hold a dialog, or every later write, forever. Silence is not a "no":
+// the window may still be open and signed later, so the write is treated as
+// on its way ("may still land", see send) and the landing poll decides.
 const WALLET_SILENCE = 5 * 60_000;
 const answered = (asked) => Promise.race([asked, new Promise((_, reject) =>
-  setTimeout(() => reject(new Error("Lattice Wallet didn't answer. Reload this page and try again.")), WALLET_SILENCE))]);
+  setTimeout(() => reject(new Error("Lattice Wallet hasn't answered; if you approve it there, it may still land.")), WALLET_SILENCE))]);
 function viaWallet(ask) {
   const run = walletTurn.then(() => answered(ask()), () => answered(ask()));
   walletTurn = run.then(() => {}, (error) =>
@@ -159,11 +161,26 @@ async function timesOf(state) {
 
 const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(homePath().length).join("/") : null);
 
+/**
+ * What `address` holds on `chain`, or null when it can't be told. The node
+ * answers 404 both for an account it has no record of (0) and for a chain it
+ * does not serve, so 404 counts as 0 only on a chain it serves.
+ */
+async function balanceOn(chain, address) {
+  try {
+    await api("/api/chain/info", chain);
+  } catch {
+    return null;
+  }
+  return api(`/api/state/account/${address}`, chain).then((a) => BigInt(a.balance ?? 0), (error) => (error.status === 404 ? 0n : null));
+}
+
 /** What writing on `chain` costs the reader, and what they hold there. */
 async function costOn(chain, address) {
   const [info, account] = await Promise.all([
     api("/api/chain/info", chain),
-    // No account yet (404) holds nothing; any other failure leaves it unknown (null).
+    // chain/info answered, so the node serves this chain: a 404 here is an
+    // account it has no record of (nothing held); any other failure is unknown.
     address ? api(`/api/state/account/${address}`, chain).catch((error) => (error.status === 404 ? {} : null)) : {},
   ]);
   return { fee: BigInt(info.minRelayFee ?? 0), balance: account ? BigInt(account.balance ?? 0) : null };
@@ -337,17 +354,23 @@ function saveChoice(records, keepLocally, what, { about = what } = {}) {
 // Names from Moniker cards, read once per address per visit. A node that
 // does not serve Moniker leaves everyone shown by address.
 const names = new Map();
-const looked = new Set();
+// Lookups in flight or done, shared by overlapping renders. A lookup that
+// failed to read is dropped so a later render tries again; a change of node
+// or Moniker chain starts a new set, and older lookups write nothing.
+let lookups = new Map(); // address → Promise
 async function loadNames(addresses) {
-  const wanted = [...new Set(addresses)].filter((a) => !looked.has(a));
-  if (!wanted.length) return;
-  const moniker = await stateOf(settings.moniker.split("/")).catch(() => null);
-  if (!moniker) return;
-  await Promise.all(wanted.map(async (a) => {
-    looked.add(a);
-    const name = await cardName(moniker, a).catch(() => undefined);
-    if (name) names.set(a, name);
-  }));
+  const set = lookups;
+  const wanted = [...new Set(addresses)].filter((a) => !set.has(a));
+  if (wanted.length) {
+    const moniker = stateOf(settings.moniker.split("/"));
+    for (const a of wanted) {
+      set.set(a, moniker.then((state) => cardName(state, a)).then(
+        (name) => name && set === lookups && names.set(a, name),
+        () => set.delete(a),
+      ));
+    }
+  }
+  await Promise.all([...new Set(addresses)].map((a) => set.get(a)));
 }
 const labelActions = () => store.get("labelActions", { spam: "hide", nsfw: "blur", "off-topic": "collapse" });
 let showAll = false;
@@ -829,7 +852,7 @@ function showAside() {
   const height = $("#aside-height"), balance = $("#aside-balance");
   api("/api/chain/info", chainOf(c)).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
   const reader = signer();
-  if (reader) api(`/api/state/account/${reader.address}`, chainOf(c)).then((a) => (balance.textContent = a.balance ?? "0")).catch((error) => (balance.textContent = error.status === 404 ? "0" : "unavailable"));
+  if (reader) balanceOn(chainOf(c), reader.address).then((b) => (balance.textContent = b === null ? "unavailable" : String(b)));
 }
 
 // Renders overlap (a navigation while the last one still reads the node);
@@ -1260,7 +1283,7 @@ $("#open-settings").onclick = () => openSettings();
 function renderAccount() {
   const reader = signer();
   $("#st-account-hint").innerHTML = reader ? "Lattice Wallet holds your key and asks you to approve each post, comment, vote and label."
-    : wallet() ? "Connect Lattice Wallet to post, comment, vote and set a name."
+    : wallet() ? "Connect Lattice Wallet to post, comment and vote."
       : 'Lattice Wallet, a browser extension, holds your key. <a href="https://github.com/adalinxx/lattice-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a>';
   $("#st-address-row").hidden = !reader;
   $("#st-address").textContent = reader?.address ?? "";
@@ -1297,7 +1320,7 @@ $("#settings-form").addEventListener("submit", (event) => {
   store.set("moniker", settings.moniker);
   // Names are read again, from the node and Moniker chain now chosen.
   names.clear();
-  looked.clear();
+  lookups = new Map();
   timeIndexes.clear();
   $("#main").dataset.view = "";
   boot();
@@ -1313,8 +1336,8 @@ $("#account").addEventListener("toggle", async (event) => {
   $("#acc-copy").textContent = "Copy address";
   $("#acc-coins").innerHTML = communities.map((c) => `<dt>s/${esc(c)}</dt><dd data-coins="${esc(c)}">…</dd>`).join("");
   for (const c of communities) {
-    api(`/api/state/account/${reader.address}`, chainOf(c))
-      .then((a) => `${a.balance ?? 0} coins`, (error) => (error.status === 404 ? "0 coins" : "unavailable"))
+    balanceOn(chainOf(c), reader.address)
+      .then((b) => (b === null ? "unavailable" : `${b} coins`))
       .then((text) => { const dd = $(`#acc-coins [data-coins="${CSS.escape(c)}"]`); if (dd) dd.textContent = text; });
   }
 });
