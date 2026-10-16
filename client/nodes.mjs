@@ -28,6 +28,7 @@ export class Offline extends Error {
  */
 export function nodeFinder({ start, serves, find, ttl = 30_000, now = Date.now }) {
   const found = new Map(); // chain → { search, until }
+  const failed = new Map(); // "chain url" → until: tried after the others
   const nodeFor = (chain) => {
     const key = chain.join("/");
     const kept = found.get(key);
@@ -38,10 +39,16 @@ export function nodeFinder({ start, serves, find, ttl = 30_000, now = Date.now }
       let at = chain.slice(0, -1);
       while (at.length > 0 && !(await serves(start, at))) at = at.slice(0, -1);
       if (at.length === 0) throw new Offline(chain);
-      const host = (await find(chain, start, at)).find(({ url }) => url !== start);
-      if (!host) throw new Offline(chain);
-      entry.until = now() + ttl;
-      return { url: host.url, found: true };
+      const hosts = (await find(chain, start, at)).filter(({ url }) => url !== start);
+      const fresh = ({ url }) => !(now() < (failed.get(`${key} ${url}`) ?? 0));
+      for (const { url } of [...hosts.filter(fresh), ...hosts.filter((host) => !fresh(host))]) {
+        // Checked as this page reads it, so a host it cannot read is passed over.
+        if (await serves(url, chain).catch(() => false)) {
+          entry.until = now() + ttl;
+          return { url, found: true };
+        }
+      }
+      throw new Offline(chain);
     })();
     found.set(key, entry);
     entry.search.catch(() => found.get(key) === entry && found.delete(key));
@@ -50,7 +57,10 @@ export function nodeFinder({ start, serves, find, ttl = 30_000, now = Date.now }
   nodeFor.forget = async (chain, node) => {
     const key = chain.join("/");
     const kept = found.get(key);
-    if (kept && (await kept.search.catch(() => null)) === node && found.get(key) === kept) found.delete(key);
+    if (kept && (await kept.search.catch(() => null)) === node && found.get(key) === kept) {
+      found.delete(key);
+      if (node.found) failed.set(`${key} ${node.url}`, now() + ttl);
+    }
   };
   return nodeFor;
 }
