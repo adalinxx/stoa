@@ -150,17 +150,22 @@ function needWallet(why) {
 
 // --------------------------------------------------------------- network
 
-// Each chain is read from the chosen node when it serves it, else from a node
-// found through its hosts (the SDK's ChainNodeFinder); the search starts
-// again when the chosen node changes.
+// Each chain is read from the nodes that serve it, in order: the chosen node
+// when it serves it, then the hosts its directory declares (the SDK's
+// ChainNodes); the list is made again when the chosen node changes.
 const browserFetch = (...args) => fetch(...args);
-const findNodes = () => new sdk.ChainNodeFinder(settings.node, { fetch: browserFetch });
-let finder = findNodes();
+const findNodes = () => new sdk.ChainNodes(settings.node, { fetch: browserFetch });
+let nodes = findNodes();
 /** `path` on node `base`, kept under any path the node's URL has. */
 const onNode = (base, path) => new URL(`${base.replace(/\/+$/, "")}${path}`);
 
 async function api(path, chain) {
-  const url = onNode(chain ? (await finder.nodeFor(chain)).url : settings.node, path);
+  if (chain) return nodes.read(chain, (node) => apiOn(node.url, path, chain));
+  return apiOn(settings.node, path);
+}
+
+async function apiOn(base, path, chain) {
+  const url = onNode(base, path);
   if (chain) url.searchParams.set("chainPath", chain.join("/"));
   const response = await fetch(url);
   if (!response.ok) {
@@ -182,17 +187,11 @@ function readFailure(error, community) {
 
 /** A chain's state at the node's tip, read by CID from the node's Volumes. */
 async function stateOf(chain) {
-  const node = await finder.nodeFor(chain);
-  const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${node.url}/volumes`, { chainPath: chain }));
-  let hash, generalStateCID;
-  try {
-    ({ hash, generalStateCID } = await tip(sdk, node.url, chain, volumes));
-  } catch (error) {
-    // Searched again on the next read: the node may have stopped serving it.
-    finder.forget(chain, node);
-    throw error;
-  }
-  return { chain, hash, volumes, ...view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID) };
+  return nodes.read(chain, async (node) => {
+    const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${node.url}/volumes`, { chainPath: chain }));
+    const { hash, generalStateCID } = await tip(sdk, node.url, chain, volumes);
+    return { chain, hash, volumes, ...view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID) };
+  });
 }
 
 const timeIndexes = new Map();
@@ -220,30 +219,34 @@ function whole(value) {
  * does not serve, so 404 counts as 0 only on a chain it serves.
  */
 async function balanceOn(chain, address) {
-  try {
-    await api("/api/chain/info", chain);
-  } catch {
-    return null;
-  }
-  return api(`/api/state/account/${address}`, chain).then((a) => {
-    return whole(a.balance);
-  }, (error) => (error.status === 404 ? 0n : null));
+  return nodes.read(chain, async (node) => (await accountOn(node, chain, address)).balance).catch(() => null);
+}
+
+/**
+ * What `node` says `address` holds on `chain` (a 404 is an account it has no
+ * record of: nothing held), with the chain's info, both from that one node.
+ */
+async function accountOn(node, chain, address) {
+  const [info, account] = await Promise.all([
+    apiOn(node.url, "/api/chain/info", chain),
+    // Any other failure leaves what is held unknown.
+    address ? apiOn(node.url, `/api/state/account/${address}`, chain).catch((error) => (error.status === 404 ? {} : null)) : {},
+  ]);
+  return { info, balance: account ? whole(account.balance) : null };
 }
 
 /** What writing on `chain` costs the reader, and what they hold there. */
 async function costOn(chain, address) {
-  // A found node's word sets no fee: the write goes with none, and a node
-  // that wants one refuses it in the wallet rather than charging what it says.
-  if ((await finder.nodeFor(chain)).found) return { fee: 0n, balance: null };
-  const [info, account] = await Promise.all([
-    api("/api/chain/info", chain),
-    // chain/info answered, so the node serves this chain: a 404 here is an
-    // account it has no record of (nothing held); any other failure is unknown.
-    address ? api(`/api/state/account/${address}`, chain).catch((error) => (error.status === 404 ? {} : null)) : {},
-  ]);
-  const fee = whole(info.minRelayFee);
-  if (fee === null) throw new Error("its fee isn't a whole number of coins");
-  return { fee, balance: account ? whole(account.balance) : null };
+  const cost = await nodes.read(chain, async (node) => {
+    // A found node's word sets no fee: the write goes with none, and a node
+    // that wants one refuses it in the wallet rather than charging what it says.
+    if (node.found) return { fee: 0n, balance: null };
+    const { info, balance } = await accountOn(node, chain, address);
+    return { fee: whole(info.minRelayFee), balance };
+  });
+  // Said, not passed to the next node: a bad fee is this node's answer.
+  if (cost.fee === null) throw new Error("its fee isn't a whole number of coins");
+  return cost;
 }
 
 /**
@@ -887,8 +890,8 @@ const MEDIA_TYPES = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|ogg))$/;
 function mediaFile(cid, community) {
   if (!media.has(cid)) {
     media.set(cid, (async () => {
-      const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${(await finder.nodeFor(chainOf(community))).url}/volumes`, { chainPath: chainOf(community) }));
-      const volume = await volumes.get(cid);
+      const volume = await nodes.read(chainOf(community), (node) =>
+        new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${node.url}/volumes`, { chainPath: chainOf(community) })).get(cid));
       const file = sdk.decodeDagCbor(volume.bytes(cid));
       if (typeof file?.type !== "string" || !MEDIA_TYPES.test(file.type) || !(file.bytes instanceof Uint8Array) || file.bytes.length > 8 << 20) return { unsupported: true };
       return { kind: file.type.startsWith("video/") ? "video" : "img", url: URL.createObjectURL(new Blob([file.bytes], { type: file.type })) };
@@ -958,7 +961,7 @@ function showAside() {
     <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>`;
   // Each read fills only the aside it was made for.
   const height = $("#aside-height"), balance = $("#aside-balance"), node = $("#aside-node");
-  finder.nodeFor(chainOf(c)).then(({ url, found }) => (node.textContent = found ? `${hostOf(url)}, found for this community: its operator declared it, and what it serves isn't checked` : hostOf(url)), () => {});
+  nodes.list(chainOf(c)).then(([first]) => first && (node.textContent = first.found ? `${hostOf(first.url)}, found for this community: its operator declared it, and what it serves isn't checked` : hostOf(first.url)), () => {});
   api("/api/chain/info", chainOf(c)).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
   const reader = signer();
   if (reader) balanceOn(chainOf(c), reader.address).then((b) => (balance.textContent = b === null ? "unavailable" : String(b)));
@@ -1450,7 +1453,7 @@ $("#settings-form").addEventListener("submit", (event) => {
   // Names are read again, from the node and Moniker chain now chosen.
   names.clear();
   lookups = new Map();
-  finder = findNodes();
+  nodes = findNodes();
   moniker = monikerFor();
   timeIndexes.clear();
   $("#main").dataset.view = "";
