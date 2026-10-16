@@ -32,7 +32,7 @@ test("a found node that failed is tried after the others until ttl", async () =>
   const second = await nodeFor(["S", "x"]);
   assert.equal(second.url, "c");
   await nodeFor.forget(["S", "x"], second);
-  assert.equal((await nodeFor(["S", "x"])).url, "b", "both failed: the one that failed first");
+  assert.equal((await nodeFor(["S", "x"])).url, "b", "both failed: declared order");
   clock = 250;
   await nodeFor.forget(["S", "x"], await nodeFor(["S", "x"]));
   clock = 400;
