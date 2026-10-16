@@ -6,7 +6,7 @@ import { judge, treatments } from "../client/moderation.mjs";
 import { nodeFinder, Offline } from "../client/nodes.mjs";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
-import { atBlock, tip, view, volumeLoader } from "../client/state.mjs";
+import { tip, view, volumeLoader } from "../client/state.mjs";
 import { blockTimes } from "../client/time.mjs";
 import { createMoniker, DEFAULTS as MONIKER } from "./vendor/moniker-sdk/src/index.mjs";
 import * as write from "../client/write.mjs";
@@ -190,8 +190,7 @@ async function stateOf(chain) {
   const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${node.url}/volumes`, { chainPath: chain }));
   let hash, generalStateCID;
   try {
-    // A found node is read at the block the parent chain committed, not its tip.
-    ({ hash, generalStateCID } = node.block ? await atBlock(sdk, volumes, node.block) : await tip(sdk, node.url, chain, volumes));
+    ({ hash, generalStateCID } = await tip(sdk, node.url, chain, volumes));
   } catch (error) {
     // Searched again on the next read: the node may have stopped serving it.
     nodeFor.forget(chain, node);
@@ -239,7 +238,7 @@ async function balanceOn(chain, address) {
 async function costOn(chain, address) {
   // A found node's word sets no fee: the write goes with none, and a node
   // that wants one refuses it in the wallet rather than charging what it says.
-  if ((await nodeFor(chain)).block) return { fee: 0n, balance: null };
+  if ((await nodeFor(chain)).found) return { fee: 0n, balance: null };
   const [info, account] = await Promise.all([
     api("/api/chain/info", chain),
     // chain/info answered, so the node serves this chain: a 404 here is an
@@ -963,7 +962,7 @@ function showAside() {
     <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>`;
   // Each read fills only the aside it was made for.
   const height = $("#aside-height"), balance = $("#aside-balance"), node = $("#aside-node");
-  nodeFor(chainOf(c)).then(({ url, block }) => (node.textContent = block ? `${hostOf(url)}, found for this community: its operator declared it, and what it serves isn't checked` : hostOf(url)), () => {});
+  nodeFor(chainOf(c)).then(({ url, found }) => (node.textContent = found ? `${hostOf(url)}, found for this community: its operator declared it, and what it serves isn't checked` : hostOf(url)), () => {});
   api("/api/chain/info", chainOf(c)).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
   const reader = signer();
   if (reader) balanceOn(chainOf(c), reader.address).then((b) => (balance.textContent = b === null ? "unavailable" : String(b)));
