@@ -3,14 +3,35 @@
 // only when `oldValue` is what the key holds now, so a change is always made
 // against a state the writer has read.
 
+const POST = /^user\/[^/]+\/post\/[^/]+$/;
+
+/**
+ * A post or comment says when it was written, and the chain's policy holds
+ * that to the block that creates it: a new one is stamped `time`, a changed
+ * one keeps the time it has.
+ */
+function stamped(key, newValue, oldValue, time) {
+  if (newValue === undefined || !POST.test(key)) return newValue;
+  const parse = (value) => {
+    try {
+      return JSON.parse(value);
+    } catch {}
+  };
+  const record = parse(newValue);
+  if (typeof record !== "object" || record === null || Array.isArray(record)) return newValue;
+  return JSON.stringify({ ...record, time: parse(oldValue)?.time ?? record.time ?? time });
+}
+
 /**
  * The actions for a list of `[key, value]` writes against `state` (a view,
- * see state.mjs). A value of undefined deletes the key.
+ * see state.mjs), as of `time` (when a new post or comment says it was
+ * written). A value of undefined deletes the key.
  */
-export async function changes(state, writes) {
+export async function changes(state, writes, time = Date.now()) {
   const actions = await Promise.all(
-    writes.map(async ([key, newValue]) => {
+    writes.map(async ([key, value]) => {
       const oldValue = await state.get(key);
+      const newValue = stamped(key, value, oldValue, time);
       return {
         key,
         ...(oldValue !== undefined && { oldValue }),
@@ -44,9 +65,6 @@ export const newId = () =>
 // writes for one act; a value of undefined deletes the key.
 
 const json = (value) => (value === undefined ? undefined : JSON.stringify(value));
-// A post or comment says when it was written; the chain's policy holds that
-// to the block that creates it.
-const stamped = (value) => value && { ...value, time: value.time ?? Date.now() };
 const flag = (on) => (on ? "1" : undefined);
 
 // Home chain.
@@ -75,7 +93,7 @@ const mediaWrites = (a, id, cids) => cids.map((cid, n) => [`user/${a}/post/${id}
  * with `media`).
  */
 export const post = (a, id, value, mediaCIDs = []) => [
-  [`user/${a}/post/${id}`, json(stamped(value))],
+  [`user/${a}/post/${id}`, json(value)],
   [`index/post/${id}/${a}`, flag(value !== undefined)],
   ...mediaWrites(a, id, mediaCIDs),
 ];
@@ -89,13 +107,11 @@ export const comment = (a, id, on, value, { parent, mediaCIDs = [] } = {}) => [
   [
     `user/${a}/post/${id}`,
     json(
-      stamped(
-        value && {
-          ...value,
-          on: `${on.author}/${on.id}`,
-          ...(parent && { parent: `${parent.author}/${parent.id}` }),
-        },
-      ),
+      value && {
+        ...value,
+        on: `${on.author}/${on.id}`,
+        ...(parent && { parent: `${parent.author}/${parent.id}` }),
+      },
     ),
   ],
   [`index/comment/${on.author}/${on.id}/${id}/${a}`, flag(value !== undefined)],

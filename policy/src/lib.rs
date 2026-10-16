@@ -90,6 +90,9 @@ fn check_body(body: &[u8], timestamp: i64, window: i64) -> Option<()> {
         let key = text(body, map_value(body, at, b"key")?)?;
         check_key(body, signers, key)?;
         if is_post_key(key) {
+            if key.ends_with(b"/") {
+                return None; // a post with no id
+            }
             let value = |name: &[u8]| match map_value(body, at, name) {
                 Some(offset) => text(body, offset).map(Some),
                 None => Some(None),
@@ -114,13 +117,14 @@ fn check_key(body: &[u8], signers: usize, key: &[u8]) -> Option<()> {
     is_signer(body, signers, owner)
 }
 
-/// `user/<owner>/post/<id>`: a post or comment itself (not its media).
+/// `user/<owner>/post/<id>`: a post or comment itself (not its media). The
+/// id may be empty here; `check_time` refuses that.
 fn is_post_key(key: &[u8]) -> bool {
     let mut parts = key.split(|&byte| byte == b'/');
     parts.next() == Some(b"user")
-        && parts.next().is_some_and(|owner| !owner.is_empty())
+        && parts.next().is_some()
         && parts.next() == Some(b"post")
-        && parts.next().is_some_and(|id| !id.is_empty())
+        && parts.next().is_some()
         && parts.next().is_none()
 }
 

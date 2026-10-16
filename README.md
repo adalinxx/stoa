@@ -59,7 +59,7 @@ A community chain (and the home chain, as `s/all`):
 
 | Key | Value |
 |---|---|
-| `user/<a>/post/<id>` | a post `{ title, body?, link?, tags? }`, or a comment `{ body, link?, labels?, on, parent? }` |
+| `user/<a>/post/<id>` | a post `{ title, body?, link?, tags?, time }`, or a comment `{ body, link?, labels?, on, parent?, time }` |
 | `user/<a>/post/<id>/media/<n>` | the CID of its `<n>`th image or video |
 | `index/post/<id>/<a>` | `"1"`: lists the post in the community |
 | `index/comment/<author>/<id>/<commentId>/<a>` | `"1"`: lists a comment under the post it belongs to |
@@ -77,7 +77,8 @@ record it lists. Anything that does not parse is skipped.
 ## Time
 
 A post or comment says when it was written: its record has `time`, in
-milliseconds. Every Stoa chain's policy (`policy/`) holds that to the block
+milliseconds. `changes` stamps a new one as it is sent and keeps a changed
+one's time. Every Stoa chain's policy (`policy/`) holds that to the block
 that creates it: no later than the block's timestamp, and at most 60 of the
 chain's target block times (its spec's `targetBlockTime`) before it. A changed
 record keeps the time it was created with. A reader takes `time` from the

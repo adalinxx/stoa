@@ -31,6 +31,7 @@ async function collect(entries) {
  * chain's policy holds it to its block), or 0 when it says none.
  */
 export async function item(state, author, id) {
+  if (!author || !id) return undefined;
   const [value, media] = await Promise.all([
     state.get(`user/${author}/post/${id}`),
     collect(state.list(`user/${author}/post/${id}/media/`)),

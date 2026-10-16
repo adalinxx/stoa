@@ -207,3 +207,8 @@ test("a changed post keeps its time; media, indexes and deletions are left alone
   assert.ok(accepts([{ key: `index/post/1/${ALICE}`, newValue: "1" }]));
   assert.ok(accepts([{ key: `user/${ALICE}/profile`, newValue: "{}" }]));
 });
+
+test("a post with no id is refused, time or not", () => {
+  assert.ok(!accepts([{ key: `user/${ALICE}/post/`, newValue: post() }]));
+  assert.ok(!accepts([{ key: `user/${ALICE}/post/`, newValue: post({ time: 9007199254740991 }) }]));
+});

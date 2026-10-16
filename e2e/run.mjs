@@ -76,29 +76,32 @@ async function state(chain, at = authorNode) {
   return { hash, volumes, ...view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID) };
 }
 
-/** Signs and submits record writes on `chain`; resolves to the node's response. */
+/** Signs and submits record writes on `chain`; resolves to the node's response and the actions sent. */
 async function submit(chain, who, records, fee = 0n) {
   const actions = await write.changes(await state(chain), records);
   const nonce = BigInt((await api(`/api/state/account/${who.address}`, chain))?.nonce ?? 0);
   const body = write.transaction({ owner: who.address, actions, fee, nonce, chainPath: chain });
   const { publicKey, signature } = sdk.signTransactionBody(body, who.privateKey);
-  return fetch(new URL("/transactions", authorNode), {
+  const response = await fetch(new URL("/transactions", authorNode), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(sdk.transactionPayload({ [publicKey]: signature }, body)),
   });
+  return { response, actions };
 }
 
 /** Submits until accepted, then waits until every write reads back. */
 async function writes(label, chain, who, records) {
+  let sent;
   await until(label, async () => {
-    const response = await submit(chain, who, records);
+    const { response, actions } = await submit(chain, who, records);
+    sent = actions;
     if (!response.ok) console.log(`  ${label}: ${response.status} ${await response.text()}`);
     return response.ok;
   });
   await until(`${label} is mined`, async () => {
     const now = await state(chain);
-    for (const [key, value] of records) if ((await now.get(key)) !== value) return false;
+    for (const { key, newValue } of sent) if ((await now.get(key)) !== newValue) return false;
     return true;
   });
   console.log(label);
@@ -187,7 +190,7 @@ try {
   await writes("report", BITCOIN, carol, write.label(carol.address, write.newId(), textPost, ["report: spam"]));
 
   // Bob writes into Alice's records: the policy refuses it.
-  const forged = await submit(BITCOIN, bob, [[`user/${alice.address}/post/${linkPost.id}`, '{"title":"forged"}']]);
+  const { response: forged } = await submit(BITCOIN, bob, [[`user/${alice.address}/post/${linkPost.id}`, '{"title":"forged"}']]);
   assert.ok(!forged.ok, "writing another author's record is refused");
   console.log(`forgery refused: ${forged.status} ${await forged.text()}`);
 

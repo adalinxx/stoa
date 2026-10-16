@@ -257,11 +257,11 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
   } catch (error) {
     throw new Said(readFailure(error, community));
   }
-  const changed = await write.changes(state, records);
-  const record = fresh && changed.find((a) => a.key === fresh);
-  if (record && record.oldValue !== undefined && record.oldValue !== record.newValue) throw new Landed();
   // A key already holding its new value is no change: nothing to sign for it.
-  const actions = changed.filter((a) => a.oldValue !== a.newValue);
+  const prepare = async () => (await write.changes(state, records)).filter((a) => a.oldValue !== a.newValue);
+  let actions = await prepare();
+  const record = fresh && actions.find((a) => a.key === fresh);
+  if (record && record.oldValue !== undefined) throw new Landed();
   // Already so on the chain: nothing to sign, nothing to pay.
   if (!actions.length) return () => Promise.resolve(true);
   if (cost.fee > 0n && cost.balance !== null && cost.balance < cost.fee) {
@@ -271,10 +271,12 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
   try {
     // The wallet chooses the nonce and sends the write, from and to its own node.
     // Held, and asked, only when it is this write's turn in the wallet.
-    await viaWallet(() => {
+    await viaWallet(async () => {
       // Built for this account: if another is connected (or none) by its turn, it is dropped.
       if (connected !== address || !beforeWallet()) throw new Withdrawn();
       status("Approve it in Lattice Wallet…");
+      // Made again now, so a new post says it was written when it was sent.
+      actions = await prepare();
       return wallet().writeRecords({ chainPath: chain, actions, fee: String(cost.fee) });
     });
   } catch (error) {
@@ -283,7 +285,8 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
     // landing poll decides. Calling it a failure would invite a second copy.
     if (!/may still land/i.test(String(error?.message ?? error))) throw new Said(walletMessage(error));
   }
-  return (onSlow = () => {}) => landing(chain, records, onSlow);
+  const sent = actions.map((a) => [a.key, a.newValue]);
+  return (onSlow = () => {}) => landing(chain, sent, onSlow);
 }
 
 async function landing(chain, records, onSlow) {

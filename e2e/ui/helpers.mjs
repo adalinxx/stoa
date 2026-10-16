@@ -69,7 +69,7 @@ export async function writeAs(who, chain, records) {
   await sign(who, write.transaction({ owner: who.address, actions, fee: 1n, nonce, chainPath: chain }));
   await until("records land", async () => {
     const now = await state();
-    for (const [key, value] of records) if ((await now.get(key)) !== value) return false;
+    for (const { key, newValue } of actions) if ((await now.get(key)) !== newValue) return false;
     return true;
   });
 }
