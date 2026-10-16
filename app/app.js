@@ -276,11 +276,15 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
       if (connected !== address || !beforeWallet()) throw new Withdrawn();
       status("Approve it in Lattice Wallet…");
       // Made again now, so a new post says it was written when it was sent.
-      actions = await prepare();
+      try {
+        actions = await prepare();
+      } catch (error) {
+        throw new Said(readFailure(error, community));
+      }
       return wallet().writeRecords({ chainPath: chain, actions, fee: String(cost.fee) });
     });
   } catch (error) {
-    if (error instanceof Withdrawn || error instanceof Unanswered) throw error;
+    if (error instanceof Withdrawn || error instanceof Unanswered || error instanceof Said) throw error;
     // Sent, though the node did not confirm it: it is on its way, and the
     // landing poll decides. Calling it a failure would invite a second copy.
     if (!/may still land/i.test(String(error?.message ?? error))) throw new Said(walletMessage(error));
