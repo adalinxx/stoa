@@ -375,10 +375,11 @@ test("a write declined in the wallet is not sent", async ({ page }) => {
   await expect(page.locator(".post", { hasText: "Declined in the wallet" })).toHaveCount(0);
 });
 
-test("a community the node does not serve says so, with a way out, instead of looking empty", async ({ page }) => {
+test("a community no node serves says so, with a way out, instead of looking empty", async ({ page }) => {
   await openApp(page, null, "#/s/nowhere");
   const panel = page.locator(".panel.bad");
-  await expect(panel).toContainText("doesn't serve s/nowhere");
+  // The node has no such chain, and none is declared anywhere: offline.
+  await expect(panel).toContainText("No node serves s/nowhere right now");
   await expect(page.getByText("No posts")).toHaveCount(0);
   await panel.getByRole("button", { name: "Choose another node" }).click();
   await expect(page.locator("#st-node")).toBeVisible();

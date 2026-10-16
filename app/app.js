@@ -3,6 +3,7 @@
 // server of its own.
 import * as sdk from "./vendor/lattice-sdk.js";
 import { judge, treatments } from "../client/moderation.mjs";
+import { nodeFinder, Offline } from "../client/nodes.mjs";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
@@ -41,13 +42,14 @@ const homePath = () => settings.home.split("/");
 // shows every community's posts with them.
 const ALL = "all";
 const chainOf = (community) => (community === ALL ? homePath() : [...homePath(), ...community.split("/")]);
-const nodeHost = () => {
+const hostOf = (url) => {
   try {
-    return new URL(settings.node).host;
+    return new URL(url).host;
   } catch {
-    return settings.node;
+    return url;
   }
 };
+const nodeHost = () => hostOf(settings.node);
 const WINDOW_DAYS = 14;
 const ADDRESS = /^b[a-z2-7]{40,}$/;
 
@@ -139,8 +141,27 @@ function needWallet(why) {
 
 // --------------------------------------------------------------- network
 
+// Each chain is read from the chosen node when it serves it, else from a node
+// found for it (see client/nodes.mjs); the search starts again when the
+// chosen node changes.
+const browserFetch = (...args) => fetch(...args);
+const findNodes = () =>
+  nodeFinder({
+    start: settings.node,
+    serves: async (url, chain) => {
+      const info = new URL("/api/chain/info", url);
+      info.searchParams.set("chainPath", chain.join("/"));
+      return (await fetch(info)).ok;
+    },
+    find: (chain) =>
+      new sdk.EndpointResolver(new sdk.NodeClient(settings.node, [chain[0]], { fetch: browserFetch }), { fetch: browserFetch })
+        .resolve(chain)
+        .then((found) => found.map((endpoint) => endpoint.url), () => []),
+  });
+let nodeFor = findNodes();
+
 async function api(path, chain) {
-  const url = new URL(path, settings.node);
+  const url = new URL(path, chain ? await nodeFor(chain) : settings.node);
   if (chain) url.searchParams.set("chainPath", chain.join("/"));
   const response = await fetch(url);
   if (!response.ok) {
@@ -154,6 +175,7 @@ async function api(path, chain) {
 /** Why a chain could not be read, for a person. */
 function readFailure(error, community) {
   const where = community ? `s/${community}` : "Stoa";
+  if (error instanceof Offline) return `No node serves ${where} right now.`;
   if (error?.status === 404 || /HTTP 404/.test(error?.message ?? "")) return `${nodeHost()} doesn't serve ${where}.`;
   if (error instanceof TypeError) return `Couldn't reach ${nodeHost()}.`;
   return `Couldn't read ${where} from ${nodeHost()}: ${error?.message ?? error}`;
@@ -161,8 +183,9 @@ function readFailure(error, community) {
 
 /** A chain's state at the node's tip, read by CID from the node's Volumes. */
 async function stateOf(chain) {
-  const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${settings.node}/volumes`, { chainPath: chain }));
-  const { hash, generalStateCID } = await tip(sdk, settings.node, chain, volumes);
+  const node = await nodeFor(chain);
+  const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${node}/volumes`, { chainPath: chain }));
+  const { hash, generalStateCID } = await tip(sdk, node, chain, volumes);
   return { chain, hash, volumes, ...view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID) };
 }
 
@@ -387,18 +410,19 @@ function saveChoice(records, keepLocally, what, { about = what } = {}) {
 }
 
 // Names from Moniker cards, read once per address per visit through the
-// Moniker SDK: from the reader's node, else (for Moniker's own chain) from
-// Moniker's hosts, tried per read. When none serves it, everyone is shown by
-// address.
+// Moniker SDK: from a node that serves Moniker (as any chain is found), else
+// (for Moniker's own chain) from Moniker's hosts, tried per read. When none
+// serves it, everyone is shown by address.
 function monikerFor() {
   const chain = settings.moniker.split("/");
-  const own = createMoniker({ sdk, chain, nodes: [settings.node] });
+  const readers = new Map(); // node → the SDK reading Moniker there
+  const at = (node) => readers.get(node) ?? readers.set(node, createMoniker({ sdk, chain, nodes: [node] })).get(node);
   // Moniker's hosts serve only Moniker's chain; `shared` also gives its pages.
   const shared = chain.join("/") === MONIKER.chain.join("/") ? createMoniker({ sdk, chain }) : null;
   return {
     shared,
     profile: (a) =>
-      own.profile(a).catch((error) => {
+      nodeFor(chain).then((node) => at(node).profile(a)).catch((error) => {
         if (!shared) throw error;
         return shared.profile(a);
       }),
@@ -854,7 +878,7 @@ const MEDIA_TYPES = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|ogg))$/;
 function mediaFile(cid, community) {
   if (!media.has(cid)) {
     media.set(cid, (async () => {
-      const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${settings.node}/volumes`, { chainPath: chainOf(community) }));
+      const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${await nodeFor(chainOf(community))}/volumes`, { chainPath: chainOf(community) }));
       const volume = await volumes.get(cid);
       const file = sdk.decodeDagCbor(volume.bytes(cid));
       if (typeof file?.type !== "string" || !MEDIA_TYPES.test(file.type) || !(file.bytes instanceof Uint8Array) || file.bytes.length > 8 << 20) return { unsupported: true };
@@ -922,9 +946,10 @@ function showAside() {
   $("#aside").innerHTML = `<div class="card"><h4>s/${esc(c)}</h4><p class="muted">${about}</p>
     <dl class="kv"><dt>Your coins</dt><dd id="aside-balance">${signer() ? "…" : `<button class="linkish" type="button" data-connect-or-get>Connect to see</button>`}</dd>
     <dt>Labels</dt><dd>${n ? `you follow ${plural(n, "account")}` : "you follow no one"} · <button class="linkish" type="button" data-mods="${esc(c)}">Manage</button></dd></dl>
-    <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></details></div>`;
+    <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>`;
   // Each read fills only the aside it was made for.
-  const height = $("#aside-height"), balance = $("#aside-balance");
+  const height = $("#aside-height"), balance = $("#aside-balance"), node = $("#aside-node");
+  nodeFor(chainOf(c)).then((url) => (node.textContent = hostOf(url)), () => {});
   api("/api/chain/info", chainOf(c)).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
   const reader = signer();
   if (reader) balanceOn(chainOf(c), reader.address).then((b) => (balance.textContent = b === null ? "unavailable" : String(b)));
@@ -1415,6 +1440,7 @@ $("#settings-form").addEventListener("submit", (event) => {
   // Names are read again, from the node and Moniker chain now chosen.
   names.clear();
   lookups = new Map();
+  nodeFor = findNodes();
   moniker = monikerFor();
   timeIndexes.clear();
   $("#main").dataset.view = "";
