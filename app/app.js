@@ -3,7 +3,6 @@
 // server of its own.
 import * as sdk from "./vendor/lattice-sdk.js";
 import { judge, treatments } from "../client/moderation.mjs";
-import { nodeFinder, Offline } from "../client/nodes.mjs";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
@@ -142,29 +141,16 @@ function needWallet(why) {
 // --------------------------------------------------------------- network
 
 // Each chain is read from the chosen node when it serves it, else from a node
-// found for it (see client/nodes.mjs); the search starts again when the
-// chosen node changes.
+// found through its hosts (the SDK's ChainNodeFinder); the search starts
+// again when the chosen node changes.
 const browserFetch = (...args) => fetch(...args);
-const findNodes = () =>
-  nodeFinder({
-    start: settings.node,
-    serves: async (url, chain) => {
-      const info = new URL("/api/chain/info", url);
-      info.searchParams.set("chainPath", chain.join("/"));
-      const response = await fetch(info, { signal: AbortSignal.timeout(15_000) });
-      if (response.ok) return true;
-      if (response.status === 404) return false;
-      throw Object.assign(new Error(`${hostOf(url)}: HTTP ${response.status}`), { status: response.status });
-    },
-    find: (chain, start, at) =>
-      new sdk.EndpointResolver(new sdk.NodeClient(start, at, { fetch: browserFetch }), { fetch: browserFetch })
-        .resolve(chain)
-        .catch(() => []),
-  });
-let nodeFor = findNodes();
+const findNodes = () => new sdk.ChainNodeFinder(settings.node, { fetch: browserFetch });
+let finder = findNodes();
+/** `path` on node `base`, kept under any path the node's URL has. */
+const onNode = (base, path) => new URL(`${base.replace(/\/+$/, "")}${path}`);
 
 async function api(path, chain) {
-  const url = new URL(path, chain ? (await nodeFor(chain)).url : settings.node);
+  const url = onNode(chain ? (await finder.nodeFor(chain)).url : settings.node, path);
   if (chain) url.searchParams.set("chainPath", chain.join("/"));
   const response = await fetch(url);
   if (!response.ok) {
@@ -178,7 +164,7 @@ async function api(path, chain) {
 /** Why a chain could not be read, for a person. */
 function readFailure(error, community) {
   const where = community ? `s/${community}` : "Stoa";
-  if (error instanceof Offline) return `No node serves ${where} right now.`;
+  if (error instanceof sdk.ChainOfflineError) return `No node serves ${where} right now.`;
   if (error?.status === 404 || /HTTP 404/.test(error?.message ?? "")) return `${nodeHost()} doesn't serve ${where}.`;
   if (error instanceof TypeError) return `Couldn't reach ${nodeHost()}.`;
   return `Couldn't read ${where} from ${nodeHost()}: ${error?.message ?? error}`;
@@ -186,14 +172,14 @@ function readFailure(error, community) {
 
 /** A chain's state at the node's tip, read by CID from the node's Volumes. */
 async function stateOf(chain) {
-  const node = await nodeFor(chain);
+  const node = await finder.nodeFor(chain);
   const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${node.url}/volumes`, { chainPath: chain }));
   let hash, generalStateCID;
   try {
     ({ hash, generalStateCID } = await tip(sdk, node.url, chain, volumes));
   } catch (error) {
     // Searched again on the next read: the node may have stopped serving it.
-    nodeFor.forget(chain, node);
+    finder.forget(chain, node);
     throw error;
   }
   return { chain, hash, volumes, ...view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID) };
@@ -238,7 +224,7 @@ async function balanceOn(chain, address) {
 async function costOn(chain, address) {
   // A found node's word sets no fee: the write goes with none, and a node
   // that wants one refuses it in the wallet rather than charging what it says.
-  if ((await nodeFor(chain)).found) return { fee: 0n, balance: null };
+  if ((await finder.nodeFor(chain)).found) return { fee: 0n, balance: null };
   const [info, account] = await Promise.all([
     api("/api/chain/info", chain),
     // chain/info answered, so the node serves this chain: a 404 here is an
@@ -891,7 +877,7 @@ const MEDIA_TYPES = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|ogg))$/;
 function mediaFile(cid, community) {
   if (!media.has(cid)) {
     media.set(cid, (async () => {
-      const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${(await nodeFor(chainOf(community))).url}/volumes`, { chainPath: chainOf(community) }));
+      const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${(await finder.nodeFor(chainOf(community))).url}/volumes`, { chainPath: chainOf(community) }));
       const volume = await volumes.get(cid);
       const file = sdk.decodeDagCbor(volume.bytes(cid));
       if (typeof file?.type !== "string" || !MEDIA_TYPES.test(file.type) || !(file.bytes instanceof Uint8Array) || file.bytes.length > 8 << 20) return { unsupported: true };
@@ -962,7 +948,7 @@ function showAside() {
     <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>`;
   // Each read fills only the aside it was made for.
   const height = $("#aside-height"), balance = $("#aside-balance"), node = $("#aside-node");
-  nodeFor(chainOf(c)).then(({ url, found }) => (node.textContent = found ? `${hostOf(url)}, found for this community: its operator declared it, and what it serves isn't checked` : hostOf(url)), () => {});
+  finder.nodeFor(chainOf(c)).then(({ url, found }) => (node.textContent = found ? `${hostOf(url)}, found for this community: its operator declared it, and what it serves isn't checked` : hostOf(url)), () => {});
   api("/api/chain/info", chainOf(c)).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
   const reader = signer();
   if (reader) balanceOn(chainOf(c), reader.address).then((b) => (balance.textContent = b === null ? "unavailable" : String(b)));
@@ -1453,7 +1439,7 @@ $("#settings-form").addEventListener("submit", (event) => {
   // Names are read again, from the node and Moniker chain now chosen.
   names.clear();
   lookups = new Map();
-  nodeFor = findNodes();
+  finder = findNodes();
   moniker = monikerFor();
   timeIndexes.clear();
   $("#main").dataset.view = "";
