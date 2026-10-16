@@ -23,7 +23,7 @@ decides what to show.
 from a node, ranks and filters in the page, and asks the reader's Lattice
 Wallet to sign each write.
 It is published at https://adalinxx.github.io/stoa/app/ and reads the Stoa
-trial chains (`Nexus/testnet/stoa-3dc425`) by default; see `app/README.md`.
+trial chains (`Nexus/testnet/stoa-41d5ab`) by default; see `app/README.md`.
 
 ## Records
 
