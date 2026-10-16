@@ -1,6 +1,6 @@
-// Orderings over votes and block time. The formulas are Reddit's, from its
+// Orderings over votes and post time. The formulas are Reddit's, from its
 // open-source ranking code (r2/lib/db/_sorts.pyx); a client may use others.
-// Times are block timestamps in milliseconds.
+// Times are post times in milliseconds.
 
 export const score = ({ ups, downs }) => ups - downs;
 

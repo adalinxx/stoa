@@ -3,14 +3,35 @@
 // only when `oldValue` is what the key holds now, so a change is always made
 // against a state the writer has read.
 
+const POST = /^user\/[^/]+\/post\/[^/]+$/;
+
+/**
+ * A post or comment says when it was written, and the chain's policy holds
+ * that to the block that creates it: a new one is stamped `time`, a changed
+ * one keeps the time it has.
+ */
+function stamped(key, newValue, oldValue, time) {
+  if (newValue === undefined || !POST.test(key)) return newValue;
+  const parse = (value) => {
+    try {
+      return JSON.parse(value);
+    } catch {}
+  };
+  const record = parse(newValue);
+  if (typeof record !== "object" || record === null || Array.isArray(record)) return newValue;
+  return JSON.stringify({ ...record, time: parse(oldValue)?.time ?? record.time ?? time });
+}
+
 /**
  * The actions for a list of `[key, value]` writes against `state` (a view,
- * see state.mjs). A value of undefined deletes the key.
+ * see state.mjs), as of `time` (when a new post or comment says it was
+ * written). A value of undefined deletes the key.
  */
-export async function changes(state, writes) {
+export async function changes(state, writes, time = Date.now()) {
   const actions = await Promise.all(
-    writes.map(async ([key, newValue]) => {
+    writes.map(async ([key, value]) => {
       const oldValue = await state.get(key);
+      const newValue = stamped(key, value, oldValue, time);
       return {
         key,
         ...(oldValue !== undefined && { oldValue }),
@@ -36,7 +57,7 @@ export function transaction({ owner, actions, fee, nonce, chainPath }) {
   };
 }
 
-/** A new id for a post or comment. Ids carry no time: a post's time is its block's. */
+/** A new id for a post or comment. Ids carry no meaning; the time is in the record. */
 export const newId = () =>
   [...crypto.getRandomValues(new Uint8Array(8))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 

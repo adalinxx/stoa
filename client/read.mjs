@@ -25,10 +25,13 @@ async function collect(entries) {
 // Community chains.
 
 /**
- * `author`'s post or comment `id`, or undefined: `{ author, id, title?, body?,
- * link?, tags, on?, parent?, media }`. `on` and `parent` are `{ author, id }`.
+ * `author`'s post or comment `id`, or undefined: `{ author, id, time, title?,
+ * body?, link?, tags, on?, parent?, media }`. `on` and `parent` are
+ * `{ author, id }`; `time` is when it says it was written (milliseconds; the
+ * chain's policy holds it to its block), or 0 when it says none.
  */
 export async function item(state, author, id) {
+  if (!author || !id) return undefined;
   const [value, media] = await Promise.all([
     state.get(`user/${author}/post/${id}`),
     collect(state.list(`user/${author}/post/${id}/media/`)),
@@ -41,6 +44,7 @@ export async function item(state, author, id) {
   return {
     author,
     id,
+    time: Number.isSafeInteger(record.time) && record.time > 0 ? record.time : 0,
     ...(text("title") !== undefined && { title: text("title") }),
     ...(text("body") !== undefined && { body: text("body") }),
     ...(text("link") !== undefined && { link: text("link") }),

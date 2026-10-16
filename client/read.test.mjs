@@ -28,12 +28,13 @@ const post = { author: "alice", id: "p1" };
 test("a post carries its link, tags and media in order", async () => {
   const state = memory();
   await state.apply(
-    write.post("alice", "p1", { title: "Hi", body: "text", link: "https://example.com", tags: ["oc"] }, ["c0", "c1"]),
+    write.post("alice", "p1", { title: "Hi", body: "text", link: "https://example.com", tags: ["oc"], time: 1234 }, ["c0", "c1"]),
   );
   await state.apply(write.media("alice", "p1", 10, "c10"));
   assert.deepEqual(await read.item(state, "alice", "p1"), {
     author: "alice",
     id: "p1",
+    time: 1234,
     title: "Hi",
     body: "text",
     link: "https://example.com",
@@ -161,4 +162,28 @@ test("an account's items, for karma", async () => {
     (await read.itemsBy(state, "alice")).map((i) => i.id),
     ["c1", "p1"],
   );
+});
+
+test("a post and a comment say when they were written; one saying none reads as 0", async () => {
+  const state = memory();
+  const before = Date.now();
+  await state.apply(write.post("alice", "p1", { title: "Hi" }));
+  await state.apply(write.comment("bob", "c1", { author: "alice", id: "p1" }, { body: "yo" }));
+  const [post, comment] = [await read.item(state, "alice", "p1"), await read.item(state, "bob", "c1")];
+  for (const item of [post, comment]) assert.ok(item.time >= before && item.time <= Date.now());
+  state.raw.set("user/carol/post/x", JSON.stringify({ title: "old" }));
+  assert.equal((await read.item(state, "carol", "x")).time, 0);
+});
+
+test("a changed post keeps its time, a retried one changes nothing, and an empty id is no post", async () => {
+  const state = memory();
+  await state.apply(write.post("alice", "p1", { title: "Hi" }));
+  const first = (await read.item(state, "alice", "p1")).time;
+  const edit = await write.changes(state, write.post("alice", "p1", { title: "Hi again" }), first + 999_999);
+  assert.equal(JSON.parse(edit[0].newValue).time, first);
+  const retry = await write.changes(state, write.post("alice", "p1", { title: "Hi" }), first + 999_999);
+  assert.equal(retry[0].newValue, retry[0].oldValue, "the same post again is no change");
+  await state.apply([["user/alice/post/", JSON.stringify({ title: "x", time: 1 })], ["index/post//alice", "1"]]);
+  assert.equal(await read.item(state, "alice", ""), undefined);
+  assert.deepEqual((await read.posts(state)).map((p) => p.id), ["p1"]);
 });

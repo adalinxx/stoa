@@ -152,7 +152,7 @@ test("a funded poster posts a link; it lands and reads back in its thread and th
   await newPost(page, { title: "The whitepaper", link: "https://bitcoin.org/bitcoin.pdf", body: "Worth a reread." });
   await expect(page).toHaveURL(new RegExp(`#/s/${community}/${poster.address}/`));
   postURL = page.url();
-  // Read back from the chain, not the page's own pending copy: a block time shows.
+  // Read back from the chain, not the page's own pending copy: a post time shows.
   await expect(page.locator(".op .meta time")).toBeVisible();
   await expect(page.locator(".op h1")).toHaveText("The whitepaper");
   await expect(page.locator(".op .link")).toHaveAttribute("href", "https://bitcoin.org/bitcoin.pdf");
@@ -320,7 +320,7 @@ test("an image a node serves is shown; one nobody serves says so", async ({ page
   await bare.close();
 });
 
-test("Top orders by score and New by block time", async ({ page }) => {
+test("Top orders by score and New by post time", async ({ page }) => {
   const voter = newAccount();
   await fund(voter.address, 20n, [chainPath]);
   const first = write.newId(), second = write.newId();

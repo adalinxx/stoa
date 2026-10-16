@@ -6,7 +6,6 @@ import { judge, treatments } from "../client/moderation.mjs";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
-import { blockTimes } from "../client/time.mjs";
 import { createMoniker, DEFAULTS as MONIKER } from "./vendor/moniker-sdk/src/index.mjs";
 import * as write from "../client/write.mjs";
 import { coinsMessage, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, safeLink, short, voteBox, when } from "./lib.mjs";
@@ -59,7 +58,6 @@ const hostOf = (url) => {
   }
 };
 const nodeHost = () => hostOf(settings.node);
-const WINDOW_DAYS = 14;
 const ADDRESS = /^b[a-z2-7]{40,}$/;
 
 // ---------------------------------------------------------------- wallet
@@ -194,16 +192,6 @@ async function stateOf(chain) {
   });
 }
 
-const timeIndexes = new Map();
-/** Block times of a chain's posts, from its blocks over the last two weeks. */
-async function timesOf(state) {
-  const key = state.chain.join("/");
-  if (!timeIndexes.has(key)) timeIndexes.set(key, blockTimes(sdk, state.volumes));
-  const index = timeIndexes.get(key);
-  await index.follow(state.hash, { since: Date.now() - WINDOW_DAYS * 864e5 });
-  return index.times(state.hash);
-}
-
 const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(homePath().length).join("/") : ALL);
 
 /** An amount from the node as a whole number of coins (missing is 0), or null if it isn't one. */
@@ -269,11 +257,11 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
   } catch (error) {
     throw new Said(readFailure(error, community));
   }
-  const changed = await write.changes(state, records);
-  const record = fresh && changed.find((a) => a.key === fresh);
-  if (record && record.oldValue !== undefined && record.oldValue !== record.newValue) throw new Landed();
   // A key already holding its new value is no change: nothing to sign for it.
-  const actions = changed.filter((a) => a.oldValue !== a.newValue);
+  const prepare = async () => (await write.changes(state, records)).filter((a) => a.oldValue !== a.newValue);
+  let actions = await prepare();
+  const record = fresh && actions.find((a) => a.key === fresh);
+  if (record && record.oldValue !== undefined) throw new Landed();
   // Already so on the chain: nothing to sign, nothing to pay.
   if (!actions.length) return () => Promise.resolve(true);
   if (cost.fee > 0n && cost.balance !== null && cost.balance < cost.fee) {
@@ -283,19 +271,26 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
   try {
     // The wallet chooses the nonce and sends the write, from and to its own node.
     // Held, and asked, only when it is this write's turn in the wallet.
-    await viaWallet(() => {
+    await viaWallet(async () => {
       // Built for this account: if another is connected (or none) by its turn, it is dropped.
       if (connected !== address || !beforeWallet()) throw new Withdrawn();
       status("Approve it in Lattice Wallet…");
+      // Made again now, so a new post says it was written when it was sent.
+      try {
+        actions = await prepare();
+      } catch (error) {
+        throw new Said(readFailure(error, community));
+      }
       return wallet().writeRecords({ chainPath: chain, actions, fee: String(cost.fee) });
     });
   } catch (error) {
-    if (error instanceof Withdrawn || error instanceof Unanswered) throw error;
+    if (error instanceof Withdrawn || error instanceof Unanswered || error instanceof Said) throw error;
     // Sent, though the node did not confirm it: it is on its way, and the
     // landing poll decides. Calling it a failure would invite a second copy.
     if (!/may still land/i.test(String(error?.message ?? error))) throw new Said(walletMessage(error));
   }
-  return (onSlow = () => {}) => landing(chain, records, onSlow);
+  const sent = actions.map((a) => [a.key, a.newValue]);
+  return (onSlow = () => {}) => landing(chain, sent, onSlow);
 }
 
 async function landing(chain, records, onSlow) {
@@ -636,10 +631,10 @@ function setTitle(text) {
   document.title = text ? `${text} · Stoa` : "Stoa";
 }
 
-/** One community's posts with their votes, comment counts and block times. */
+/** One community's posts with their votes and comment counts. */
 async function loadPosts(community) {
   const state = await stateOf(chainOf(community));
-  const [posts, times, judgeItem] = await Promise.all([read.posts(state), timesOf(state), judgeFor(state, community)]);
+  const [posts, judgeItem] = await Promise.all([read.posts(state), judgeFor(state, community)]);
   const reader = signer()?.address;
   return Promise.all(
     posts.map(async (post) => {
@@ -648,7 +643,7 @@ async function loadPosts(community) {
       for await (const _ of state.list(`index/comment/${post.author}/${post.id}/`)) comments++;
       return {
         ...post, community, ups: votes.ups, downs: votes.downs, mine: reader ? votes.voters.get(reader) ?? 0 : 0,
-        comments, time: times.get(`${post.author}/${post.id}`) ?? 0, verdict: judgeItem(post),
+        comments, verdict: judgeItem(post),
       };
     }),
   );
@@ -750,13 +745,12 @@ async function showPost({ community, author, id }, renderId) {
   let tree, judgeItem;
   try {
     const state = await stateOf(chainOf(community));
-    let times;
-    [tree, times, judgeItem] = await Promise.all([read.thread(state, author, id), timesOf(state), judgeFor(state, community)]);
+    [tree, judgeItem] = await Promise.all([read.thread(state, author, id), judgeFor(state, community)]);
     const reader = signer()?.address;
     if (tree) {
       const withVotes = async (node) => {
         const v = await read.votes(state, node.author, node.id);
-        Object.assign(node, { ups: v.ups, downs: v.downs, mine: reader ? v.voters.get(reader) ?? 0 : 0, time: times.get(`${node.author}/${node.id}`) ?? 0 });
+        Object.assign(node, { ups: v.ups, downs: v.downs, mine: reader ? v.voters.get(reader) ?? 0 : 0 });
         await Promise.all(node.replies.map(withVotes));
       };
       await withVotes(tree);
@@ -947,7 +941,7 @@ async function loadMedia() {
 function showAside() {
   const c = route.community;
   if (!c) {
-    $("#aside").innerHTML = `<div class="card"><h4>Home</h4><p class="muted">Posts from the communities you joined, ranked on this page from votes and block times.</p><dl class="kv"><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></div>`;
+    $("#aside").innerHTML = `<div class="card"><h4>Home</h4><p class="muted">Posts from the communities you joined, ranked on this page from votes and post times.</p><dl class="kv"><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></div>`;
     return;
   }
   const n = follows(c).length;
@@ -1455,7 +1449,6 @@ $("#settings-form").addEventListener("submit", (event) => {
   lookups = new Map();
   nodes = findNodes();
   moniker = monikerFor();
-  timeIndexes.clear();
   $("#main").dataset.view = "";
   boot();
 });
