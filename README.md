@@ -8,6 +8,8 @@ decides what to show.
 - A community is a chain: `Nexus/stoa/<name>`, a child of the home chain
   `Nexus/stoa`. Anyone can create one, and communities can nest
   (`Nexus/stoa/bitcoin/lightning`).
+- The home chain is a community too, `s/all`, like Reddit's r/all: anyone
+  can post on it, and its page shows its own posts with every community's.
 - Every record belongs to its author. Only the author can edit or delete it.
 - Moderation is comments: a moderator labels a post by replying to it with
   labels. Nothing is deleted. Each reader chooses whose labels to follow and
@@ -52,7 +54,7 @@ Home chain `Nexus/stoa`:
 | `user/<a>/follow-mod/<community>/<mod>` | `"1"`: `<a>` follows an account's labels in a community |
 | `index/community/<community>/<a>` | `{ about }`: `<a>` lists a community so clients can find it |
 
-A community chain:
+A community chain (and the home chain, as `s/all`):
 
 | Key | Value |
 |---|---|

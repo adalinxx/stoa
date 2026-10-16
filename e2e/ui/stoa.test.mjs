@@ -168,6 +168,28 @@ test("a funded poster posts a link; it lands and reads back in its thread and th
   await expect(row.locator(".meta")).toContainText(/just now|\dm ago/);
 });
 
+test("s/all is the Stoa chain's own community, and its page shows every community's posts too", async ({ page }) => {
+  await openApp(page, poster, "#/s/all");
+  // A post from s/bitcoin is here, named with its community.
+  const fromBitcoin = page.locator(".post", { hasText: "The whitepaper" });
+  await expect(fromBitcoin.locator(".meta")).toContainText("s/bitcoin");
+  // A post made in s/all lands on the Stoa chain and reads back.
+  await page.getByRole("button", { name: "New post" }).click();
+  await expect(page.locator("#np-c")).toHaveValue("all");
+  await page.locator("#np-t").fill("Hello from the top");
+  await page.locator("#np-post").click();
+  await expect(page).toHaveURL(new RegExp(`#/s/all/${poster.address}/`));
+  await expect(page.locator(".op .meta time")).toBeVisible();
+  await expect(page.locator(".op h1")).toHaveText("Hello from the top");
+  // It is not in s/bitcoin, and s/all shows both.
+  await page.goto(stack.app + feed);
+  await expect(page.locator(".post", { hasText: "The whitepaper" })).toBeVisible();
+  await expect(page.locator(".post", { hasText: "Hello from the top" })).toHaveCount(0);
+  await page.goto(stack.app + "#/s/all");
+  await expect(page.locator(".post", { hasText: "Hello from the top" }).locator(".meta")).toContainText("s/all");
+  await expect(page.locator(".post", { hasText: "The whitepaper" })).toBeVisible();
+});
+
 test("comments nest, and a vote counts once and can be taken back", async ({ page }) => {
   await openApp(page, poster);
   await page.goto(postURL);
