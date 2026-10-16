@@ -225,6 +225,12 @@ test("an author's name comes from their Moniker card; Stoa keeps no profile of i
   await expect(page.locator("#settings")).toContainText("Your name comes from your Moniker profile");
   // The only fields are the node and chains, under Advanced.
   await expect(page.locator("#settings input:not(#st-advanced input)")).toHaveCount(0);
+  // Choosing another Moniker chain takes effect at once: no card there.
+  await page.locator("#st-advanced summary").click();
+  await page.locator("#st-moniker").fill("Nexus/nobody");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#who .account-name")).not.toHaveText("Alice");
+  await expect(page.locator(".post", { hasText: "The whitepaper" }).locator(".meta")).not.toContainText("Alice");
 });
 
 test("labels hide a post only for a reader who follows the labeller, at once, and Show reveals it", async ({ page }) => {

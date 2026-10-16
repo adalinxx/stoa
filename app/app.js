@@ -385,27 +385,22 @@ function saveChoice(records, keepLocally, what, { about = what } = {}) {
 }
 
 // Names from Moniker cards, read once per address per visit through the
-// Moniker SDK: from the reader's node when it serves the chain, else (for
-// Moniker's own chain) from Moniker's hosts. When none serves it, everyone is
-// shown by address.
+// Moniker SDK: from the reader's node, else (for Moniker's own chain) from
+// Moniker's hosts, tried per read. When none serves it, everyone is shown by
+// address.
 function monikerFor() {
   const chain = settings.moniker.split("/");
   const own = createMoniker({ sdk, chain, nodes: [settings.node] });
   // Moniker's hosts serve only Moniker's chain; `shared` also gives its pages.
   const shared = chain.join("/") === MONIKER.chain.join("/") ? createMoniker({ sdk, chain }) : null;
-  let chosen = null;
-  const choose = () =>
-    (chosen ??= own.state().then(
-      () => own,
-      (error) => {
-        if (shared) return shared;
-        throw error;
-      },
-    ).catch((error) => {
-      chosen = null;
-      throw error;
-    }));
-  return { shared, profile: async (a) => (await choose()).profile(a) };
+  return {
+    shared,
+    profile: (a) =>
+      own.profile(a).catch((error) => {
+        if (!shared) throw error;
+        return shared.profile(a);
+      }),
+  };
 }
 let moniker = monikerFor();
 /** What a byline shows from a profile: its name, else its @handle, at most 40 characters. */
@@ -1403,12 +1398,12 @@ $("#settings-form").addEventListener("submit", (event) => {
     $("#st-status").textContent = "The node must be a web address, like https://node.example.";
     return $("#st-node").focus();
   }
-  const home = $("#st-home").value.trim(), moniker = $("#st-moniker").value.trim();
-  const moved = (node && node !== settings.node) || (home && home !== settings.home) || (moniker && moniker !== settings.moniker);
+  const home = $("#st-home").value.trim(), monikerChain = $("#st-moniker").value.trim();
+  const moved = (node && node !== settings.node) || (home && home !== settings.home) || (monikerChain && monikerChain !== settings.moniker);
   if (!moved) return;
   settings.node = node || settings.node;
   settings.home = home || settings.home;
-  settings.moniker = moniker || settings.moniker;
+  settings.moniker = monikerChain || settings.moniker;
   store.set("node", settings.node);
   store.set("home", settings.home);
   store.set("monikerChain", settings.moniker === MONIKER.chain.join("/") ? null : settings.moniker);
