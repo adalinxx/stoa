@@ -40,7 +40,7 @@ const nodeAddress = (url) => {
 const settings = {
   // A node saved before addresses were checked falls back to the default.
   node: nodeAddress(store.get("node", DEFAULT_NODE)) ?? DEFAULT_NODE,
-  home: store.get("home", "Nexus/testnet/stoa-3dc425"),
+  home: store.get("home", "Nexus/testnet/stoa-41d5ab"),
   // Kept only when the reader chose a chain other than the SDK's, so a
   // reader on the default follows it when an SDK release moves Moniker.
   moniker: store.get("monikerChain", null) ?? MONIKER.chain.join("/"),
