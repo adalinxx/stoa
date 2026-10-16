@@ -31,7 +31,7 @@ test("times and names", () => {
   assert.equal(ago(NOW - 5 * 60000, NOW), "5m ago");
   assert.equal(ago(NOW - 3 * 3600000, NOW), "3h ago");
   assert.equal(ago(NOW - 3 * 864e5, NOW), "3d ago");
-  assert.equal(ago(0, NOW), "2+ weeks ago", "no block time: older than the window read");
+  assert.equal(ago(0, NOW), "no time given");
   assert.equal(plural(1, "comment"), "1 comment");
   assert.equal(plural(0, "comment"), "0 comments");
   assert.equal(pathHTML(["Nexus", "<x>"]), "Nexus/<wbr>&lt;x&gt;");

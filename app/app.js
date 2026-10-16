@@ -6,7 +6,6 @@ import { judge, treatments } from "../client/moderation.mjs";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
-import { blockTimes } from "../client/time.mjs";
 import { createMoniker, DEFAULTS as MONIKER } from "./vendor/moniker-sdk/src/index.mjs";
 import * as write from "../client/write.mjs";
 import { coinsMessage, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, safeLink, short, voteBox, when } from "./lib.mjs";
@@ -59,7 +58,6 @@ const hostOf = (url) => {
   }
 };
 const nodeHost = () => hostOf(settings.node);
-const WINDOW_DAYS = 14;
 const ADDRESS = /^b[a-z2-7]{40,}$/;
 
 // ---------------------------------------------------------------- wallet
@@ -192,16 +190,6 @@ async function stateOf(chain) {
     const { hash, generalStateCID } = await tip(sdk, node.url, chain, volumes);
     return { chain, hash, volumes, ...view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID) };
   });
-}
-
-const timeIndexes = new Map();
-/** Block times of a chain's posts, from its blocks over the last two weeks. */
-async function timesOf(state) {
-  const key = state.chain.join("/");
-  if (!timeIndexes.has(key)) timeIndexes.set(key, blockTimes(sdk, state.volumes));
-  const index = timeIndexes.get(key);
-  await index.follow(state.hash, { since: Date.now() - WINDOW_DAYS * 864e5 });
-  return index.times(state.hash);
 }
 
 const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(homePath().length).join("/") : ALL);
@@ -636,10 +624,10 @@ function setTitle(text) {
   document.title = text ? `${text} · Stoa` : "Stoa";
 }
 
-/** One community's posts with their votes, comment counts and block times. */
+/** One community's posts with their votes and comment counts. */
 async function loadPosts(community) {
   const state = await stateOf(chainOf(community));
-  const [posts, times, judgeItem] = await Promise.all([read.posts(state), timesOf(state), judgeFor(state, community)]);
+  const [posts, judgeItem] = await Promise.all([read.posts(state), judgeFor(state, community)]);
   const reader = signer()?.address;
   return Promise.all(
     posts.map(async (post) => {
@@ -648,7 +636,7 @@ async function loadPosts(community) {
       for await (const _ of state.list(`index/comment/${post.author}/${post.id}/`)) comments++;
       return {
         ...post, community, ups: votes.ups, downs: votes.downs, mine: reader ? votes.voters.get(reader) ?? 0 : 0,
-        comments, time: times.get(`${post.author}/${post.id}`) ?? 0, verdict: judgeItem(post),
+        comments, verdict: judgeItem(post),
       };
     }),
   );
@@ -750,13 +738,12 @@ async function showPost({ community, author, id }, renderId) {
   let tree, judgeItem;
   try {
     const state = await stateOf(chainOf(community));
-    let times;
-    [tree, times, judgeItem] = await Promise.all([read.thread(state, author, id), timesOf(state), judgeFor(state, community)]);
+    [tree, judgeItem] = await Promise.all([read.thread(state, author, id), judgeFor(state, community)]);
     const reader = signer()?.address;
     if (tree) {
       const withVotes = async (node) => {
         const v = await read.votes(state, node.author, node.id);
-        Object.assign(node, { ups: v.ups, downs: v.downs, mine: reader ? v.voters.get(reader) ?? 0 : 0, time: times.get(`${node.author}/${node.id}`) ?? 0 });
+        Object.assign(node, { ups: v.ups, downs: v.downs, mine: reader ? v.voters.get(reader) ?? 0 : 0 });
         await Promise.all(node.replies.map(withVotes));
       };
       await withVotes(tree);
@@ -947,7 +934,7 @@ async function loadMedia() {
 function showAside() {
   const c = route.community;
   if (!c) {
-    $("#aside").innerHTML = `<div class="card"><h4>Home</h4><p class="muted">Posts from the communities you joined, ranked on this page from votes and block times.</p><dl class="kv"><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></div>`;
+    $("#aside").innerHTML = `<div class="card"><h4>Home</h4><p class="muted">Posts from the communities you joined, ranked on this page from votes and post times.</p><dl class="kv"><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></div>`;
     return;
   }
   const n = follows(c).length;
@@ -1455,7 +1442,6 @@ $("#settings-form").addEventListener("submit", (event) => {
   lookups = new Map();
   nodes = findNodes();
   moniker = monikerFor();
-  timeIndexes.clear();
   $("#main").dataset.view = "";
   boot();
 });

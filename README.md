@@ -76,13 +76,12 @@ record it lists. Anything that does not parse is skipped.
 
 ## Time
 
-A post's time is the timestamp of the block whose transaction created it.
-Authors never give a time. State does not say which block wrote a key, so
-`client/time.mjs` reads it from the blocks: it walks back from a tip by each
-block's parent, verifying every block and transaction by CID, and records
-which posts each block created. Blocks are kept by hash, so after a reorg
-the times are simply those of the new tip's chain. A node keeps every block
-by default; one that has dropped old blocks cannot give old times.
+A post or comment says when it was written: its record has `time`, in
+milliseconds. Every Stoa chain's policy (`policy/`) holds that to the block
+that creates it: no later than the block's timestamp, and at most 60 of the
+chain's target block times (its spec's `targetBlockTime`) before it. A changed
+record keeps the time it was created with. A reader takes `time` from the
+record, as the chain admitted it.
 
 ## Ranking
 
@@ -168,7 +167,7 @@ see `e2e/ui/README.md`.
 chain and a community, people post, comment, vote, label and report through
 the public submit route, and a forged write is refused. The reader's node
 joins from the author's node alone and reads the community back: posts ranked
-by block time and votes, a thread as a tree, a picture fetched from peers,
+by post time and votes, a thread as a tree, a picture fetched from peers,
 and a moderator's labelled comment hiding a post for the reader who follows them.
 
 ```sh

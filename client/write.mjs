@@ -36,7 +36,7 @@ export function transaction({ owner, actions, fee, nonce, chainPath }) {
   };
 }
 
-/** A new id for a post or comment. Ids carry no time: a post's time is its block's. */
+/** A new id for a post or comment. Ids carry no meaning; the time is in the record. */
 export const newId = () =>
   [...crypto.getRandomValues(new Uint8Array(8))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 
@@ -44,6 +44,9 @@ export const newId = () =>
 // writes for one act; a value of undefined deletes the key.
 
 const json = (value) => (value === undefined ? undefined : JSON.stringify(value));
+// A post or comment says when it was written; the chain's policy holds that
+// to the block that creates it.
+const stamped = (value) => value && { ...value, time: value.time ?? Date.now() };
 const flag = (on) => (on ? "1" : undefined);
 
 // Home chain.
@@ -72,7 +75,7 @@ const mediaWrites = (a, id, cids) => cids.map((cid, n) => [`user/${a}/post/${id}
  * with `media`).
  */
 export const post = (a, id, value, mediaCIDs = []) => [
-  [`user/${a}/post/${id}`, json(value)],
+  [`user/${a}/post/${id}`, json(stamped(value))],
   [`index/post/${id}/${a}`, flag(value !== undefined)],
   ...mediaWrites(a, id, mediaCIDs),
 ];
@@ -86,11 +89,13 @@ export const comment = (a, id, on, value, { parent, mediaCIDs = [] } = {}) => [
   [
     `user/${a}/post/${id}`,
     json(
-      value && {
-        ...value,
-        on: `${on.author}/${on.id}`,
-        ...(parent && { parent: `${parent.author}/${parent.id}` }),
-      },
+      stamped(
+        value && {
+          ...value,
+          on: `${on.author}/${on.id}`,
+          ...(parent && { parent: `${parent.author}/${parent.id}` }),
+        },
+      ),
     ),
   ],
   [`index/comment/${on.author}/${on.id}/${id}/${a}`, flag(value !== undefined)],

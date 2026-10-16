@@ -23,11 +23,10 @@ export function safeLink(link) {
 }
 
 /**
- * How long ago a block time was. Times are read from the last two weeks of
- * blocks, so anything without one is older than that.
+ * How long ago a post time was; a post with none says so.
  */
 export function ago(time, now = Date.now()) {
-  if (!time) return "2+ weeks ago";
+  if (!time) return "no time given";
   const minutes = Math.max(0, Math.floor((now - time) / 60000));
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes}m ago`;
@@ -35,9 +34,9 @@ export function ago(time, now = Date.now()) {
   return `${Math.floor(minutes / 1440)}d ago`;
 }
 
-/** A block time as a <time>, with the exact moment on hover. */
+/** A post's time as a <time>, with the exact moment on hover. */
 export function when(time, now = Date.now()) {
-  if (!time) return `<span title="Older than the two weeks of blocks this page reads">${ago(time, now)}</span>`;
+  if (!time) return `<span>${ago(time, now)}</span>`;
   const at = new Date(time);
   return `<time datetime="${at.toISOString()}" title="${esc(at.toLocaleString())}">${ago(time, now)}</time>`;
 }
@@ -71,8 +70,7 @@ export const coinsMessage = (community, address, fee) =>
 
 /**
  * Comments in reading order at every level: higher score first, then older
- * first so a conversation reads forward. Unknown times (older than the window
- * read) count as oldest.
+ * first so a conversation reads forward. An item with no time counts as oldest.
  */
 export function ordered(node) {
   const replies = [...node.replies].map(ordered)

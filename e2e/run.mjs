@@ -3,7 +3,7 @@
 // and the built policy. People write through the public submit route; every
 // result is read back by descending the state trie by CID. A second node,
 // the reader's, joins the community from the first as its only peer and
-// reads the community from its own state: the posts ranked by block time and
+// reads the community from its own state: the posts ranked by post time and
 // votes, a thread as a tree, a picture fetched from peers, and the feed as a
 // reader who follows one moderator sees it.
 //
@@ -19,7 +19,6 @@ import { judge } from "../client/moderation.mjs";
 import { karma, rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
-import { blockTimes } from "../client/time.mjs";
 import * as write from "../client/write.mjs";
 
 const sdk = await import(process.env.LATTICE_SDK);
@@ -210,29 +209,25 @@ try {
   assert.deepEqual([...(await read.communities(home)).keys()], ["bitcoin"]);
   console.log("reader: joins and communities from the home chain");
 
-  // Posts with their votes and block times, ranked.
-  const times = blockTimes(sdk, community.volumes);
-  await times.follow(community.hash);
-  const when = times.times(community.hash);
+  // Posts with their votes and stated times, ranked.
   const listed = await Promise.all(
     (await read.posts(community)).map(async (post) => ({
       ...post,
       ...(await read.votes(community, post.author, post.id)),
-      time: when.get(`${post.author}/${post.id}`),
     })),
   );
   for (const post of listed) {
-    assert.ok(post.time >= startedAt - 60_000 && post.time <= Date.now() + 60_000, `block time ${post.time}`);
+    assert.ok(post.time >= startedAt && post.time <= Date.now(), `post time ${post.time}`);
   }
   const [first, second] = rank(listed, "hot");
   assert.equal(first.id, linkPost.id);
   assert.deepEqual([first.ups, first.downs, second.ups, second.downs], [2, 0, 1, 1]);
   assert.equal(first.link, "https://bitcoin.org/bitcoin.pdf");
   assert.deepEqual(first.media, [volume.cid]);
-  assert.ok(second.time >= first.time, "the text post's block is not earlier than the link post's");
+  assert.ok(second.time >= first.time, "the text post was written after the link post");
   assert.deepEqual(rank(listed, "new").map((p) => p.id), [textPost.id, linkPost.id]);
   assert.equal(rank(listed, "controversial")[0].id, textPost.id);
-  console.log("reader: posts ranked by votes and block time");
+  console.log("reader: posts ranked by votes and post time");
 
   const tree = await read.thread(community, linkPost.author, linkPost.id);
   assert.deepEqual(tree.replies.map((c) => c.id), [c1.id]);

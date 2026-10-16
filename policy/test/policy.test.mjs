@@ -25,14 +25,28 @@ function u32(value) {
   return bytes;
 }
 
-function context(bodyBytes, { version = 2 } = {}) {
+// The block the tests' transactions land in, and the chain's target block
+// time (the spec's, in DAG-CBOR: {"targetBlockTime": 10000}).
+const NOW = 1_800_000_000_000;
+const TARGET = 10_000;
+const WINDOW = 60 * TARGET;
+const SPEC = Uint8Array.of(0xa1, 0x6f, ...new TextEncoder().encode("targetBlockTime"), 0x19, TARGET >> 8, TARGET & 0xff);
+
+function i64(value) {
+  const bytes = new Uint8Array(8);
+  new DataView(bytes.buffer).setBigInt64(0, BigInt(value));
+  return bytes;
+}
+
+function context(bodyBytes, { version = 2, timestamp = NOW, spec = SPEC } = {}) {
   const text = new TextEncoder();
   const parts = [
     text.encode("LWPCTX"),
     Uint8Array.of(0, version, 0, 1, 0), // encoding version, ABI version, transaction scope
-    new Uint8Array(16), // height, timestamp
-    u32(3),
-    Uint8Array.of(0xa0, 0xa0, 0xa0), // stand-in chain spec bytes; the policy skips them
+    new Uint8Array(8), // height
+    i64(timestamp),
+    u32(spec.length),
+    spec,
     u32(PATH.length),
     ...PATH.flatMap((segment) => [u32(text.encode(segment).length), text.encode(segment)]),
   ];
@@ -75,11 +89,12 @@ function body(actions, signers = [ALICE], extra = {}) {
 }
 
 const accepts = (actions, signers, extra) => run(context(body(actions, signers, extra)));
+const post = (fields = {}) => JSON.stringify({ title: "hello", time: NOW - 1000, ...fields });
 
 test("an author writes, edits and deletes their own records", () => {
-  assert.ok(accepts([{ key: `user/${ALICE}/post/1`, newValue: "hello" }]));
-  assert.ok(accepts([{ key: `user/${ALICE}/post/1`, oldValue: "hello", newValue: "hello, world" }]));
-  assert.ok(accepts([{ key: `user/${ALICE}/post/1`, oldValue: "hello, world" }]));
+  assert.ok(accepts([{ key: `user/${ALICE}/post/1`, newValue: post() }]));
+  assert.ok(accepts([{ key: `user/${ALICE}/post/1`, oldValue: post(), newValue: post({ title: "hello, world" }) }]));
+  assert.ok(accepts([{ key: `user/${ALICE}/post/1`, oldValue: post({ title: "hello, world" }) }]));
   assert.ok(accepts([{ key: `user/${ALICE}/profile`, newValue: '{"name":"Alice"}' }]));
   assert.ok(accepts([{ key: `user/${ALICE}`, newValue: "x" }]));
   assert.ok(accepts([{ key: `user/${ALICE}/anything/a/client/invents`, newValue: "x" }]));
@@ -94,7 +109,7 @@ test("nobody writes or deletes another author's records", () => {
   // One bad action rejects the whole transaction.
   assert.ok(
     !accepts([
-      { key: `user/${ALICE}/post/1`, newValue: "mine" },
+      { key: `user/${ALICE}/post/1`, newValue: post() },
       { key: `user/${BOB}/post/1`, newValue: "not mine" },
     ]),
   );
@@ -118,7 +133,7 @@ test("an index entry belongs to the writer named in its last segment", () => {
 });
 
 test("any one of several signers may own a key", () => {
-  assert.ok(accepts([{ key: `user/${BOB}/post/1`, newValue: "hi" }], [ALICE, BOB]));
+  assert.ok(accepts([{ key: `user/${BOB}/post/1`, newValue: post() }], [ALICE, BOB]));
 });
 
 test("keys outside the two shapes are rejected", () => {
@@ -145,11 +160,50 @@ test("coin actions pass untouched", () => {
 });
 
 test("a malformed or unknown context is rejected", () => {
-  const good = body([{ key: `user/${ALICE}/post/1`, newValue: "hello" }]);
+  const good = body([{ key: `user/${ALICE}/post/1`, newValue: post() }]);
   assert.ok(run(context(good)));
   assert.ok(!run(context(good, { version: 1 })));
   assert.ok(!run(context(undefined)));
   assert.ok(!run(context(good.slice(0, good.length - 3))));
   assert.ok(!run(context(good).slice(0, 40)));
   assert.ok(!run(new Uint8Array(0)));
+});
+
+test("a post states its time: no later than its block, at most 60 target block times before", () => {
+  const created = (time) => accepts([{ key: `user/${ALICE}/post/1`, newValue: post({ time }) }]);
+  assert.ok(created(NOW));
+  assert.ok(created(NOW - WINDOW));
+  assert.ok(!created(NOW + 1), "after its block");
+  assert.ok(!created(NOW - WINDOW - 1), "too long before its block");
+  // The window is the chain's: a slower chain allows more.
+  const slow = Uint8Array.of(0xa1, 0x6f, ...new TextEncoder().encode("targetBlockTime"), 0x1a, 0, 0x01, 0x86, 0xa0); // 100000
+  const early = body([{ key: `user/${ALICE}/post/1`, newValue: post({ time: NOW - WINDOW - 1 }) }]);
+  assert.ok(run(context(early, { spec: slow })));
+  assert.ok(!run(context(early, { spec: Uint8Array.of(0xa0) })), "a spec without targetBlockTime");
+});
+
+test("a post's time is one plain top-level whole number", () => {
+  const created = (json) => accepts([{ key: `user/${ALICE}/post/1`, newValue: json }]);
+  const t = NOW - 1000;
+  assert.ok(created(`{"title":"a","nested":{"time":1},"time":${t}}`));
+  assert.ok(created(` { "body" : "x\\"y" , "time" : ${t} } `));
+  assert.ok(!created(`{"title":"no time"}`));
+  assert.ok(!created(`{"time":${t},"time":${t}}`), "twice");
+  assert.ok(!created(`{"\\u0074ime":${t}}`), "escaped key");
+  assert.ok(!created(`{"time":${t}.5}`));
+  assert.ok(!created(`{"time":"${t}"}`));
+  assert.ok(!created(`{"time":-${t}}`));
+  assert.ok(!created(`{"time":${t}} trailing`));
+  assert.ok(!created("hello"), "not JSON");
+});
+
+test("a changed post keeps its time; media, indexes and deletions are left alone", () => {
+  const key = `user/${ALICE}/post/1`;
+  const was = post({ time: NOW - WINDOW * 5 });
+  assert.ok(accepts([{ key, oldValue: was, newValue: post({ time: NOW - WINDOW * 5, title: "edited" }) }]));
+  assert.ok(!accepts([{ key, oldValue: was, newValue: post({ time: NOW - 1000, title: "edited" }) }]));
+  assert.ok(accepts([{ key, oldValue: was }]));
+  assert.ok(accepts([{ key: `user/${ALICE}/post/1/media/0`, newValue: "bafy" }]));
+  assert.ok(accepts([{ key: `index/post/1/${ALICE}`, newValue: "1" }]));
+  assert.ok(accepts([{ key: `user/${ALICE}/profile`, newValue: "{}" }]));
 });
