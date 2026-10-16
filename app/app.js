@@ -37,7 +37,10 @@ const settings = {
   moniker: store.get("monikerChain", null) ?? MONIKER.chain.join("/"),
 };
 const homePath = () => settings.home.split("/");
-const chainOf = (community) => [...homePath(), ...community.split("/")];
+// The Stoa chain is a community too, s/all: posts of its own, and its page
+// shows every community's posts with them.
+const ALL = "all";
+const chainOf = (community) => (community === ALL ? homePath() : [...homePath(), ...community.split("/")]);
 const nodeHost = () => {
   try {
     return new URL(settings.node).host;
@@ -173,7 +176,7 @@ async function timesOf(state) {
   return index.times(state.hash);
 }
 
-const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(homePath().length).join("/") : null);
+const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(homePath().length).join("/") : ALL);
 
 /** An amount from the node as a whole number of coins (missing is 0), or null if it isn't one. */
 function whole(value) {
@@ -239,8 +242,7 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
   // Already so on the chain: nothing to sign, nothing to pay.
   if (!actions.length) return () => Promise.resolve(true);
   if (cost.fee > 0n && cost.balance !== null && cost.balance < cost.fee) {
-    throw new Said(community ? coinsMessage(community, address, cost.fee)
-      : `Saving this to your home chain costs ${cost.fee} of its coins, and you have none there yet.`);
+    throw new Said(coinsMessage(community, address, cost.fee));
   }
   status("Waiting for Lattice Wallet…");
   try {
@@ -694,7 +696,7 @@ function drawFeed() {
       html += `<div class="panel bad"><p style="margin:0 0 8px">${failures.map((f) => esc(readFailure(f.error, f.c))).join(" ")} Posts from ${failures.length === 1 ? "it" : "them"} are missing below.</p><div class="row2">${retry}</div></div>`;
     }
     if (rows.length) {
-      html += rows.map((p) => postRow(p, names, { inCommunity: Boolean(community) })).join("");
+      html += rows.map((p) => postRow(p, names, { inCommunity: Boolean(community) && community !== ALL })).join("");
     } else if (!list.length) {
       html += `<div class="panel"><h2>Your home feed is empty</h2><p>Join a community to see its posts here.</p><div class="row2">${communities.slice(0, 6).map((c) => `<a class="btn" href="#/s/${encodeURIComponent(c)}">s/${esc(c)}</a>`).join("")}</div></div>`;
     } else {
@@ -914,7 +916,10 @@ function showAside() {
   }
   const n = follows(c).length;
   const detailsOpen = $("#aside details")?.open ? " open" : "";
-  $("#aside").innerHTML = `<div class="card"><h4>s/${esc(c)}</h4><p class="muted">A community with a chain of its own. Anyone can post here, and anyone can mine it.</p>
+  const about = c === ALL
+    ? "Every community's posts, with posts of its own on the Stoa chain. Anyone can post here, and anyone can mine it."
+    : "A community with a chain of its own. Anyone can post here, and anyone can mine it.";
+  $("#aside").innerHTML = `<div class="card"><h4>s/${esc(c)}</h4><p class="muted">${about}</p>
     <dl class="kv"><dt>Your coins</dt><dd id="aside-balance">${signer() ? "…" : `<button class="linkish" type="button" data-connect-or-get>Connect to see</button>`}</dd>
     <dt>Labels</dt><dd>${n ? `you follow ${plural(n, "account")}` : "you follow no one"} · <button class="linkish" type="button" data-mods="${esc(c)}">Manage</button></dd></dl>
     <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></details></div>`;
@@ -954,7 +959,7 @@ async function render() {
   showAside();
   refocus(again);
   if (route.view === "post") await showPost(route, id);
-  else if (route.view === "community") await showFeed([route.community], { title: `s/${route.community}`, community: route.community }, id);
+  else if (route.view === "community") await showFeed(route.community === ALL ? communities : [route.community], { title: `s/${route.community}`, community: route.community }, id);
   else await showFeed(joinedList().filter((c) => communities.includes(c)), { title: "Home" }, id);
   if (!stale(id)) refocus(again);
 }
@@ -1458,7 +1463,8 @@ $("#acc-disconnect").onclick = () => {
 async function boot() {
   setConnected((await wallet()?.address().catch(() => null)) ?? null);
   try {
-    communities = (await api("/api/chain/children", homePath())).directories ?? [];
+    const children = (await api("/api/chain/children", homePath())).directories ?? [];
+    communities = [ALL, ...children.filter((c) => c !== ALL)];
   } catch (error) {
     communities = [];
     shown = null;
