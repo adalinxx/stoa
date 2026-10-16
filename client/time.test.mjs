@@ -149,3 +149,21 @@ test("a block list that does not link up is set aside for the block-by-block wal
   await index.follow("b2", { pages: lying });
   assert.deepEqual(index.times("b2"), new Map([["alice/p1", 2000]]));
 });
+
+test("a block list that stops descending, or lacks the tip, is set aside", async () => {
+  const { sdk, volumes, block } = chain();
+  block("g", undefined, 1000, []);
+  block("b1tx", "g", 2000, [[create("user/alice/post/p1")]]);
+  block("b2", "b1tx", 3000, []);
+  const stuck = async (before) =>
+    before === undefined
+      ? { blocks: [{ height: 2n, hash: "b2", previousBlock: "b1tx", timestamp: 3000n, transactionCount: 0 }], nextBefore: 2n }
+      : { blocks: [], nextBefore: before };
+  const index = blockTimes(sdk, volumes);
+  await index.follow("b2", { pages: stuck });
+  assert.deepEqual(index.times("b2"), new Map([["alice/p1", 2000]]));
+  const elsewhere = async () => ({ blocks: [{ height: 9n, hash: "other", timestamp: 9000n, transactionCount: 0 }] });
+  const fresh = blockTimes(sdk, volumes);
+  await fresh.follow("b2", { pages: elsewhere });
+  assert.deepEqual(fresh.times("b2"), new Map([["alice/p1", 2000]]));
+});

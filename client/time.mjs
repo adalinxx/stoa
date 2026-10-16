@@ -8,10 +8,13 @@
 // times are read off whichever chain the current tip names.
 //
 // Most blocks carry no transactions. Given the node's block list (`pages`,
-// newest first), only blocks it lists with transactions are read; the rest
-// are taken as empty on the node's word, as its tip is. A list that does not
-// link up, or a listed block whose content disagrees with it, is set aside
-// and the blocks are read one by one instead.
+// newest first), only blocks it lists with transactions are read; the rest,
+// and which block each follows, are taken on the node's word, as its tip is.
+// So a lying node can misdate a post (give it another block's time, or none)
+// but not invent one: every post and every time comes from content read by
+// CID. A list that does not hold the tip, does not link up or descend, or
+// disagrees with a block read is set aside, and the blocks are read one by
+// one instead.
 import { list, volumeLoader } from "./state.mjs";
 
 const POST = /^user\/([^/]+)\/post\/([^/]+)$/;
@@ -50,7 +53,7 @@ export function blockTimes(sdk, volumes) {
    * transactions, read by CID, matches its row. Pages after the first are
    * asked for several at a time.
    */
-  async function listed(pages, since) {
+  async function listed(pages, since, tip) {
     const first = await pages(undefined);
     const rows = [...first.blocks];
     const top = rows[0]?.height;
@@ -62,9 +65,13 @@ export function blockTimes(sdk, volumes) {
       for (let at = BigInt(before); at > 0n && starts.length < LIST_AT_ONCE; at -= BigInt(PAGE)) starts.push(at);
       const more = await Promise.all(starts.map((at) => pages(at)));
       for (const page of more) rows.push(...page.blocks);
-      before = more.at(-1).nextBefore;
+      const next = more.at(-1).nextBefore;
+      // Each round must reach lower blocks, or the list is set aside.
+      if (next !== undefined && BigInt(next) >= BigInt(before)) throw new Error("block list does not descend");
+      before = next;
     }
-    if (top === undefined) return;
+    // The list must hold the tip this page read, so it describes that chain.
+    if (top === undefined || !rows.some((row) => row.hash === tip)) return;
     const kept = [];
     for (const [n, row] of rows.entries()) {
       if (Number(row.timestamp) < since || blocks.has(row.hash)) break;
@@ -95,7 +102,7 @@ export function blockTimes(sdk, volumes) {
      * `{ blocks: [{ height, hash, previousBlock?, timestamp, transactionCount }], nextBefore? }`.
      */
     async follow(tip, { since = -Infinity, pages } = {}) {
-      if (pages && !blocks.has(tip)) await listed(pages, since).catch(() => {});
+      if (pages && !blocks.has(tip)) await listed(pages, since, tip).catch(() => {});
       for (let hash = tip; hash !== undefined && !blocks.has(hash); ) {
         const volume = await volumes.get(hash);
         const block = sdk.decodeCanonicalBlock(volume.rootBytes());
