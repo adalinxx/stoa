@@ -28,12 +28,14 @@ jobs:
       options: --user root
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       # The node image has no git, which a checkout with submodules needs.
       - run: apt-get update -qq && apt-get install -y -qq git
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
       # The Lattice Wallet the page connects to, at a pinned commit.
       - uses: actions/checkout@v4
         with:

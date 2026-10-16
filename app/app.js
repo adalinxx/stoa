@@ -7,7 +7,7 @@ import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
 import { blockTimes } from "../client/time.mjs";
-import { cardName, MONIKER_CHAIN } from "../client/moniker.mjs";
+import { createMoniker, DEFAULTS as MONIKER } from "./vendor/moniker-sdk/src/index.mjs";
 import * as write from "../client/write.mjs";
 import { coinsMessage, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, safeLink, short, voteBox, when } from "./lib.mjs";
 
@@ -32,7 +32,9 @@ const store = {
 const settings = {
   node: store.get("node", "https://lattice-testnet-stoa.fly.dev"),
   home: store.get("home", "Nexus/testnet/stoa-3dc425"),
-  moniker: store.get("moniker", MONIKER_CHAIN),
+  // Kept only when the reader chose a chain other than the SDK's, so a
+  // reader on the default follows it when an SDK release moves Moniker.
+  moniker: store.get("monikerChain", null) ?? MONIKER.chain.join("/"),
 };
 const homePath = () => settings.home.split("/");
 const chainOf = (community) => [...homePath(), ...community.split("/")];
@@ -382,8 +384,27 @@ function saveChoice(records, keepLocally, what, { about = what } = {}) {
   return true;
 }
 
-// Names from Moniker cards, read once per address per visit. A node that
-// does not serve Moniker leaves everyone shown by address.
+// Names from Moniker cards, read once per address per visit through the
+// Moniker SDK: from the reader's node, else (for Moniker's own chain) from
+// Moniker's hosts, tried per read. When none serves it, everyone is shown by
+// address.
+function monikerFor() {
+  const chain = settings.moniker.split("/");
+  const own = createMoniker({ sdk, chain, nodes: [settings.node] });
+  // Moniker's hosts serve only Moniker's chain; `shared` also gives its pages.
+  const shared = chain.join("/") === MONIKER.chain.join("/") ? createMoniker({ sdk, chain }) : null;
+  return {
+    shared,
+    profile: (a) =>
+      own.profile(a).catch((error) => {
+        if (!shared) throw error;
+        return shared.profile(a);
+      }),
+  };
+}
+let moniker = monikerFor();
+/** What a byline shows from a profile: its name, else its @handle, at most 40 characters. */
+const bylineOf = (p) => (p.name?.trim() || (p.handle ? `@${p.handle}` : ""))?.slice(0, 40) || undefined;
 const names = new Map();
 // Lookups in flight or done, shared by overlapping renders. A lookup that
 // failed to read is dropped so a later render tries again; a change of node
@@ -403,10 +424,10 @@ async function loadNames(addresses) {
   const set = lookups;
   const wanted = [...new Set(addresses)].filter((a) => !set.has(a));
   if (wanted.length) {
-    const moniker = stateOf(settings.moniker.split("/"));
     for (const a of wanted) {
-      set.set(a, moniker.then((state) => cardName(state, a)).then(
-        (name) => {
+      set.set(a, moniker.profile(a).then(
+        (profile) => {
+          const name = bylineOf(profile);
           if (!name || set !== lookups) return;
           names.set(a, name);
           nameArrived();
@@ -1377,18 +1398,19 @@ $("#settings-form").addEventListener("submit", (event) => {
     $("#st-status").textContent = "The node must be a web address, like https://node.example.";
     return $("#st-node").focus();
   }
-  const home = $("#st-home").value.trim(), moniker = $("#st-moniker").value.trim();
-  const moved = (node && node !== settings.node) || (home && home !== settings.home) || (moniker && moniker !== settings.moniker);
+  const home = $("#st-home").value.trim(), monikerChain = $("#st-moniker").value.trim();
+  const moved = (node && node !== settings.node) || (home && home !== settings.home) || (monikerChain && monikerChain !== settings.moniker);
   if (!moved) return;
   settings.node = node || settings.node;
   settings.home = home || settings.home;
-  settings.moniker = moniker || settings.moniker;
+  settings.moniker = monikerChain || settings.moniker;
   store.set("node", settings.node);
   store.set("home", settings.home);
-  store.set("moniker", settings.moniker);
+  store.set("monikerChain", settings.moniker === MONIKER.chain.join("/") ? null : settings.moniker);
   // Names are read again, from the node and Moniker chain now chosen.
   names.clear();
   lookups = new Map();
+  moniker = monikerFor();
   timeIndexes.clear();
   $("#main").dataset.view = "";
   boot();
@@ -1401,6 +1423,9 @@ $("#account").addEventListener("toggle", async (event) => {
   if (!reader) return $("#account").hidePopover();
   $("#acc-name").textContent = nameOf(reader.address, names);
   $("#acc-address").textContent = reader.address;
+  // Moniker's pages show its own chain; another chain's card is edited elsewhere.
+  $("#acc-profile").hidden = !moniker.shared;
+  if (moniker.shared) $("#acc-profile").href = moniker.shared.pageURL(reader.address);
   $("#acc-copy").textContent = "Copy address";
   $("#acc-coins").innerHTML = communities.map((c) => `<dt>s/${esc(c)}</dt><dd data-coins="${esc(c)}">…</dd>`).join("");
   for (const c of communities) {

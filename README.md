@@ -36,8 +36,12 @@ That rule is the chain's only rule (`policy/`). Everything below is a
 convention clients share; values are JSON strings.
 
 Stoa keeps no profile. An author's name is the `name` on their card on
-Moniker (`Nexus/moniker`), the profile chain every Lattice app shares: the
-key `user/<a>/profile` there. Without a card, an author is shown by address.
+Moniker, the profile chain every Lattice app shares (now the testnet trial,
+`Nexus/testnet/moniker-da6f57`), else their `@handle` there; without either,
+they are shown by address. The page reads cards with the
+[Moniker SDK](https://github.com/adalinxx/moniker-sdk), a submodule at
+`app/vendor/moniker-sdk` pinned to a release: clone with
+`--recurse-submodules`, and review an upgrade like any dependency.
 
 Home chain `Nexus/stoa`:
 

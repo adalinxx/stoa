@@ -216,10 +216,21 @@ test("an author's name comes from their Moniker card; Stoa keeps no profile of i
   // Alice sees it on her account; Settings has no name to set.
   await openApp(page, poster, feed);
   await expect(page.locator("#who .account-name")).toHaveText("Alice");
+  // Moniker's pages show only Moniker's own chain, so on this one the account
+  // menu has no link to edit the card there.
+  await page.locator("#account-btn").click();
+  await expect(page.locator("#acc-profile")).toBeHidden();
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.locator("#settings")).toContainText("Your name comes from your Moniker profile");
   // The only fields are the node and chains, under Advanced.
   await expect(page.locator("#settings input:not(#st-advanced input)")).toHaveCount(0);
+  // Choosing another Moniker chain takes effect at once: no card there.
+  await page.locator("#st-advanced summary").click();
+  await page.locator("#st-moniker").fill("Nexus/nobody");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#who .account-name")).not.toHaveText("Alice");
+  await expect(page.locator(".post", { hasText: "The whitepaper" }).locator(".meta")).not.toContainText("Alice");
 });
 
 test("labels hide a post only for a reader who follows the labeller, at once, and Show reveals it", async ({ page }) => {
