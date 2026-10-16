@@ -2,7 +2,7 @@
 
 The real page (`app/`) in headless Chromium, driven through Playwright,
 against a private Lattice stack (`stack.mjs`): one host mining Nexus, a Stoa
-home chain, one community and a Moniker chain (names) from a 2-second test spec, charging a fee of 1
+home chain, one community and a Moniker chain (names) from a 2-second test spec, admitting any fee
 like the Stoa node. Each test opens its own browser with the real Lattice
 Wallet extension loaded (Chrome's `--headless=new`, which runs extensions);
 an account's key is imported into that wallet, whose node is set to the
@@ -12,8 +12,8 @@ Connect wallet, and every approval window the wallet opens is answered
 (Connect or Sign, or Decline where a test says so) and counted.
 
 Covered: the community list; a visitor without the wallet told to install
-it (keeping their draft, and when they vote); the no-coins message before
-writing (no faucet); a write declined in the wallet not sent; a community the
+it (keeping their draft, and when they vote); writing free, so an account
+without coins posts; a write declined in the wallet not sent; a community the
 node does not serve shown as such, not as empty; writes shown at once as
 pending and settling when their block lands; posting a
 link post and reading it back in its thread and the feed; nested comments;

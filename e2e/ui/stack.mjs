@@ -66,8 +66,8 @@ export async function start() {
   lattice("init");
   configure((t) => {
     Object.assign(t, { listen: ports.listen, rpc: ports.rpc, publicRead: ports.publicRead, webSocket: 0, publicSubmit: true });
-    // As the Stoa node: a fee of 1 per transaction, so posting costs coins.
-    t.minRelayFee = 1;
+    // As the Stoa node: any fee is admitted, so writing is free.
+    t.minRelayFee = 0;
     // Reads are many (one per trie node): no rate ceilings in the way.
     t.publicReadExpensiveRate = 10000;
     t.publicReadRate = 10000;
