@@ -108,7 +108,7 @@ async function* entries(load, node, volume, path) {
  * from the block by CID.
  */
 export async function tip(sdk, nodeURL, chainPath, volumes) {
-  const url = new URL("/api/block/latest", nodeURL);
+  const url = new URL(`${nodeURL.replace(/\/+$/, "")}/api/block/latest`);
   url.searchParams.set("chainPath", chainPath.join("/"));
   const response = await fetch(url);
   if (!response.ok) throw new Error(`latest block: HTTP ${response.status}`);
