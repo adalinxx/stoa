@@ -3,10 +3,10 @@
 // server of its own.
 import * as sdk from "./vendor/lattice-sdk.js";
 import { judge, treatments } from "../client/moderation.mjs";
-import { descends, nodeFinder, Offline } from "../client/nodes.mjs";
+import { nodeFinder, Offline } from "../client/nodes.mjs";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
-import { tip, view, volumeLoader } from "../client/state.mjs";
+import { atBlock, tip, view, volumeLoader } from "../client/state.mjs";
 import { blockTimes } from "../client/time.mjs";
 import { createMoniker, DEFAULTS as MONIKER } from "./vendor/moniker-sdk/src/index.mjs";
 import * as write from "../client/write.mjs";
@@ -156,8 +156,8 @@ const findNodes = () =>
       if (response.status === 404) return false;
       throw Object.assign(new Error(`${hostOf(url)}: HTTP ${response.status}`), { status: response.status });
     },
-    find: (chain, start) =>
-      new sdk.EndpointResolver(new sdk.NodeClient(start, [chain[0]], { fetch: browserFetch }), { fetch: browserFetch })
+    find: (chain, start, at) =>
+      new sdk.EndpointResolver(new sdk.NodeClient(start, at, { fetch: browserFetch }), { fetch: browserFetch })
         .resolve(chain)
         .catch(() => []),
   });
@@ -190,16 +190,11 @@ async function stateOf(chain) {
   const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${node.url}/volumes`, { chainPath: chain }));
   let hash, generalStateCID;
   try {
-    ({ hash, generalStateCID } = await tip(sdk, node.url, chain, volumes));
-    // A found node's tip must follow the chain the parent committed.
-    if (node.anchor) {
-      const blockAt = async (cid) => sdk.decodeCanonicalBlock((await volumes.get(cid)).rootBytes());
-      if (!(await descends(blockAt, hash, node.anchor))) throw new Error(`${hostOf(node.url)} answered with blocks the parent chain didn't commit`);
-      node.anchor = hash;
-    }
+    // A found node is read at the block the parent chain committed, not its tip.
+    ({ hash, generalStateCID } = node.block ? await atBlock(sdk, volumes, node.block) : await tip(sdk, node.url, chain, volumes));
   } catch (error) {
     // Searched again on the next read: the node may have stopped serving it.
-    nodeFor.forget(chain);
+    nodeFor.forget(chain, node);
     throw error;
   }
   return { chain, hash, volumes, ...view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID) };
@@ -965,7 +960,7 @@ function showAside() {
     <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>`;
   // Each read fills only the aside it was made for.
   const height = $("#aside-height"), balance = $("#aside-balance"), node = $("#aside-node");
-  nodeFor(chainOf(c)).then(({ url, anchor }) => (node.textContent = anchor ? `${hostOf(url)} (found for this community)` : hostOf(url)), () => {});
+  nodeFor(chainOf(c)).then(({ url, block }) => (node.textContent = block ? `${hostOf(url)} (found for this community)` : hostOf(url)), () => {});
   api("/api/chain/info", chainOf(c)).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
   const reader = signer();
   if (reader) balanceOn(chainOf(c), reader.address).then((b) => (balance.textContent = b === null ? "unavailable" : String(b)));

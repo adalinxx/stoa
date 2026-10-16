@@ -113,6 +113,11 @@ export async function tip(sdk, nodeURL, chainPath, volumes) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`latest block: HTTP ${response.status}`);
   const { hash } = await response.json();
+  return atBlock(sdk, volumes, hash);
+}
+
+/** The general-state root at block `hash`, read from the block by CID. */
+export async function atBlock(sdk, volumes, hash) {
   const block = sdk.decodeCanonicalBlock((await volumes.get(hash)).rootBytes());
   const state = sdk.decodeCanonicalLatticeState((await volumes.get(block.postStateCID)).rootBytes());
   return { hash, generalStateCID: state.generalStateCID };
