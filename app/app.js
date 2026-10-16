@@ -963,7 +963,7 @@ function showAside() {
     <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>`;
   // Each read fills only the aside it was made for.
   const height = $("#aside-height"), balance = $("#aside-balance"), node = $("#aside-node");
-  nodeFor(chainOf(c)).then(({ url, block }) => (node.textContent = block ? `${hostOf(url)} (found for this community)` : hostOf(url)), () => {});
+  nodeFor(chainOf(c)).then(({ url, block }) => (node.textContent = block ? `${hostOf(url)}, found for this community: its operator declared it, and what it serves isn't checked` : hostOf(url)), () => {});
   api("/api/chain/info", chainOf(c)).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
   const reader = signer();
   if (reader) balanceOn(chainOf(c), reader.address).then((b) => (balance.textContent = b === null ? "unavailable" : String(b)));

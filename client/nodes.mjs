@@ -5,8 +5,11 @@
 //
 // The reader chose their node, and its word on a chain's tip is taken. A
 // found node was chosen by no one, so it is read only at the block the parent
-// chain committed (as the chosen node reports it): it can withhold, not make
-// up. The search runs again after `ttl` ms, to follow newer commitments.
+// chain committed (as the chosen node reports it), never at a tip of its own
+// choosing. A parent records child blocks without running them, so what a
+// found node serves is not verified: whoever mines a parent block can commit
+// a child block of their own making. The search runs again after `ttl` ms,
+// to follow newer commitments.
 
 /** No node serves the chain, as far as the chosen node's directory says. */
 export class Offline extends Error {
