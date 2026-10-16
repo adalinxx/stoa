@@ -229,25 +229,24 @@ async function balanceOn(chain, address) {
 async function accountOn(node, chain, address) {
   const [info, account] = await Promise.all([
     apiOn(node.url, "/api/chain/info", chain),
-    address ? apiOn(node.url, `/api/state/account/${address}`, chain).catch((error) => {
-      if (error.status === 404) return {};
-      throw error;
-    }) : {},
+    // Any other failure leaves what is held unknown.
+    address ? apiOn(node.url, `/api/state/account/${address}`, chain).catch((error) => (error.status === 404 ? {} : null)) : {},
   ]);
-  return { info, balance: whole(account.balance) };
+  return { info, balance: account ? whole(account.balance) : null };
 }
 
 /** What writing on `chain` costs the reader, and what they hold there. */
 async function costOn(chain, address) {
-  return nodes.read(chain, async (node) => {
+  const cost = await nodes.read(chain, async (node) => {
     // A found node's word sets no fee: the write goes with none, and a node
     // that wants one refuses it in the wallet rather than charging what it says.
     if (node.found) return { fee: 0n, balance: null };
     const { info, balance } = await accountOn(node, chain, address);
-    const fee = whole(info.minRelayFee);
-    if (fee === null) throw new Error("its fee isn't a whole number of coins");
-    return { fee, balance };
+    return { fee: whole(info.minRelayFee), balance };
   });
+  // Said, not passed to the next node: a bad fee is this node's answer.
+  if (cost.fee === null) throw new Error("its fee isn't a whole number of coins");
+  return cost;
 }
 
 /**
