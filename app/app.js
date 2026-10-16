@@ -176,7 +176,7 @@ async function timesOf(state) {
   return index.times(state.hash);
 }
 
-const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(homePath().length).join("/") : null);
+const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(homePath().length).join("/") : ALL);
 
 /** An amount from the node as a whole number of coins (missing is 0), or null if it isn't one. */
 function whole(value) {
@@ -242,8 +242,7 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
   // Already so on the chain: nothing to sign, nothing to pay.
   if (!actions.length) return () => Promise.resolve(true);
   if (cost.fee > 0n && cost.balance !== null && cost.balance < cost.fee) {
-    throw new Said(community ? coinsMessage(community, address, cost.fee)
-      : `Saving this to your home chain costs ${cost.fee} of its coins, and you have none there yet.`);
+    throw new Said(coinsMessage(community, address, cost.fee));
   }
   status("Waiting for Lattice Wallet…");
   try {

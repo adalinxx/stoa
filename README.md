@@ -10,6 +10,7 @@ decides what to show.
   (`Nexus/stoa/bitcoin/lightning`).
 - The home chain is a community too, `s/all`, like Reddit's r/all: anyone
   can post on it, and its page shows its own posts with every community's.
+  The name `all` is therefore reserved: a child chain named `all` is not shown.
 - Every record belongs to its author. Only the author can edit or delete it.
 - Moderation is comments: a moderator labels a post by replying to it with
   labels. Nothing is deleted. Each reader chooses whose labels to follow and
