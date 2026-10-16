@@ -115,12 +115,15 @@ test("a visitor reads the community list from the node", async ({ page }) => {
   await expect(page.locator("#who")).toHaveText("Connect wallet");
 });
 
-test("an account without coins is told, before writing, to receive or mine them; there is no faucet", async ({ page }) => {
+test("writing is free: an account without coins posts, and it lands", async ({ page }) => {
   const broke = newAccount();
   await openApp(page, broke, feed);
   await page.getByRole("button", { name: "New post" }).click();
-  await expect(page.locator("#np-cost")).toContainText(`and you have none. Receive some at your address (${broke.address.slice(0, 8)}…${broke.address.slice(-4)}), or mine s/${community}`);
-  await expect(page.locator("#np-post")).toBeDisabled();
+  await expect(page.locator("#np-cost")).toContainText("Free");
+  await page.locator("#new [data-close]").click();
+  await newPost(page, { title: "Posted with no coins" });
+  await expect(page.locator(".op .meta time")).toBeVisible();
+  await expect(page.locator(".op h1")).toHaveText("Posted with no coins");
 });
 
 test("a visitor without the wallet is told to install it to post", async () => {
