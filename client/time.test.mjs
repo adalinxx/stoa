@@ -97,3 +97,55 @@ test("a key deleted and created again takes its latest creation", async () => {
   await index.follow("b2");
   assert.equal(index.times("b2").get("alice/p1"), 3000);
 });
+
+// The node's block list over `hashes` (newest first), as /api/blocks pages
+// it. Built before the test counts reads: the list is the node's answer, not
+// a content read.
+async function lister(volumes, hashes) {
+  const all = [];
+  for (const hash of hashes) {
+    const block = (await volumes.get(hash)).rootBytes();
+    all.push({ height: block.height, hash, previousBlock: block.parentCID, timestamp: block.timestamp, transactionCount: hash.endsWith("tx") ? 1 : 0 });
+  }
+  return async (before) => {
+    const below = before === undefined ? all : all.filter((row) => row.height < before);
+    const page = below.slice(0, 25);
+    return { blocks: page, ...(page.at(-1)?.height > 0n ? { nextBefore: page.at(-1).height } : {}) };
+  };
+}
+
+test("with the node's block list, only blocks with transactions are read", async () => {
+  const { sdk, volumes, block } = chain();
+  block("g", undefined, 1000, []);
+  let parent = "g";
+  const hashes = ["g"];
+  for (let n = 1; n <= 60; n++) {
+    const hash = n === 30 ? "b30tx" : `b${n}`;
+    block(hash, parent, 1000 + n * 1000, n === 30 ? [[create("user/alice/post/p1")]] : []);
+    hashes.unshift(hash);
+    parent = hash;
+  }
+  const pages = await lister(volumes, hashes);
+  volumes.reads = 0;
+  const index = blockTimes(sdk, volumes);
+  await index.follow("b60", { pages });
+  assert.deepEqual(index.times("b60"), new Map([["alice/p1", 31000]]));
+  // The one block with a transaction, and that transaction's Volume.
+  assert.equal(volumes.reads, 2);
+});
+
+test("a block list that does not link up is set aside for the block-by-block walk", async () => {
+  const { sdk, volumes, block } = chain();
+  block("g", undefined, 1000, []);
+  block("b1tx", "g", 2000, [[create("user/alice/post/p1")]]);
+  block("b2", "b1tx", 3000, []);
+  const lying = async () => ({
+    blocks: [
+      { height: 2n, hash: "b2", previousBlock: "elsewhere", timestamp: 3000n, transactionCount: 0 },
+      { height: 1n, hash: "b1tx", previousBlock: "g", timestamp: 2000n, transactionCount: 0 },
+    ],
+  });
+  const index = blockTimes(sdk, volumes);
+  await index.follow("b2", { pages: lying });
+  assert.deepEqual(index.times("b2"), new Map([["alice/p1", 2000]]));
+});

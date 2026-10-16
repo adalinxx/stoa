@@ -6,9 +6,18 @@
 //
 // Blocks are kept by hash with their parent, so a reorg needs no undo: the
 // times are read off whichever chain the current tip names.
+//
+// Most blocks carry no transactions. Given the node's block list (`pages`,
+// newest first), only blocks it lists with transactions are read; the rest
+// are taken as empty on the node's word, as its tip is. A list that does not
+// link up, or a listed block whose content disagrees with it, is set aside
+// and the blocks are read one by one instead.
 import { list, volumeLoader } from "./state.mjs";
 
 const POST = /^user\/([^/]+)\/post\/([^/]+)$/;
+// The node's block list: rows per page, and pages asked for at once.
+const PAGE = 25;
+const LIST_AT_ONCE = 8;
 
 /** The index over one chain's blocks, read through `volumes` (a VolumeClient). */
 export function blockTimes(sdk, volumes) {
@@ -35,13 +44,58 @@ export function blockTimes(sdk, volumes) {
     return found;
   }
 
+  /**
+   * The node's list from its newest block back to one already read, genesis,
+   * or `since`: kept only if every row links to the next and each block with
+   * transactions, read by CID, matches its row. Pages after the first are
+   * asked for several at a time.
+   */
+  async function listed(pages, since) {
+    const first = await pages(undefined);
+    const rows = [...first.blocks];
+    const top = rows[0]?.height;
+    let before = first.nextBefore;
+    const done = () =>
+      before === undefined || rows.some((row) => blocks.has(row.hash) || Number(row.timestamp) < since);
+    while (!done()) {
+      const starts = [];
+      for (let at = BigInt(before); at > 0n && starts.length < LIST_AT_ONCE; at -= BigInt(PAGE)) starts.push(at);
+      const more = await Promise.all(starts.map((at) => pages(at)));
+      for (const page of more) rows.push(...page.blocks);
+      before = more.at(-1).nextBefore;
+    }
+    if (top === undefined) return;
+    const kept = [];
+    for (const [n, row] of rows.entries()) {
+      if (Number(row.timestamp) < since || blocks.has(row.hash)) break;
+      const below = rows[n + 1];
+      if (below && row.previousBlock !== below.hash) return;
+      if (row.height !== top - BigInt(n)) return;
+      kept.push(row);
+    }
+    const read = await Promise.all(
+      kept.map(async (row) => {
+        const entry = { ...(row.previousBlock && { parent: row.previousBlock }), timestamp: Number(row.timestamp), created: [] };
+        if (row.transactionCount === 0) return [row.hash, entry];
+        const volume = await volumes.get(row.hash);
+        const block = sdk.decodeCanonicalBlock(volume.rootBytes());
+        if (Number(block.timestamp) !== entry.timestamp || block.parentCID !== row.previousBlock) throw new Error("block list disagrees");
+        return [row.hash, { ...entry, created: await created(block.transactionsCID, volume) }];
+      }),
+    );
+    for (const [hash, entry] of read) blocks.set(hash, entry);
+  }
+
   return {
     /**
      * Reads the blocks from `tip` back to the first one already read,
      * genesis, or the first older than `since` (milliseconds), which is left
-     * unread.
+     * unread. `pages(before)`, when given, answers the node's block list
+     * below height `before` (the newest when undefined), as
+     * `{ blocks: [{ height, hash, previousBlock?, timestamp, transactionCount }], nextBefore? }`.
      */
-    async follow(tip, { since = -Infinity } = {}) {
+    async follow(tip, { since = -Infinity, pages } = {}) {
+      if (pages && !blocks.has(tip)) await listed(pages, since).catch(() => {});
       for (let hash = tip; hash !== undefined && !blocks.has(hash); ) {
         const volume = await volumes.get(hash);
         const block = sdk.decodeCanonicalBlock(volume.rootBytes());

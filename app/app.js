@@ -192,7 +192,7 @@ async function stateOf(chain) {
     finder.forget(chain, node);
     throw error;
   }
-  return { chain, hash, volumes, ...view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID) };
+  return { chain, hash, url: node.url, volumes, ...view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID) };
 }
 
 const timeIndexes = new Map();
@@ -201,7 +201,9 @@ async function timesOf(state) {
   const key = state.chain.join("/");
   if (!timeIndexes.has(key)) timeIndexes.set(key, blockTimes(sdk, state.volumes));
   const index = timeIndexes.get(key);
-  await index.follow(state.hash, { since: Date.now() - WINDOW_DAYS * 864e5 });
+  const blocks = new sdk.NodeClient(state.url, state.chain, { fetch: browserFetch });
+  const pages = (before) => blocks.blocks({ limit: 25, ...(before === undefined ? {} : { before }) });
+  await index.follow(state.hash, { since: Date.now() - WINDOW_DAYS * 864e5, pages });
   return index.times(state.hash);
 }
 
