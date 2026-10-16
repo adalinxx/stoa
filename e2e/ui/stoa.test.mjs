@@ -216,6 +216,10 @@ test("an author's name comes from their Moniker card; Stoa keeps no profile of i
   // Alice sees it on her account; Settings has no name to set.
   await openApp(page, poster, feed);
   await expect(page.locator("#who .account-name")).toHaveText("Alice");
+  // Her account menu links to her Moniker page, where the card is edited.
+  await page.locator("#account-btn").click();
+  await expect(page.getByRole("link", { name: "Edit profile on Moniker" })).toHaveAttribute("href", new RegExp(`${poster.address}$`));
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.locator("#settings")).toContainText("Your name comes from your Moniker profile");
   // The only fields are the node and chains, under Advanced.

@@ -7,7 +7,7 @@ import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
 import { blockTimes } from "../client/time.mjs";
-import { cardName, MONIKER_CHAIN } from "../client/moniker.mjs";
+import { createMoniker, DEFAULTS as MONIKER } from "./vendor/moniker-sdk/src/index.mjs";
 import * as write from "../client/write.mjs";
 import { coinsMessage, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, safeLink, short, voteBox, when } from "./lib.mjs";
 
@@ -32,7 +32,7 @@ const store = {
 const settings = {
   node: store.get("node", "https://lattice-testnet-stoa.fly.dev"),
   home: store.get("home", "Nexus/testnet/stoa-3dc425"),
-  moniker: store.get("moniker", MONIKER_CHAIN),
+  moniker: store.get("moniker", MONIKER.chain.join("/")),
 };
 const homePath = () => settings.home.split("/");
 const chainOf = (community) => [...homePath(), ...community.split("/")];
@@ -382,8 +382,17 @@ function saveChoice(records, keepLocally, what, { about = what } = {}) {
   return true;
 }
 
-// Names from Moniker cards, read once per address per visit. A node that
-// does not serve Moniker leaves everyone shown by address.
+// Names from Moniker cards, read once per address per visit through the
+// Moniker SDK: from the reader's node first, else (for Moniker's own chain)
+// Moniker's hosts. When none serves it, everyone is shown by address.
+const monikerFor = () => {
+  const chain = settings.moniker.split("/");
+  const own = chain.join("/") === MONIKER.chain.join("/") ? MONIKER.nodes : [];
+  return createMoniker({ sdk, chain, nodes: [...new Set([settings.node, ...own])] });
+};
+let moniker = monikerFor();
+/** What a byline shows from a profile: its name (at most 40 characters), else its @handle. */
+const bylineOf = (p) => p.name?.trim().slice(0, 40) || (p.handle ? `@${p.handle}` : undefined);
 const names = new Map();
 // Lookups in flight or done, shared by overlapping renders. A lookup that
 // failed to read is dropped so a later render tries again; a change of node
@@ -403,17 +412,18 @@ async function loadNames(addresses) {
   const set = lookups;
   const wanted = [...new Set(addresses)].filter((a) => !set.has(a));
   if (wanted.length) {
-    const moniker = stateOf(settings.moniker.split("/"));
-    for (const a of wanted) {
-      set.set(a, moniker.then((state) => cardName(state, a)).then(
-        (name) => {
+    const profiles = moniker.profiles(wanted);
+    wanted.forEach((a, i) => {
+      set.set(a, profiles.then(
+        (found) => {
+          const name = bylineOf(found[i]);
           if (!name || set !== lookups) return;
           names.set(a, name);
           nameArrived();
         },
         () => set.delete(a),
       ));
-    }
+    });
   }
   // A render waits for its names a moment at most: they are a nicety, and one
   // stalled read must not hold every page that shows that author.
@@ -1389,6 +1399,7 @@ $("#settings-form").addEventListener("submit", (event) => {
   // Names are read again, from the node and Moniker chain now chosen.
   names.clear();
   lookups = new Map();
+  moniker = monikerFor();
   timeIndexes.clear();
   $("#main").dataset.view = "";
   boot();
@@ -1401,6 +1412,7 @@ $("#account").addEventListener("toggle", async (event) => {
   if (!reader) return $("#account").hidePopover();
   $("#acc-name").textContent = nameOf(reader.address, names);
   $("#acc-address").textContent = reader.address;
+  $("#acc-profile").href = moniker.pageURL(reader.address);
   $("#acc-copy").textContent = "Copy address";
   $("#acc-coins").innerHTML = communities.map((c) => `<dt>s/${esc(c)}</dt><dd data-coins="${esc(c)}">…</dd>`).join("");
   for (const c of communities) {

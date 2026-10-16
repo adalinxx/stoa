@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { operator } from "../../client/media.mjs";
 import { tip, view, volumeLoader } from "../../client/state.mjs";
 import * as write from "../../client/write.mjs";
+import { MONIKER } from "./stack.mjs";
 
 export const sdk = await import(process.env.LATTICE_SDK);
 export const stack = JSON.parse(readFileSync(fileURLToPath(new URL("./.stack.json", import.meta.url)), "utf8"));
@@ -101,13 +102,14 @@ async function walletHolds(context, who) {
  * visitor (null).
  */
 export async function openApp(page, who, hash = "#/") {
-  await page.addInitScript(({ node, home }) => {
+  await page.addInitScript(({ node, home, moniker }) => {
     if (sessionStorage.getItem("stoa-test-seeded")) return;
     sessionStorage.setItem("stoa-test-seeded", "1");
     localStorage.clear();
     localStorage.setItem("stoa:node", JSON.stringify(node));
     localStorage.setItem("stoa:home", JSON.stringify(home));
-  }, { node: stack.node, home: stack.home });
+    localStorage.setItem("stoa:moniker", JSON.stringify(moniker));
+  }, { node: stack.node, home: stack.home, moniker: MONIKER.join("/") });
   if (who) await walletHolds(page.context(), who);
   await page.goto(stack.app + hash);
   if (!who) return;
