@@ -32,7 +32,9 @@ const store = {
 const settings = {
   node: store.get("node", "https://lattice-testnet-stoa.fly.dev"),
   home: store.get("home", "Nexus/testnet/stoa-3dc425"),
-  moniker: store.get("moniker", MONIKER.chain.join("/")),
+  // Kept only when the reader chose a chain other than the SDK's, so a
+  // reader on the default follows it when an SDK release moves Moniker.
+  moniker: store.get("monikerChain", null) ?? MONIKER.chain.join("/"),
 };
 const homePath = () => settings.home.split("/");
 const chainOf = (community) => [...homePath(), ...community.split("/")];
@@ -383,16 +385,31 @@ function saveChoice(records, keepLocally, what, { about = what } = {}) {
 }
 
 // Names from Moniker cards, read once per address per visit through the
-// Moniker SDK: from the reader's node first, else (for Moniker's own chain)
-// Moniker's hosts. When none serves it, everyone is shown by address.
-const monikerFor = () => {
+// Moniker SDK: from the reader's node when it serves the chain, else (for
+// Moniker's own chain) from Moniker's hosts. When none serves it, everyone is
+// shown by address.
+function monikerFor() {
   const chain = settings.moniker.split("/");
-  const own = chain.join("/") === MONIKER.chain.join("/") ? MONIKER.nodes : [];
-  return createMoniker({ sdk, chain, nodes: [...new Set([settings.node, ...own])] });
-};
+  const own = createMoniker({ sdk, chain, nodes: [settings.node] });
+  // Moniker's hosts serve only Moniker's chain; `shared` also gives its pages.
+  const shared = chain.join("/") === MONIKER.chain.join("/") ? createMoniker({ sdk, chain }) : null;
+  let chosen = null;
+  const choose = () =>
+    (chosen ??= own.state().then(
+      () => own,
+      (error) => {
+        if (shared) return shared;
+        throw error;
+      },
+    ).catch((error) => {
+      chosen = null;
+      throw error;
+    }));
+  return { shared, profile: async (a) => (await choose()).profile(a) };
+}
 let moniker = monikerFor();
-/** What a byline shows from a profile: its name (at most 40 characters), else its @handle. */
-const bylineOf = (p) => p.name?.trim().slice(0, 40) || (p.handle ? `@${p.handle}` : undefined);
+/** What a byline shows from a profile: its name, else its @handle, at most 40 characters. */
+const bylineOf = (p) => (p.name?.trim() || (p.handle ? `@${p.handle}` : ""))?.slice(0, 40) || undefined;
 const names = new Map();
 // Lookups in flight or done, shared by overlapping renders. A lookup that
 // failed to read is dropped so a later render tries again; a change of node
@@ -412,18 +429,17 @@ async function loadNames(addresses) {
   const set = lookups;
   const wanted = [...new Set(addresses)].filter((a) => !set.has(a));
   if (wanted.length) {
-    const profiles = moniker.profiles(wanted);
-    wanted.forEach((a, i) => {
-      set.set(a, profiles.then(
-        (found) => {
-          const name = bylineOf(found[i]);
+    for (const a of wanted) {
+      set.set(a, moniker.profile(a).then(
+        (profile) => {
+          const name = bylineOf(profile);
           if (!name || set !== lookups) return;
           names.set(a, name);
           nameArrived();
         },
         () => set.delete(a),
       ));
-    });
+    }
   }
   // A render waits for its names a moment at most: they are a nicety, and one
   // stalled read must not hold every page that shows that author.
@@ -1395,7 +1411,7 @@ $("#settings-form").addEventListener("submit", (event) => {
   settings.moniker = moniker || settings.moniker;
   store.set("node", settings.node);
   store.set("home", settings.home);
-  store.set("moniker", settings.moniker);
+  store.set("monikerChain", settings.moniker === MONIKER.chain.join("/") ? null : settings.moniker);
   // Names are read again, from the node and Moniker chain now chosen.
   names.clear();
   lookups = new Map();
@@ -1412,7 +1428,9 @@ $("#account").addEventListener("toggle", async (event) => {
   if (!reader) return $("#account").hidePopover();
   $("#acc-name").textContent = nameOf(reader.address, names);
   $("#acc-address").textContent = reader.address;
-  $("#acc-profile").href = moniker.pageURL(reader.address);
+  // Moniker's pages show its own chain; another chain's card is edited elsewhere.
+  $("#acc-profile").hidden = !moniker.shared;
+  if (moniker.shared) $("#acc-profile").href = moniker.shared.pageURL(reader.address);
   $("#acc-copy").textContent = "Copy address";
   $("#acc-coins").innerHTML = communities.map((c) => `<dt>s/${esc(c)}</dt><dd data-coins="${esc(c)}">…</dd>`).join("");
   for (const c of communities) {

@@ -108,7 +108,7 @@ export async function openApp(page, who, hash = "#/") {
     localStorage.clear();
     localStorage.setItem("stoa:node", JSON.stringify(node));
     localStorage.setItem("stoa:home", JSON.stringify(home));
-    localStorage.setItem("stoa:moniker", JSON.stringify(moniker));
+    localStorage.setItem("stoa:monikerChain", JSON.stringify(moniker));
   }, { node: stack.node, home: stack.home, moniker: MONIKER.join("/") });
   if (who) await walletHolds(page.context(), who);
   await page.goto(stack.app + hash);

@@ -216,9 +216,10 @@ test("an author's name comes from their Moniker card; Stoa keeps no profile of i
   // Alice sees it on her account; Settings has no name to set.
   await openApp(page, poster, feed);
   await expect(page.locator("#who .account-name")).toHaveText("Alice");
-  // Her account menu links to her Moniker page, where the card is edited.
+  // Moniker's pages show only Moniker's own chain, so on this one the account
+  // menu has no link to edit the card there.
   await page.locator("#account-btn").click();
-  await expect(page.getByRole("link", { name: "Edit profile on Moniker" })).toHaveAttribute("href", new RegExp(`${poster.address}$`));
+  await expect(page.locator("#acc-profile")).toBeHidden();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.locator("#settings")).toContainText("Your name comes from your Moniker profile");
