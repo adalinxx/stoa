@@ -219,30 +219,35 @@ function whole(value) {
  * does not serve, so 404 counts as 0 only on a chain it serves.
  */
 async function balanceOn(chain, address) {
-  try {
-    await api("/api/chain/info", chain);
-  } catch {
-    return null;
-  }
-  return api(`/api/state/account/${address}`, chain).then((a) => {
-    return whole(a.balance);
-  }, (error) => (error.status === 404 ? 0n : null));
+  return nodes.read(chain, async (node) => (await accountOn(node, chain, address)).balance).catch(() => null);
+}
+
+/**
+ * What `node` says `address` holds on `chain` (a 404 is an account it has no
+ * record of: nothing held), with the chain's info, both from that one node.
+ */
+async function accountOn(node, chain, address) {
+  const [info, account] = await Promise.all([
+    apiOn(node.url, "/api/chain/info", chain),
+    address ? apiOn(node.url, `/api/state/account/${address}`, chain).catch((error) => {
+      if (error.status === 404) return {};
+      throw error;
+    }) : {},
+  ]);
+  return { info, balance: whole(account.balance) };
 }
 
 /** What writing on `chain` costs the reader, and what they hold there. */
 async function costOn(chain, address) {
-  // A found node's word sets no fee: the write goes with none, and a node
-  // that wants one refuses it in the wallet rather than charging what it says.
-  if ((await nodes.list(chain))[0]?.found) return { fee: 0n, balance: null };
-  const [info, account] = await Promise.all([
-    api("/api/chain/info", chain),
-    // chain/info answered, so the node serves this chain: a 404 here is an
-    // account it has no record of (nothing held); any other failure is unknown.
-    address ? api(`/api/state/account/${address}`, chain).catch((error) => (error.status === 404 ? {} : null)) : {},
-  ]);
-  const fee = whole(info.minRelayFee);
-  if (fee === null) throw new Error("its fee isn't a whole number of coins");
-  return { fee, balance: account ? whole(account.balance) : null };
+  return nodes.read(chain, async (node) => {
+    // A found node's word sets no fee: the write goes with none, and a node
+    // that wants one refuses it in the wallet rather than charging what it says.
+    if (node.found) return { fee: 0n, balance: null };
+    const { info, balance } = await accountOn(node, chain, address);
+    const fee = whole(info.minRelayFee);
+    if (fee === null) throw new Error("its fee isn't a whole number of coins");
+    return { fee, balance };
+  });
 }
 
 /**
