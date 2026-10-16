@@ -384,4 +384,9 @@ test("a community no node serves says so, with a way out, instead of looking emp
   await panel.getByRole("button", { name: "Choose another node" }).click();
   await expect(page.locator("#st-node")).toBeVisible();
   await expect(page.locator("#st-node")).toBeFocused();
+  // An address the SDK will not dial is refused, not saved.
+  await page.locator("#st-node").fill("http://192.168.1.5:8080");
+  await page.locator('#settings-form button[value="save"]').click();
+  await expect(page.locator("#st-status")).toContainText("must be an https address");
+  expect(String(await page.evaluate(() => localStorage.getItem("stoa:node")))).not.toContain("192.168.1.5");
 });

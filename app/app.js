@@ -29,8 +29,18 @@ const store = {
     }
   },
 };
+const DEFAULT_NODE = "https://lattice-testnet-stoa.fly.dev";
+/** `url` as a node address the SDK will dial (https, or http on loopback), else null. */
+const nodeAddress = (url) => {
+  try {
+    return sdk.normalizeNodeURL(url);
+  } catch {
+    return null;
+  }
+};
 const settings = {
-  node: store.get("node", "https://lattice-testnet-stoa.fly.dev"),
+  // A node saved before addresses were checked falls back to the default.
+  node: nodeAddress(store.get("node", DEFAULT_NODE)) ?? DEFAULT_NODE,
   home: store.get("home", "Nexus/testnet/stoa-3dc425"),
   // Kept only when the reader chose a chain other than the SDK's, so a
   // reader on the default follows it when an SDK release moves Moniker.
@@ -1419,12 +1429,13 @@ async function disconnect() {
 $("#st-disconnect").onclick = disconnect;
 $("#settings-form").addEventListener("submit", (event) => {
   if (event.submitter?.value !== "save") return;
-  const node = $("#st-node").value.trim().replace(/\/$/, "");
-  if (node && !safeLink(node)) {
+  const typed = $("#st-node").value.trim();
+  const node = typed && nodeAddress(typed);
+  if (typed && !node) {
     event.preventDefault();
     $("#st-advanced").open = true;
     $("#st-status").classList.add("bad");
-    $("#st-status").textContent = "The node must be a web address, like https://node.example.";
+    $("#st-status").textContent = "The node must be an https address, like https://node.example (http only for this computer).";
     return $("#st-node").focus();
   }
   const home = $("#st-home").value.trim(), monikerChain = $("#st-moniker").value.trim();
