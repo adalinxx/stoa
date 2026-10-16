@@ -3,7 +3,7 @@
 // server of its own.
 import * as sdk from "./vendor/lattice-sdk.js";
 import { judge, treatments } from "../client/moderation.mjs";
-import { nodeFinder, Offline } from "../client/nodes.mjs";
+import { descends, nodeFinder, Offline } from "../client/nodes.mjs";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
@@ -151,17 +151,20 @@ const findNodes = () =>
     serves: async (url, chain) => {
       const info = new URL("/api/chain/info", url);
       info.searchParams.set("chainPath", chain.join("/"));
-      return (await fetch(info)).ok;
+      const response = await fetch(info, { signal: AbortSignal.timeout(15_000) });
+      if (response.ok) return true;
+      if (response.status === 404) return false;
+      throw Object.assign(new Error(`${hostOf(url)}: HTTP ${response.status}`), { status: response.status });
     },
-    find: (chain) =>
-      new sdk.EndpointResolver(new sdk.NodeClient(settings.node, [chain[0]], { fetch: browserFetch }), { fetch: browserFetch })
+    find: (chain, start) =>
+      new sdk.EndpointResolver(new sdk.NodeClient(start, [chain[0]], { fetch: browserFetch }), { fetch: browserFetch })
         .resolve(chain)
-        .then((found) => found.map((endpoint) => endpoint.url), () => []),
+        .catch(() => []),
   });
 let nodeFor = findNodes();
 
 async function api(path, chain) {
-  const url = new URL(path, chain ? await nodeFor(chain) : settings.node);
+  const url = new URL(path, chain ? (await nodeFor(chain)).url : settings.node);
   if (chain) url.searchParams.set("chainPath", chain.join("/"));
   const response = await fetch(url);
   if (!response.ok) {
@@ -184,8 +187,21 @@ function readFailure(error, community) {
 /** A chain's state at the node's tip, read by CID from the node's Volumes. */
 async function stateOf(chain) {
   const node = await nodeFor(chain);
-  const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${node}/volumes`, { chainPath: chain }));
-  const { hash, generalStateCID } = await tip(sdk, node, chain, volumes);
+  const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${node.url}/volumes`, { chainPath: chain }));
+  let hash, generalStateCID;
+  try {
+    ({ hash, generalStateCID } = await tip(sdk, node.url, chain, volumes));
+    // A found node's tip must follow the chain the parent committed.
+    if (node.anchor) {
+      const blockAt = async (cid) => sdk.decodeCanonicalBlock((await volumes.get(cid)).rootBytes());
+      if (!(await descends(blockAt, hash, node.anchor))) throw new Error(`${hostOf(node.url)} answered with blocks the parent chain didn't commit`);
+      node.anchor = hash;
+    }
+  } catch (error) {
+    // Searched again on the next read: the node may have stopped serving it.
+    nodeFor.forget(chain);
+    throw error;
+  }
   return { chain, hash, volumes, ...view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID) };
 }
 
@@ -410,19 +426,19 @@ function saveChoice(records, keepLocally, what, { about = what } = {}) {
 }
 
 // Names from Moniker cards, read once per address per visit through the
-// Moniker SDK: from a node that serves Moniker (as any chain is found), else
-// (for Moniker's own chain) from Moniker's hosts, tried per read. When none
-// serves it, everyone is shown by address.
+// Moniker SDK: from the reader's node, else (for Moniker's own chain) from
+// Moniker's hosts, tried per read. A name says who wrote a post, so it is not
+// taken from a node no one chose. When none serves it, everyone is shown by
+// address.
 function monikerFor() {
   const chain = settings.moniker.split("/");
-  const readers = new Map(); // node → the SDK reading Moniker there
-  const at = (node) => readers.get(node) ?? readers.set(node, createMoniker({ sdk, chain, nodes: [node] })).get(node);
+  const own = createMoniker({ sdk, chain, nodes: [settings.node] });
   // Moniker's hosts serve only Moniker's chain; `shared` also gives its pages.
   const shared = chain.join("/") === MONIKER.chain.join("/") ? createMoniker({ sdk, chain }) : null;
   return {
     shared,
     profile: (a) =>
-      nodeFor(chain).then((node) => at(node).profile(a)).catch((error) => {
+      own.profile(a).catch((error) => {
         if (!shared) throw error;
         return shared.profile(a);
       }),
@@ -878,7 +894,7 @@ const MEDIA_TYPES = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|ogg))$/;
 function mediaFile(cid, community) {
   if (!media.has(cid)) {
     media.set(cid, (async () => {
-      const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${await nodeFor(chainOf(community))}/volumes`, { chainPath: chainOf(community) }));
+      const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${(await nodeFor(chainOf(community))).url}/volumes`, { chainPath: chainOf(community) }));
       const volume = await volumes.get(cid);
       const file = sdk.decodeDagCbor(volume.bytes(cid));
       if (typeof file?.type !== "string" || !MEDIA_TYPES.test(file.type) || !(file.bytes instanceof Uint8Array) || file.bytes.length > 8 << 20) return { unsupported: true };
@@ -949,7 +965,7 @@ function showAside() {
     <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>`;
   // Each read fills only the aside it was made for.
   const height = $("#aside-height"), balance = $("#aside-balance"), node = $("#aside-node");
-  nodeFor(chainOf(c)).then((url) => (node.textContent = hostOf(url)), () => {});
+  nodeFor(chainOf(c)).then(({ url, anchor }) => (node.textContent = anchor ? `${hostOf(url)} (found for this community)` : hostOf(url)), () => {});
   api("/api/chain/info", chainOf(c)).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
   const reader = signer();
   if (reader) balanceOn(chainOf(c), reader.address).then((b) => (balance.textContent = b === null ? "unavailable" : String(b)));

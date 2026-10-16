@@ -1,8 +1,12 @@
 // Which node to read a chain from. The reader's chosen node when it serves
 // the chain; else one found for the chain from it, walking the chain
 // directory down from Nexus (nodes their operators declared). A chain is
-// offline only when no node is found. Everything read is checked by CID, so
-// a found node needs no more trust than the chosen one.
+// offline only when no node is found.
+//
+// The reader chose their node, and its word on a chain's tip is taken. A
+// found node was chosen by no one: its tip is taken only when it descends
+// from the block the parent chain committed (as the chosen node reports it),
+// so it cannot make up a chain of its own.
 
 /** No node serves the chain, as far as the chosen node's directory says. */
 export class Offline extends Error {
@@ -13,22 +17,25 @@ export class Offline extends Error {
 }
 
 /**
- * `nodeFor(chain)`: a promise of the node to read `chain` from, kept for the
- * visit; a failed search is dropped so a later read searches again.
+ * `nodeFor(chain)`: a promise of `{ url, anchor? }`, the node to read `chain`
+ * from; `anchor` (a found node only) is the latest block known to be on the
+ * committed chain. Kept for the visit; a failed search is dropped so a later
+ * read searches again, and `nodeFor.forget(chain)` drops one that stopped
+ * working.
  *   start            the chosen node's URL
- *   serves(url, c)   whether the node at `url` answers for chain `c` (false when it doesn't)
- *   find(c)          URLs declared for `c`, found from the chosen node
- * When the chosen node can't be reached at all, that error is thrown, not Offline.
+ *   serves(url, c)   true when the node answers for chain `c`, false when it
+ *                    says it has no such chain; throws when it fails otherwise
+ *   find(c, start)   `[{ url, committedBlock }]` declared for `c`, found from `start`
  */
 export function nodeFinder({ start, serves, find }) {
   const found = new Map();
-  return function nodeFor(chain) {
+  const nodeFor = (chain) => {
     const key = chain.join("/");
     if (!found.has(key)) {
       const search = (async () => {
-        if (await serves(start, chain)) return start;
-        for (const url of await find(chain)) {
-          if (url !== start && (await serves(url, chain).catch(() => false))) return url;
+        if (await serves(start, chain)) return { url: start };
+        for (const { url, committedBlock } of await find(chain, start)) {
+          if (url !== start && (await serves(url, chain).catch(() => false))) return { url, anchor: committedBlock };
         }
         throw new Offline(chain);
       })();
@@ -37,4 +44,21 @@ export function nodeFinder({ start, serves, find }) {
     }
     return found.get(key);
   };
+  nodeFor.forget = (chain) => found.delete(chain.join("/"));
+  return nodeFor;
+}
+
+/**
+ * Whether block `hash` is `anchor` or descends from it, walking back by
+ * `parentCID` no lower than the anchor's height. `blockAt(cid)` reads a block.
+ */
+export async function descends(blockAt, hash, anchor) {
+  const floor = BigInt((await blockAt(anchor)).height);
+  for (let at = hash; at; ) {
+    if (at === anchor) return true;
+    const block = await blockAt(at);
+    if (BigInt(block.height) <= floor) return false;
+    at = block.parentCID;
+  }
+  return false;
 }
