@@ -23,7 +23,7 @@ test("a chain the chosen node lacks is read from a found node that serves it, an
 
 test("a chain no node serves is Offline, and is searched again later", async () => {
   let urls = [];
-  const nodeFor = nodeFinder({ start: "a", serves: hosting({ a: [], b: ["S/rust"] }), find: async () => urls.map((url) => ({ url, committedBlock: "k" })) });
+  const nodeFor = nodeFinder({ start: "a", serves: hosting({ a: ["S"], b: ["S/rust"] }), find: async () => urls.map((url) => ({ url, committedBlock: "k" })) });
   await assert.rejects(nodeFor(["S", "rust"]), Offline);
   urls = ["b"];
   assert.equal((await nodeFor(["S", "rust"])).url, "b");
@@ -39,15 +39,15 @@ test("a chosen node that is down or failing is said as such: no search, not Offl
 
 test("concurrent reads share one search; a found node is searched again when forgotten or after ttl", async () => {
   let searches = 0, clock = 0;
-  const nodeFor = nodeFinder({ start: "a", serves: hosting({ a: [], b: ["S"] }), find: async () => (searches++, [{ url: "b", committedBlock: `k${searches}` }]), ttl: 100, now: () => clock });
-  const [one] = await Promise.all([nodeFor(["S"]), nodeFor(["S"])]);
+  const nodeFor = nodeFinder({ start: "a", serves: hosting({ a: ["S"], b: ["S/x"] }), find: async () => (searches++, [{ url: "b", committedBlock: `k${searches}` }]), ttl: 100, now: () => clock });
+  const [one] = await Promise.all([nodeFor(["S", "x"]), nodeFor(["S", "x"])]);
   assert.equal(searches, 1);
-  await nodeFor.forget(["S"], { url: "b", block: "other" });
-  assert.equal(await nodeFor(["S"]), one, "forgetting a node it no longer uses changes nothing");
-  await nodeFor.forget(["S"], one);
-  assert.equal((await nodeFor(["S"])).block, "k2");
+  await nodeFor.forget(["S", "x"], { url: "b", block: "other" });
+  assert.equal(await nodeFor(["S", "x"]), one, "forgetting a node it no longer uses changes nothing");
+  await nodeFor.forget(["S", "x"], one);
+  assert.equal((await nodeFor(["S", "x"])).block, "k2");
   clock = 150;
-  assert.equal((await nodeFor(["S"])).block, "k3", "a newer commitment after ttl");
+  assert.equal((await nodeFor(["S", "x"])).block, "k3", "a newer commitment after ttl");
 });
 
 test("a found node is read at a committed block; one declared without it is skipped", async () => {
@@ -55,10 +55,14 @@ test("a found node is read at a committed block; one declared without it is skip
   assert.deepEqual(await nodeFor(["S", "x"]), { url: "c", block: "k" });
 });
 
-test("the search starts from the deepest ancestor the chosen node serves", async () => {
+test("only a child of a chain the chosen node serves is looked for, from that parent", async () => {
   let from;
-  const nodeFor = nodeFinder({ start: "a", serves: hosting({ a: ["N", "N/s"] }), find: async (chain, start, at) => ((from = at.join("/")), []) });
-  await assert.rejects(nodeFor(["N", "s", "c", "d"]), Offline);
+  const find = async (chain, start, at) => ((from = at.join("/")), [{ url: "b", committedBlock: "k" }]);
+  const nodeFor = nodeFinder({ start: "a", serves: hosting({ a: ["N", "N/s"], b: ["N/s/c", "N/s/c/d"] }), find });
+  assert.deepEqual(await nodeFor(["N", "s", "c"]), { url: "b", block: "k" });
   assert.equal(from, "N/s");
+  // A grandchild's commitment would come from a found host: offline instead.
+  from = undefined;
+  await assert.rejects(nodeFor(["N", "s", "c", "d"]), Offline);
+  assert.equal(from, undefined);
 });
-

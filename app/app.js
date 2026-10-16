@@ -237,6 +237,9 @@ async function balanceOn(chain, address) {
 
 /** What writing on `chain` costs the reader, and what they hold there. */
 async function costOn(chain, address) {
+  // A found node's word sets no fee: the write goes with none, and a node
+  // that wants one refuses it in the wallet rather than charging what it says.
+  if ((await nodeFor(chain)).block) return { fee: 0n, balance: null };
   const [info, account] = await Promise.all([
     api("/api/chain/info", chain),
     // chain/info answered, so the node serves this chain: a 404 here is an

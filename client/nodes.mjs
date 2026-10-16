@@ -1,7 +1,7 @@
 // Which node to read a chain from. The reader's chosen node when it serves
-// the chain; else one found for the chain, from the deepest ancestor the
-// chosen node serves, through the chain directory (nodes their operators
-// declared). A chain is offline only when no node is found.
+// the chain; else, for a child of a chain the chosen node serves, one found
+// through the chain directory (nodes their operators declared). A chain is
+// offline only when no node is found.
 //
 // The reader chose their node, and its word on a chain's tip is taken. A
 // found node was chosen by no one, so it is read only at the block the parent
@@ -25,7 +25,7 @@ export class Offline extends Error {
  *   serves(url, c)      true when the node answers for chain `c`, false when
  *                       it has no such chain; throws when it fails otherwise
  *   find(c, start, at)  `[{ url, committedBlock }]` declared for `c`, found
- *                       through `start` from its ancestor chain `at`
+ *                       through `start` from `c`'s parent chain `at`
  */
 export function nodeFinder({ start, serves, find, ttl = 30_000, now = Date.now }) {
   const found = new Map(); // chain → { search, until }
@@ -36,10 +36,11 @@ export function nodeFinder({ start, serves, find, ttl = 30_000, now = Date.now }
     const entry = { until: Infinity };
     entry.search = (async () => {
       if (await serves(start, chain)) return { url: start };
-      // The commitment is read from the chosen node: from the deepest
-      // ancestor it serves.
-      let at = chain.slice(0, -1);
-      while (at.length > 1 && !(await serves(start, at))) at = at.slice(0, -1);
+      // The commitment must come from the chosen node, so only a direct child
+      // of a chain it serves is looked for: deeper, the directory walk takes
+      // each level's commitment from the host found for the level above.
+      const at = chain.slice(0, -1);
+      if (at.length === 0 || !(await serves(start, at))) throw new Offline(chain);
       for (const { url, committedBlock } of await find(chain, start, at)) {
         if (url !== start && committedBlock && (await serves(url, chain).catch(() => false))) {
           entry.until = now() + ttl;
@@ -55,7 +56,7 @@ export function nodeFinder({ start, serves, find, ttl = 30_000, now = Date.now }
   nodeFor.forget = async (chain, node) => {
     const key = chain.join("/");
     const kept = found.get(key);
-    if (kept && (await kept.search.catch(() => null)) === node) found.delete(key);
+    if (kept && (await kept.search.catch(() => null)) === node && found.get(key) === kept) found.delete(key);
   };
   return nodeFor;
 }
