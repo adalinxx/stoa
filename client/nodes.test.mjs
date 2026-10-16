@@ -55,14 +55,16 @@ test("a found node is read at a committed block; one declared without it is skip
   assert.deepEqual(await nodeFor(["S", "x"]), { url: "c", block: "k" });
 });
 
-test("only a child of a chain the chosen node serves is looked for, from that parent", async () => {
+test("a deeper chain is looked for from the nearest ancestor the chosen node serves", async () => {
   let from;
   const find = async (chain, start, at) => ((from = at.join("/")), [{ url: "b", committedBlock: "k" }]);
   const nodeFor = nodeFinder({ start: "a", serves: hosting({ a: ["N", "N/s"], b: ["N/s/c", "N/s/c/d"] }), find });
   assert.deepEqual(await nodeFor(["N", "s", "c"]), { url: "b", block: "k" });
   assert.equal(from, "N/s");
-  // A grandchild's commitment would come from a found host: offline instead.
+  assert.deepEqual(await nodeFor(["N", "s", "c", "d"]), { url: "b", block: "k" });
+  assert.equal(from, "N/s");
+  // No ancestor served: nothing to start from.
   from = undefined;
-  await assert.rejects(nodeFor(["N", "s", "c", "d"]), Offline);
+  await assert.rejects(nodeFinder({ start: "a", serves: hosting({ a: [] }), find })(["N", "s"]), Offline);
   assert.equal(from, undefined);
 });
