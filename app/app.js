@@ -28,17 +28,21 @@ const store = {
     }
   },
 };
-const DEFAULT_NODE = "https://lattice-testnet-stoa.fly.dev";
+const DEFAULT_NODE = "https://lattice-testnet-apps-iad.fly.dev";
+// Nodes Stoa used to default to that no longer run.
+const RETIRED_NODES = ["lattice-testnet-stoa.fly.dev"];
 /** `url` as a node address the SDK will dial (https, or http on loopback), else null. */
 const nodeAddress = (url) => {
   try {
-    return sdk.normalizeNodeURL(url);
+    const address = sdk.normalizeNodeURL(url);
+    return RETIRED_NODES.includes(new URL(address).host) ? null : address;
   } catch {
     return null;
   }
 };
 const settings = {
-  // A node saved before addresses were checked falls back to the default.
+  // A node saved before addresses were checked, or since retired, falls back
+  // to the default.
   node: nodeAddress(store.get("node", DEFAULT_NODE)) ?? DEFAULT_NODE,
   home: store.get("home", "Nexus/testnet/stoa-41d5ab"),
   // Kept only when the reader chose a chain other than the SDK's, so a
