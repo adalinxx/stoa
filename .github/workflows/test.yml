@@ -39,7 +39,7 @@ jobs:
       # The Lattice Wallet the page connects to, at a pinned commit.
       - uses: actions/checkout@v4
         with:
-          repository: adalinxx/lattice-wallet
+          repository: adalinxx/selfhold-wallet
           ref: 2c69e0d0b7ea4a7562bab22ae3694a22e6072b6d
           path: lattice-wallet
           submodules: recursive
