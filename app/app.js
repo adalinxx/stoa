@@ -1119,7 +1119,7 @@ async function sendFromDialog({ status, button, build, sent = () => {}, forget =
     }
     status.classList.add("bad");
     if (error instanceof NoWallet) {
-      status.innerHTML = `This needs Lattice Wallet, which holds your key. <a href="https://github.com/adalinxx/lattice-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a> Your draft stays here.`;
+      status.innerHTML = `This needs Lattice Wallet, which holds your key. <a href="https://github.com/adalinxx/selfhold-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a> Your draft stays here.`;
     } else {
       status.textContent = said(error);
     }
@@ -1229,7 +1229,7 @@ async function showCost(line, community, doing) {
   if (!line.closest("dialog").hasAttribute("data-busy")) button.disabled = false;
   if (!community) return (line.textContent = "");
   if (!wallet()) {
-    line.innerHTML = `${esc(doing)} needs Lattice Wallet, a free browser extension that holds your key. <a href="https://github.com/adalinxx/lattice-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a> You can write your draft now.`;
+    line.innerHTML = `${esc(doing)} needs Lattice Wallet, a free browser extension that holds your key. <a href="https://github.com/adalinxx/selfhold-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a> You can write your draft now.`;
     return;
   }
   const reader = signer();
@@ -1413,7 +1413,7 @@ function renderAccount() {
   const reader = signer();
   $("#st-account-hint").innerHTML = reader ? "Lattice Wallet holds your key and asks you to approve each post, comment, vote and label."
     : wallet() ? "Connect Lattice Wallet to post, comment and vote."
-      : 'Lattice Wallet, a browser extension, holds your key. <a href="https://github.com/adalinxx/lattice-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a>';
+      : 'Lattice Wallet, a browser extension, holds your key. <a href="https://github.com/adalinxx/selfhold-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a>';
   $("#st-address-row").hidden = !reader;
   $("#st-address").textContent = reader?.address ?? "";
   $("#st-connect").hidden = !wallet() || Boolean(reader);
