@@ -1,4 +1,4 @@
-`lattice-sdk.js` is `@adalinxx/lattice-sdk` bundled for the browser (ESM, its
+`lattice-sdk.js` is `@0xLattice/lattice-sdk` bundled for the browser (ESM, its
 `@noble` dependencies included):
 
 ```sh
