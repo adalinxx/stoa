@@ -197,6 +197,9 @@ test("a profile: its owner's name, bio and link, each checked and cut to its lim
   // Written by hand: what isn't text, a link that isn't http(s), and the excess are dropped.
   state.raw.set("user/bob/profile", JSON.stringify({ name: "B".repeat(80), bio: 7, link: "javascript:alert(1)" }));
   assert.deepEqual(await read.profile(state, "bob"), { name: "B".repeat(read.PROFILE_LIMITS.name) });
+  // A link over its limit is dropped, not cut short into another address.
+  state.raw.set("user/dan/profile", JSON.stringify({ name: "Dan", link: `https://dan.example/${"x".repeat(read.PROFILE_LIMITS.link)}` }));
+  assert.deepEqual(await read.profile(state, "dan"), { name: "Dan" });
   state.raw.set("user/carol/profile", "not json");
   assert.equal(await read.profile(state, "carol"), undefined);
   // Emptied, it is deleted.

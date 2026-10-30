@@ -235,8 +235,11 @@ td:last-child { text-align: right; }
   <form method="dialog">
     <h3 id="join-title">Take part in Stoa</h3>
     <p class="hint" id="join-why"></p>
+    <div id="join-window">
     <p class="lede">Stoa has no sign-up and no passwords. Selfhold opens in a window over this page, and a passkey makes your account: your face, fingerprint or screen lock unlocks it, on this device and the ones it syncs to. Stoa never sees your key.</p>
     <p class="lede">It's free. Each post, comment and vote is approved in Selfhold, and this device does a moment's work for its fee, so you need no coins.</p>
+    </div>
+    <p class="lede" id="join-extension" hidden>Selfhold for Chrome holds your key and asks you to approve each post, comment and vote. It pays fees in coins; Selfhold's window (Settings) pays with this device's work instead.</p>
     <div class="row2">
       <span class="status" id="join-status" role="status"></span>
       <button class="btn" value="close">Not now</button>

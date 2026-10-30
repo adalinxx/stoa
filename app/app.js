@@ -17,7 +17,7 @@ import { writeRequest } from "./vendor/moniker-sdk/src/records/wallet.mjs";
 import { stepFor } from "./vendor/moniker-sdk/src/picker.mjs";
 import { selfhold } from "./vendor/selfhold.mjs";
 import * as write from "../client/write.mjs";
-import { commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, profileHref, safeLink, short, voteBox, when } from "./lib.mjs";
+import { byline, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, profileHref, safeLink, short, voteBox, when } from "./lib.mjs";
 
 const $ = (s) => document.querySelector(s);
 
@@ -163,6 +163,8 @@ function setConnected(address) {
 async function connectWallet() {
   setConnected(await wallet().connect());
   renderWho();
+  // The page under any dialog becomes the reader's: their votes, communities, and no Sign in card.
+  render();
   welcome();
   return signer();
 }
@@ -194,16 +196,21 @@ function walletMessage(error) {
  * coins: why, and the way out. Stoa's fees are usually paid with this device's work.
  */
 function needsCoins({ sponsor: why, address }) {
-  const reason = {
-    down: "This device's work usually pays the fee, but the fee sponsor isn't answering right now. Try again in a few minutes.",
-    dear: "This device can't do the fee's work in reasonable time right now. Try again in a few minutes.",
-  }[why] ?? (settings.sponsor ? "The fee sponsor couldn't pay this fee. Try again in a few minutes." : "No fee sponsor is set in Settings, so the fee is paid in coins.");
+  const reason = extension()
+    ? "Selfhold for Chrome pays fees in coins, and this account holds too few. Turn off Selfhold for Chrome in Settings to take part with Selfhold's window, where this device's work pays."
+    : {
+      down: "This device's work usually pays the fee, but the fee sponsor isn't answering right now. Try again in a few minutes.",
+      dear: "This device can't do the fee's work in reasonable time right now. Try again in a few minutes.",
+      most: "The fee sponsor pays only so much for one write, and this one costs more than that.",
+    }[why] ?? (settings.sponsor ? "The fee sponsor couldn't pay this fee. Try again in a few minutes." : "No fee sponsor is set in Settings, so the fee is paid in coins.");
   return `${reason} Or send coins to your account ID (${short(address ?? connected ?? "")}).`;
 }
 
 /** Said when something needs an account and the reader has none here yet. */
 function needAccount(why) {
   $("#join-why").textContent = why ?? "";
+  $("#join-window").hidden = extension();
+  $("#join-extension").hidden = !extension();
   $("#join-status").textContent = "";
   if (!$("#signin").open) $("#signin").showModal();
 }
@@ -227,7 +234,11 @@ function welcome() {
   loadNames([reader]).then(() => {
     if (signer()?.address !== reader || profiles.get(reader)?.name || handles.get(reader)) return;
     store.set(`welcomed:${reader}`, true);
-    notice("Welcome to Stoa. Choose the name and @handle people see on your posts.", { action: { label: "Set up your profile", run: () => openProfile() } });
+    const greet = () => notice("Welcome to Stoa. Choose the name and @handle people see on your posts.", { action: { label: "Set up your profile", run: () => openProfile() } });
+    // Not behind a dialog the reader is busy in: once it closes.
+    const open = [...document.querySelectorAll("dialog[open]")].find((d) => d.id !== "signin");
+    if (open) open.addEventListener("close", greet, { once: true });
+    else greet();
   }, () => {});
 }
 
@@ -484,8 +495,8 @@ function monikerFor() {
     handlesOf: (addresses) => either((m) => m.handlesOf(addresses)),
     handleOf: (address) => either((m) => m.handleOf(address)),
     state: () => either((m) => m.state({ fresh: true })),
-    /** Where a Moniker write goes: Moniker's hosts, and the reader's node. */
-    hosts: async () => [...new Set([...(shared ? await shared.hosts().catch(() => []) : []), settings.node])],
+    /** Where a Moniker write goes: the reader's node first, as reads do, then Moniker's hosts. */
+    hosts: async () => [...new Set([settings.node, ...(shared ? await shared.hosts().catch(() => []) : [])])],
   };
 }
 let moniker = monikerFor();
@@ -888,7 +899,7 @@ function drawThread() {
   counting(tree);
   const link = safeLink(tree.link);
   $("#thread").innerHTML = `<article class="op${tree.pending ? " pending" : ""}">
-      <div class="meta"><a href="#/s/${encodeURIComponent(community)}">s/${esc(community)}</a><span>${esc(nameOf(author, names))}</span>${tree.pending ? pendingNote(tree.pending) : when(tree.time)}${tree.tags.map((t) => `<span class="tag">${esc(t.toUpperCase())}</span>`).join("")}</div>
+      <div class="meta"><a href="#/s/${encodeURIComponent(community)}">s/${esc(community)}</a>${byline(author, names)}${tree.pending ? pendingNote(tree.pending) : when(tree.time)}${tree.tags.map((t) => `<span class="tag">${esc(t.toUpperCase())}</span>`).join("")}</div>
       <h1>${esc(tree.title)}</h1>
       ${link ? `<a class="link" href="${esc(link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(link)} ↗</a>` : ""}
       ${tree.media.map((cid) => mediaSlot(cid, community, tree.tags.includes("nsfw"))).join("")}
@@ -1572,7 +1583,9 @@ function openProfile() {
   $("#pf-handle").value = "";
   $("#pf-handle-status").textContent = "";
   $("#pf-handle-status").classList.remove("bad");
-  $("#pf-handle-btn").disabled = false;
+  // A claim still waiting for Moniker keeps its button, and says so.
+  $("#pf-handle-btn").disabled = claiming === reader.address;
+  if (claiming === reader.address) $("#pf-handle-status").textContent = "Your last handle is still on its way to Moniker…";
   drawHandleNow(reader.address);
   dialog.showModal();
   $("#pf-name").focus();
@@ -1611,6 +1624,7 @@ $("#pf-handle").addEventListener("keydown", (event) => {
  * that points at them is shown. Selfhold's window opens at once, in the
  * click, while the page reads Moniker and builds the write.
  */
+let claiming = null; // the account whose handle claim is waiting for Moniker
 $("#pf-handle-btn").onclick = async () => {
   const status = $("#pf-handle-status");
   const button = $("#pf-handle-btn");
@@ -1644,7 +1658,7 @@ $("#pf-handle-btn").onclick = async () => {
     sent = await monikerWallet().writeRecords(request, { account, progress: (text) => say(`${text}…`.replace(/[.…]+…$/, "…")) });
   } catch (error) {
     button.disabled = false;
-    if (refused) return say(refused instanceof Said ? refused.message : `Couldn't read Moniker: ${refused?.message ?? refused}`, true);
+    if (refused) return say(refused instanceof Said || !(refused instanceof TypeError) ? String(refused?.message ?? refused) : `Couldn't read Moniker: ${refused.message}`, true);
     return say(walletMessage(error), true);
   }
   if (sent === null) {
@@ -1652,29 +1666,34 @@ $("#pf-handle-btn").onclick = async () => {
     return say(`@${handle} is your handle already.`);
   }
   say(`Sent. Moniker shows @${handle} for you in about 10 seconds.`);
-  const started = Date.now();
-  while (Date.now() - started < 10 * 60_000) {
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-    if (connected !== account) return;
-    const now = await moniker.handleOf(account).catch(() => undefined);
-    if (now !== handle) continue;
-    handles.set(account, handle);
-    forgetName(account);
-    setName(account);
-    renderWho();
-    redraw();
-    if ($("#profile-dialog").open) {
-      button.disabled = false;
-      $("#pf-handle").value = "";
-      drawHandleNow(account);
-      say(`@${handle} is your handle now.`);
-    } else {
-      notice(`@${handle} is your handle now.`);
+  claiming = account;
+  try {
+    const started = Date.now();
+    while (Date.now() - started < 10 * 60_000) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      if (connected !== account) return;
+      const now = await moniker.handleOf(account).catch(() => undefined);
+      if (now !== handle) continue;
+      handles.set(account, handle);
+      forgetName(account);
+      setName(account);
+      renderWho();
+      redraw();
+      if ($("#profile-dialog").open) {
+        button.disabled = false;
+        $("#pf-handle").value = "";
+        drawHandleNow(account);
+        say(`@${handle} is your handle now.`);
+      } else {
+        notice(`@${handle} is your handle now.`);
+      }
+      return;
     }
-    return;
+    button.disabled = false;
+    say(`@${handle} hasn't shown yet. It may still go through: look again in a minute.`, true);
+  } finally {
+    if (claiming === account) claiming = null;
   }
-  button.disabled = false;
-  say(`@${handle} hasn't shown yet. It may still go through: look again in a minute.`, true);
 };
 
 $("#profile-form").addEventListener("submit", async (event) => {
@@ -1686,6 +1705,17 @@ $("#profile-form").addEventListener("submit", async (event) => {
     status.classList.add("bad");
     $("#pf-link").focus();
     return (status.textContent = "The link must start with https:// or http://");
+  }
+  if (link.length > read.PROFILE_LIMITS.link) {
+    status.classList.add("bad");
+    $("#pf-link").focus();
+    return (status.textContent = `The link is too long: ${read.PROFILE_LIMITS.link} characters at most.`);
+  }
+  // One change at a time: a second, made before the first lands, would be made against what it replaces.
+  const inFlight = connected && pendingItems.get(`profile|${connected}`);
+  if (inFlight && !inFlight.slow) {
+    status.classList.add("bad");
+    return (status.textContent = "Your last change is still landing. Try again in a few seconds.");
   }
   const value = { name: $("#pf-name").value, bio: $("#pf-bio").value, link };
   await sendFromDialog({

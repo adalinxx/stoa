@@ -148,14 +148,16 @@ export const PROFILE_LIMITS = { name: 50, bio: 500, link: 300 };
 /**
  * `a`'s Stoa profile, `{ name?, bio?, link? }`, or undefined. Written by its
  * owner only, but read like any record: a field that isn't text, a link that
- * isn't http(s), is dropped, and each is cut to its limit.
+ * isn't http(s) or is too long, is dropped, and the rest is cut to its limit.
  */
 export async function profile(state, a) {
   const record = parse(await state.get(`user/${a}/profile`));
   if (!isObject(record)) return undefined;
   const found = {};
   for (const [field, most] of Object.entries(PROFILE_LIMITS)) {
-    const value = typeof record[field] === "string" ? record[field].trim().slice(0, most) : "";
+    const text = typeof record[field] === "string" ? record[field].trim() : "";
+    // A link cut short leads somewhere else: one over its limit is dropped.
+    const value = field === "link" && text.length > most ? "" : text.slice(0, most);
     if (value) found[field] = value;
   }
   if (found.link && !/^https?:\/\/[^\s]+$/i.test(found.link)) delete found.link;
