@@ -161,6 +161,8 @@ export async function openApp(page, hash = "#/", { settings = {} } = {}) {
     arm();
   }
   await page.goto(stack.app + hash);
+  // Read the communities, as a person would wait to see them, before anything is pressed.
+  await page.locator("#communities").getByText(`s/${stack.community}`).waitFor({ timeout: 60_000 });
 }
 
 /** Presses `button` on `page`, and resolves with Selfhold's window once it shows this request. */

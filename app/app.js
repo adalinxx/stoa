@@ -1430,7 +1430,8 @@ function opened(dialog) {
 }
 
 function openNewPost() {
-  if (!communities.length) return notice("There are no communities to post in yet.");
+  // s/all is always one once read: none means they're still being read, or couldn't be.
+  if (!communities.length) return notice("Stoa is still reading the communities from the node. Try again in a moment.");
   opened($("#new"));
   $("#np-status").textContent = "";
   $("#np-status").classList.remove("bad");
