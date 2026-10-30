@@ -59,6 +59,11 @@ a.author { color: inherit; text-decoration: none; } a.author:hover { color: var(
 .chip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 1px 9px; cursor: pointer; font-size: 12.5px; color: var(--ink); }
 .chip:hover { border-color: var(--accent); } .chip[aria-current="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .at { align-self: center; color: var(--muted); }
+/* The file picker as a button: the input covers it, invisible, so a click or a keypress on it opens the picker. */
+.file-btn { position: relative; margin-top: 2px; }
+.file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+.file-btn:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.file-btn:hover { border-color: var(--muted); }
 .media-pick { display: flex; gap: 12px; align-items: center; margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
 .media-pick .preview { width: 72px; height: 72px; flex: none; border-radius: 6px; overflow: hidden; background: var(--surface); }
 .media-pick .preview img, .media-pick .preview video { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -285,7 +290,7 @@ td:last-child { text-align: right; }
     <div class="checks" role="group" aria-labelledby="np-tags-label"><label><input type="checkbox" value="oc"> OC</label><label><input type="checkbox" value="nsfw"> NSFW</label><label><input type="checkbox" value="spoiler"> Spoiler</label></div>
     <div id="np-file-wrap" hidden>
       <label for="np-file">Image or video <span class="muted">(optional, up to 1 MB)</span></label>
-      <input type="file" id="np-file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,video/mp4,video/webm">
+      <span class="btn file-btn" id="np-file-btn"><input type="file" id="np-file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,video/mp4,video/webm"><span aria-hidden="true">＋</span> Add an image or video</span>
       <div class="media-pick" id="np-media" hidden>
         <div class="preview" aria-hidden="true"></div>
         <p class="media-status" role="status" aria-live="polite"></p>

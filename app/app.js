@@ -213,6 +213,8 @@ function needAccount(why) {
   $("#join-extension").hidden = !extension();
   $("#join-status").textContent = "";
   if (!$("#signin").open) $("#signin").showModal();
+  // Enter goes on, as the dialog asks; Escape or Not now leaves.
+  $("#join-continue").focus();
 }
 $("#join-continue").onclick = async () => {
   $("#join-status").classList.remove("bad");
@@ -1838,7 +1840,7 @@ async function drawMediaPicker() {
 function drawAttachment() {
   const box = $("#np-media");
   box.hidden = !attachment;
-  $("#np-file").hidden = Boolean(attachment);
+  $("#np-file-btn").hidden = Boolean(attachment);
   if (!attachment) return;
   const { file, state, text } = attachment;
   box.querySelector(".preview").innerHTML = file.kind === "video" ? `<video src="${file.url}" muted></video>` : `<img src="${file.url}" alt="">`;
@@ -1876,7 +1878,7 @@ async function keepAttachment() {
     });
     // Kept: shown at once in the post, without reading it back.
     settled.set(mine.cid, mine.file);
-    say(`Kept for good by ${hostOf(settings.storage)}, paid with this device's work.`, "kept");
+    say("Kept for good, paid with this device's work.", "kept");
   } catch (error) {
     if (error instanceof StorageStopped) return;
     say(error instanceof StorageRefused ? error.message : `Couldn't keep it: ${error?.message ?? error}`, "failed");
