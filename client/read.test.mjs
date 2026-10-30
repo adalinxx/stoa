@@ -187,3 +187,22 @@ test("a changed post keeps its time, a retried one changes nothing, and an empty
   assert.equal(await read.item(state, "alice", ""), undefined);
   assert.deepEqual((await read.posts(state)).map((p) => p.id), ["p1"]);
 });
+
+test("a profile: its owner's name, bio and link, each checked and cut to its limit", async () => {
+  const state = memory();
+  assert.equal(await read.profile(state, "alice"), undefined);
+  await state.apply(write.profile("alice", { name: "  Alice Ng ", bio: "", link: "https://alice.example" }));
+  assert.equal(state.raw.get("user/alice/profile"), JSON.stringify({ name: "Alice Ng", link: "https://alice.example" }));
+  assert.deepEqual(await read.profile(state, "alice"), { name: "Alice Ng", link: "https://alice.example" });
+  // Written by hand: what isn't text, a link that isn't http(s), and the excess are dropped.
+  state.raw.set("user/bob/profile", JSON.stringify({ name: "B".repeat(80), bio: 7, link: "javascript:alert(1)" }));
+  assert.deepEqual(await read.profile(state, "bob"), { name: "B".repeat(read.PROFILE_LIMITS.name) });
+  // A link over its limit is dropped, not cut short into another address.
+  state.raw.set("user/dan/profile", JSON.stringify({ name: "Dan", link: `https://dan.example/${"x".repeat(read.PROFILE_LIMITS.link)}` }));
+  assert.deepEqual(await read.profile(state, "dan"), { name: "Dan" });
+  state.raw.set("user/carol/profile", "not json");
+  assert.equal(await read.profile(state, "carol"), undefined);
+  // Emptied, it is deleted.
+  await state.apply(write.profile("alice", { name: " ", bio: "" }));
+  assert.equal(state.raw.has("user/alice/profile"), false);
+});
