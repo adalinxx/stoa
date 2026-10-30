@@ -1,6 +1,6 @@
 // What the UI tests do outside the page: read the stack, make and fund keys,
 // and write records the way another client would.
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { operator } from "../../client/media.mjs";
 import { tip, view, volumeLoader } from "../../client/state.mjs";
@@ -165,6 +165,18 @@ export async function openApp(page, hash = "#/", { settings = {} } = {}) {
   await page.locator("#communities").getByText(`s/${stack.community}`).waitFor({ timeout: 60_000 });
 }
 
+/**
+ * With SHOTS set (a directory), a screenshot of `page` named `name`, for
+ * reviewing what each step looks like; without it, nothing.
+ */
+let shots = 0;
+export async function shot(page, name) {
+  if (!process.env.SHOTS) return;
+  mkdirSync(process.env.SHOTS, { recursive: true });
+  await page.waitForTimeout(400); // let a dialog or status settle
+  await page.screenshot({ path: `${process.env.SHOTS}/${String(++shots).padStart(3, "0")}-${name}.png` }).catch(() => {});
+}
+
 /** Presses `button` on `page`, and resolves with Selfhold's window once it shows this request. */
 export async function inSelfhold(page, button) {
   const n = Number(await page.evaluate((key) => sessionStorage.getItem(key) ?? 0, REQUESTS)) + 1;
@@ -173,6 +185,8 @@ export async function inSelfhold(page, button) {
   await until(`Selfhold's window, request ${n}`, async () => new URL(opened.url()).searchParams.get("n") === String(n), 30);
   // Its approving button wakes only in a focused window.
   await opened.bringToFront();
+  await opened.locator("button").first().waitFor({ timeout: 30_000 }).catch(() => {});
+  await shot(opened, `selfhold-window-${n}`);
   return opened;
 }
 

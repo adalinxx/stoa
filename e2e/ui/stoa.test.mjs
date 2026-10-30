@@ -18,7 +18,7 @@ const running = await start();
 writeFileSync(new URL("./.stack.json", import.meta.url), JSON.stringify(running.info));
 const {
   approveInSelfhold, balance, chainPath, claimAs, declineInSelfhold, fund, homePath, newAccount, newSelfholdAccount,
-  openApp, sdk, selfholdRequests, sends, signIn, stack, stateOf, walletOrigin, writeAs,
+  openApp, sdk, selfholdRequests, sends, shot, signIn, stack, stateOf, walletOrigin, writeAs,
 } = await import("./helpers.mjs");
 const names = await import("../../app/vendor/moniker-sdk/src/records/names.mjs");
 
@@ -85,11 +85,13 @@ test("a visitor reads the communities, and is told what taking part takes: a pas
   await expect(page.locator("#communities")).toContainText(community);
   await expect(page.locator("#who")).toHaveText("Sign in");
   await expect(page.locator("#aside")).toContainText("nothing to install, no coins");
+  await shot(page, "visitor-feed");
   await page.locator("#who").getByRole("button", { name: "Sign in" }).click();
   const dialog = page.locator("#signin");
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("a passkey makes your account");
   await expect(dialog).toContainText("you need no coins");
+  await shot(page, "signin-dialog");
   await dialog.getByRole("button", { name: "Not now" }).click();
   await expect(dialog).toBeHidden();
   // Nothing was asked of Selfhold.
@@ -105,17 +107,20 @@ test("with no coins, a visitor writes a post, signs in with a passkey from the d
   await page.locator("#np-t").fill("The whitepaper");
   await page.locator("#np-l").fill("https://bitcoin.org/bitcoin.pdf");
   await page.locator("#np-b").fill("Worth a reread.");
+  await shot(page, "new-post-signed-out");
   // Post signs in first; the draft stays, and the next press sends it.
   const address = await newSelfholdAccount(page, page.locator("#np-post"));
   await expect(page.locator("#np-status")).toHaveText("You're signed in. Press Post to send it.");
   await expect(page.locator("#np-cost")).toContainText("Free: this device does a moment's work for the fee");
   await expect(page.locator("#np-t")).toHaveValue("The whitepaper");
+  await shot(page, "new-post-signed-in");
   await approveInSelfhold(page, page.locator("#np-post"));
   await expect(page).toHaveURL(new RegExp(`#/s/${community}/${address}/`));
   // Read back from the chain, not the page's own pending copy: a post time shows.
   await expect(page.locator(".op .meta time")).toBeVisible();
   await expect(page.locator(".op h1")).toHaveText("The whitepaper");
   await expect(page.locator(".op .link")).toHaveAttribute("href", "https://bitcoin.org/bitcoin.pdf");
+  await shot(page, "post-landed");
   // The account still holds nothing: the sponsor paid the fee, from its own.
   expect(await balance(address, chainPath)).toBe(0n);
   expect(await sponsorBalance()).toBeLessThan(sponsorBefore);
@@ -134,6 +139,7 @@ test("with no coins, a visitor writes a post, signs in with a passkey from the d
   await page.locator("#rp-b").fill("And section 6.");
   await approveInSelfhold(page, page.locator("#rp-send"));
   await expect(first.locator(".c", { hasText: "And section 6." })).toBeVisible();
+  await shot(page, "comments-pending");
   await landed(page);
 
   // A vote counts at once, waits for its block, settles, and can be taken back.
@@ -142,6 +148,7 @@ test("with no coins, a visitor writes a post, signs in with a passkey from the d
   await expect(row.locator(".meta")).toContainText("2 comments");
   await approveInSelfhold(page, row.locator(".vote.up"));
   await expect(row.locator(".votes .score")).toHaveText("1");
+  await shot(page, "voted");
   await expect(row.locator(".votes")).not.toHaveClass(/pending/);
   await expect(row.locator(".inline-error")).toHaveCount(0);
   await page.reload();
@@ -164,6 +171,7 @@ test("a profile: a name and bio on Stoa, and an @handle claimed on Moniker, on e
   const dialog = page.locator("#profile-dialog");
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("You have no @handle yet");
+  await shot(page, "profile-dialog-new");
 
   // Someone else's name is said to be so as it's typed, and can't be
   // pressed: Selfhold's window never opens for it, and nothing is sent.
@@ -172,6 +180,7 @@ test("a profile: a name and bio on Stoa, and an @handle claimed on Moniker, on e
   await page.locator("#pf-handle").fill("taken_one");
   await expect(page.locator("#pf-handle-status")).toHaveText("@taken_one is someone else's.");
   await expect(page.locator("#pf-handle-btn")).toBeDisabled();
+  await shot(page, "handle-taken");
   await page.locator("#pf-handle").press("Enter");
   await expect(page.locator("#pf-handle-status")).toHaveText("@taken_one is someone else's.");
   expect(await selfholdRequests(page)).toBe(asked);
@@ -179,8 +188,10 @@ test("a profile: a name and bio on Stoa, and an @handle claimed on Moniker, on e
   // A free one says so, and is claimed, pointed here and shown, in one approval.
   await page.locator("#pf-handle").fill("@Ada_Stoa");
   await expect(page.locator("#pf-handle-status")).toHaveText("@ada_stoa is free. It's yours once you claim it.");
+  await shot(page, "handle-free");
   await approveInSelfhold(page, page.getByRole("button", { name: "Claim @ada_stoa" }));
   await expect(page.locator("#pf-handle-status")).toHaveText("@ada_stoa is your handle now.", { timeout: 180_000 });
+  await shot(page, "handle-claimed");
   expect(await names.handleOf(await stateOf(MONIKER), address)).toBe("ada_stoa");
   expect(await balance(address, MONIKER)).toBe(0n);
 
@@ -189,6 +200,9 @@ test("a profile: a name and bio on Stoa, and an @handle claimed on Moniker, on e
   await approveInSelfhold(page, page.locator("#pf-save"));
   await expect(dialog).toBeHidden();
   await expect(page.locator("#who .account-name")).toHaveText("Ada @ada_stoa");
+  await page.locator("#account-btn").click();
+  await shot(page, "account-menu");
+  await page.keyboard.press("Escape");
   await expect.poll(async () => (await stateOf(homePath)).get(`user/${address}/profile`)).toBe(JSON.stringify({ name: "Ada", bio: "Reads whitepapers." }));
 
   await page.getByRole("button", { name: "New post" }).click();
@@ -210,6 +224,7 @@ test("a profile: a name and bio on Stoa, and an @handle claimed on Moniker, on e
   await expect(visitor.locator(".bio")).toHaveText("Reads whitepapers.");
   await expect(visitor.locator(".stats")).toContainText("Posts1");
   await expect(visitor.locator(".post", { hasText: "Hello from Ada" })).toBeVisible();
+  await shot(visitor, "profile-page-visitor");
   await expect(visitor.locator("[data-edit-profile]")).toHaveCount(0);
   await reader.close();
 });
@@ -222,15 +237,18 @@ test("an image is kept for good by the storage sponsor, paid with this device's 
   await page.locator("#np-t").fill("A kept picture");
   await expect(page.locator("#np-file-wrap")).toBeVisible();
   await page.locator("#np-file").setInputFiles({ name: "dot.png", mimeType: "image/png", buffer: picture });
+  await shot(page, "media-keeping");
   // While it is being kept, Post waits.
   await expect(page.locator("#np-media .media-status")).toContainText("Kept for good", { timeout: 300_000 });
   await expect(page.locator("#np-post")).toBeEnabled();
+  await shot(page, "media-kept");
   const cid = mediaVolume(sdk, "image/png", new Uint8Array(picture)).cid;
   const kept = await (await fetch(`${stack.sponsor}/store/${cid}`)).json();
   expect(kept.stored).toBe(true);
   await approveInSelfhold(page, page.locator("#np-post"));
   await expect(page.locator(".op .meta time")).toBeVisible();
   await expect(page.locator(".op img.media")).toBeVisible();
+  await shot(page, "post-with-image");
   // Another reader reads it from the node, checked by CID.
   const reader = await browser.newContext();
   const visitor = await reader.newPage();
@@ -248,6 +266,7 @@ test("a write declined in Selfhold's window is not sent, and the draft stays", a
   await page.locator("#np-t").fill("Declined in the wallet");
   await declineInSelfhold(page, page.locator("#np-post"));
   await expect(page.locator("#np-status")).toContainText("declined");
+  await shot(page, "declined");
   await expect(page.locator("#np-t")).toHaveValue("Declined in the wallet");
   expect(sent).toHaveLength(0);
 });
@@ -257,6 +276,7 @@ test("a visitor who votes is asked to sign in, and told why", async ({ page }) =
   await page.locator(".post .vote.up").first().click();
   await expect(page.locator("#signin")).toBeVisible();
   await expect(page.locator("#join-why")).toContainText("Votes are signed by your account");
+  await shot(page, "vote-signed-out");
   expect(await selfholdRequests(page)).toBe(0);
   // Continue makes the account; the vote waits for the next press.
   await newSelfholdAccount(page, page.locator("#signin").getByRole("button", { name: "Continue with Selfhold" }));

@@ -115,6 +115,16 @@ jobs:
       - name: UI tests
         working-directory: e2e/ui
         run: npm test
+        env:
+          SHOTS: ${{ github.workspace }}/e2e/ui/shots
+      # Each step as a person sees it, Selfhold's window included, for review.
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: e2e/ui/shots
+          if-no-files-found: ignore
+          retention-days: 7
       - if: failure()
         name: The node's and the sponsor's logs
         run: |
