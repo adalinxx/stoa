@@ -46,13 +46,23 @@ const test = (name, body) =>
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
+    // What Selfhold's window logged and showed, for a failure.
+    const walletLog = [];
+    let walletPage = null;
+    context.on("page", (opened) => {
+      walletPage = opened;
+      opened.on("console", (message) => walletLog.push(`${message.type()}: ${message.text()}`));
+      opened.on("pageerror", (error) => walletLog.push(`pageerror: ${error.message}`));
+    });
     try {
       await body({ page });
     } catch (error) {
       // What the page showed when it failed.
       const shown = await page.locator("main").innerText().catch(() => "(no page)");
       const notices = await page.locator("#notices").innerText().catch(() => "");
-      error.message += `\n--- page at ${page.url()}:\n${shown.slice(0, 800)}\n--- notices: ${notices}\n--- page errors: ${errors.join(" | ") || "none"}`;
+      const wallet = walletPage ? await walletPage.locator("body").innerText({ timeout: 2000 }).catch(() => "(closed)") : "(never opened)";
+      error.message += `\n--- page at ${page.url()}:\n${shown.slice(0, 800)}\n--- notices: ${notices}\n--- page errors: ${errors.join(" | ") || "none"}`
+        + `\n--- Selfhold's window at ${walletPage?.url()}:\n${wallet.slice(0, 1200)}\n--- its log:\n${walletLog.slice(-30).join("\n").slice(0, 3000)}`;
       throw error;
     } finally {
       await context.close();
