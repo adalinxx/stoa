@@ -1582,6 +1582,8 @@ function openProfile() {
   $("#pf-status").classList.remove("bad");
   $("#pf-cost").textContent = signingNote();
   $("#pf-handle").value = "";
+  handleCheck = null;
+  $("#pf-handle-btn").textContent = "Use this handle";
   $("#pf-handle-status").textContent = "";
   $("#pf-handle-status").classList.remove("bad");
   // A claim still waiting for Moniker keeps its button, and says so.
@@ -1611,7 +1613,61 @@ $("#pf-handle-mine").addEventListener("click", (event) => {
   if (!pick) return;
   $("#pf-handle").value = pick.dataset.pickHandle;
   $("#pf-handle").focus();
+  checkHandle();
 });
+
+/** The typed handle, as Moniker keeps names, or "" for none; `bad` says why it can't be one. */
+function typedHandle() {
+  const handle = $("#pf-handle").value.trim().replace(/^@/, "").toLowerCase();
+  return { handle, bad: handle && !/^[a-z0-9_]+$/.test(handle) ? "A handle is lowercase letters, digits and _." : null };
+}
+
+/**
+ * What the typed handle would be for the reader, read from Moniker as they
+ * type: free to claim, theirs to show, already shown, or someone else's.
+ * The button says what it will do; a handle that can't be theirs is said at
+ * once, and never opens Selfhold's window.
+ */
+let handleCheck = null; // { account, handle, step }, for the handle last read
+let checkTimer = 0;
+function checkHandle() {
+  clearTimeout(checkTimer);
+  const button = $("#pf-handle-btn");
+  const status = $("#pf-handle-status");
+  const say = (text, bad = false) => {
+    status.textContent = text;
+    status.classList.toggle("bad", bad);
+  };
+  if (claiming === connected) return;
+  const { handle, bad } = typedHandle();
+  handleCheck = null;
+  button.textContent = handle && !bad ? `Use @${handle}` : "Use this handle";
+  button.disabled = Boolean(bad);
+  if (!handle) return say("");
+  if (bad) return say(bad, true);
+  say("");
+  const account = connected;
+  checkTimer = setTimeout(async () => {
+    let step;
+    try {
+      const state = await moniker.state();
+      const [entry, shownNow] = await Promise.all([monikerNames.resolve(state, handle), monikerNames.handleOf(state, account)]);
+      step = stepFor(entry, account, handle, shownNow);
+    } catch {
+      return; // Unread: the button reads Moniker again when pressed.
+    }
+    if (typedHandle().handle !== handle || connected !== account || claiming === account) return;
+    handleCheck = { account, handle, step };
+    if (step.refused) {
+      button.disabled = true;
+      return say(step.refused, true);
+    }
+    button.disabled = step === "shown";
+    button.textContent = step === "claim" ? `Claim @${handle}` : `Show @${handle}`;
+    say(step === "claim" ? `@${handle} is free. It's yours once you claim it.` : step === "show" ? `@${handle} is yours: show it on your posts.` : `@${handle} is your handle already.`);
+  }, 300);
+}
+$("#pf-handle").addEventListener("input", checkHandle);
 $("#pf-handle").addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
@@ -1633,11 +1689,17 @@ $("#pf-handle-btn").onclick = async () => {
     status.textContent = text;
     status.classList.toggle("bad", bad);
   };
-  const handle = $("#pf-handle").value.trim().replace(/^@/, "").toLowerCase();
+  const { handle, bad } = typedHandle();
   if (!handle) return say("Type a handle first.", true);
-  if (!/^[a-z0-9_]+$/.test(handle)) return say("A handle is lowercase letters, digits and _.", true);
+  if (bad) return say(bad, true);
   const account = connected;
   if (!account) return needAccount();
+  // Known already not to be theirs, or shown: no window to open.
+  if (handleCheck?.account === account && handleCheck.handle === handle) {
+    if (handleCheck.step.refused) return say(handleCheck.step.refused, true);
+    if (handleCheck.step === "shown") return say(`@${handle} is your handle already.`);
+  }
+  clearTimeout(checkTimer);
   let refused = null;
   let step;
   const request = (async () => {
@@ -1683,6 +1745,7 @@ $("#pf-handle-btn").onclick = async () => {
       if ($("#profile-dialog").open) {
         button.disabled = false;
         $("#pf-handle").value = "";
+        button.textContent = "Use this handle";
         drawHandleNow(account);
         say(`@${handle} is your handle now.`);
       } else {

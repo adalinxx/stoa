@@ -165,15 +165,21 @@ test("a profile: a name and bio on Stoa, and an @handle claimed on Moniker, on e
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("You have no @handle yet");
 
-  // Someone else's name is refused, saying so; nothing is sent.
+  // Someone else's name is said to be so as it's typed, and can't be
+  // pressed: Selfhold's window never opens for it, and nothing is sent.
   const sent = sends(page.context());
+  const asked = await selfholdRequests(page);
   await page.locator("#pf-handle").fill("taken_one");
-  await page.locator("#pf-handle-btn").click();
   await expect(page.locator("#pf-handle-status")).toHaveText("@taken_one is someone else's.");
+  await expect(page.locator("#pf-handle-btn")).toBeDisabled();
+  await page.locator("#pf-handle").press("Enter");
+  await expect(page.locator("#pf-handle-status")).toHaveText("@taken_one is someone else's.");
+  expect(await selfholdRequests(page)).toBe(asked);
   expect(sent).toHaveLength(0);
-  // A free one is claimed, pointed here and shown, in one approval.
+  // A free one says so, and is claimed, pointed here and shown, in one approval.
   await page.locator("#pf-handle").fill("@Ada_Stoa");
-  await approveInSelfhold(page, page.locator("#pf-handle-btn"));
+  await expect(page.locator("#pf-handle-status")).toHaveText("@ada_stoa is free. It's yours once you claim it.");
+  await approveInSelfhold(page, page.getByRole("button", { name: "Claim @ada_stoa" }));
   await expect(page.locator("#pf-handle-status")).toHaveText("@ada_stoa is your handle now.", { timeout: 180_000 });
   expect(await names.handleOf(await stateOf(MONIKER), address)).toBe("ada_stoa");
   expect(await balance(address, MONIKER)).toBe(0n);
