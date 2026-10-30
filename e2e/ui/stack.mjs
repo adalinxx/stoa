@@ -108,7 +108,7 @@ export async function start() {
   const sponsorKey = `${root}/sponsor-key.json`;
   execFileSync(process.env.LATTICE, ["key", "generate", "--out", sponsorKey]);
   const sponsorAddress = JSON.parse(readFileSync(sponsorKey, "utf8")).address;
-  for (const chain of [HOME, CHAIN, MONIKER]) await transfer(sdk, node, miner, minerKey, sponsorAddress, 5000n, chain);
+  for (const chain of [HOME, CHAIN, MONIKER]) await transfer(sdk, node, miner, minerKey, sponsorAddress, 500n, chain);
   const log = openSync(`${root}/sponsor.log`, "a");
   const sponsor = spawn(process.env.LATTICE_SPONSOR || join(dirname(process.env.LATTICE), "lattice-sponsor"), [
     "--node", `http://127.0.0.1:${ports.rpc}`, "--cookie-file", `${root}/chains/Nexus/.cookie`, "--key", sponsorKey,
