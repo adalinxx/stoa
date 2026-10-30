@@ -8,55 +8,117 @@ on:
 permissions:
   contents: read
 
+# The other repositories the UI tests run against, pinned to commits the suite
+# passes on. Move a pin on purpose, in its own commit, after running the suite.
+env:
+  NODE_VERSION: "22"
+  LATTICE_NODE_REPO: 0xLattice/lattice-node
+  LATTICE_NODE_REF: 9abd15b1bb05a0d4305e83f64c4676a6e296071f # the node lattice-sponsor builds on
+  LATTICE_SPONSOR_REPO: 0xLattice/lattice-sponsor
+  LATTICE_SPONSOR_REF: 24d8c4def3bd47c45b4cd10115762894e5185ea5 # keeps files for work (--sell-storage)
+  LATTICE_WALLET_REPO: adalinxx/selfhold-wallet
+  LATTICE_WALLET_REF: e46b9ef8e132196e704b8ec37a10a52a7710d1fd # @selfhold/web, as app/vendor/selfhold.mjs (selfhold-wallet#47)
+
 jobs:
   client-and-app:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
       - run: node --test client/*.test.mjs app/test-app.mjs
 
-  # The page in headless Chromium against a private Lattice stack. Runs inside
-  # the node image, which carries the lattice binaries; bump the pin to test
-  # against a newer node.
-  ui:
+  node:
+    name: Build the Lattice node and sponsor
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/adalinxx/lattice-node:sha-5044b3d@sha256:4c4d6602ffd9e0282146fdddd839584c7f198a1163fadbaa9956e9fffba66ca8
-      options: --user root
-    timeout-minutes: 30
+    container: swift:6.1-jammy
+    timeout-minutes: 90
     steps:
-      - uses: actions/setup-node@v4
+      - id: cache
+        uses: actions/cache@v4
         with:
-          node-version: 22
-      # The node image has no git, which a checkout with submodules needs.
-      - run: apt-get update -qq && apt-get install -y -qq git
+          path: bin
+          key: lattice-node-${{ env.LATTICE_NODE_REF }}-sponsor-${{ env.LATTICE_SPONSOR_REF }}-static-1
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LATTICE_NODE_REPO }}
+          ref: ${{ env.LATTICE_NODE_REF }}
+          path: lattice-node
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LATTICE_SPONSOR_REPO }}
+          ref: ${{ env.LATTICE_SPONSOR_REF }}
+          path: lattice-sponsor
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Build
+        shell: bash
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev
+          cd lattice-node
+          # Static Swift runtime, so the binaries run on a plain runner. The
+          # lattice command runs the node, the miner and its coordinator from
+          # beside it; the UI tests run lattice-sponsor from there too.
+          swift build --static-swift-stdlib
+          mkdir ../bin
+          cp "$(swift build --static-swift-stdlib --show-bin-path)"/{lattice,lattice-node,lattice-miner,lattice-mining-coordinator} ../bin/
+          cd ../lattice-sponsor
+          swift build --static-swift-stdlib --product lattice-sponsor
+          cp "$(swift build --static-swift-stdlib --show-bin-path)"/lattice-sponsor ../bin/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lattice
+          path: bin
+          retention-days: 3
+
+  # The page in headless Chromium against a private Lattice stack, with
+  # Selfhold's window as its wallet and a sponsor for fees and files.
+  ui:
+    needs: node
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      LATTICE: ${{ github.workspace }}/.deps/bin/lattice
+      LATTICE_SDK: ${{ github.workspace }}/app/vendor/lattice-sdk.js
+      LATTICE_WALLET_WEB: ${{ github.workspace }}/.deps/selfhold-wallet/dist-web
+    steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
-      # The Lattice Wallet the page connects to, at a pinned commit.
+      - uses: actions/download-artifact@v4
+        with:
+          name: lattice
+          path: .deps/bin
+      # The node links the Swift runtime in, but not these.
+      - run: chmod +x .deps/bin/* && sudo apt-get update && sudo apt-get install -y --no-install-recommends libsqlite3-0 libcurl4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
       - uses: actions/checkout@v4
         with:
-          repository: adalinxx/lattice-wallet
-          ref: 2c69e0d0b7ea4a7562bab22ae3694a22e6072b6d
-          path: lattice-wallet
-          submodules: recursive
-      - name: Build the Lattice Wallet
-        working-directory: lattice-wallet
-        run: |
-          npm ci --no-audit --no-fund
-          npm run build
-      - name: Install Playwright's Chromium
+          repository: ${{ env.LATTICE_WALLET_REPO }}
+          ref: ${{ env.LATTICE_WALLET_REF }}
+          path: .deps/selfhold-wallet
+          submodules: true
+      - name: Build Selfhold's window
+        working-directory: .deps/selfhold-wallet
+        run: npm ci && npm run build:web
+      - name: The page's selfhold.mjs is the pinned one's
+        run: tail -n +3 app/vendor/selfhold.mjs | cmp - .deps/selfhold-wallet/dist-web/v1/selfhold.js
+      - name: Install Playwright
         working-directory: e2e/ui
-        run: |
-          npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium
+        run: npm ci --no-audit --no-fund && npx playwright install --with-deps chromium
       - name: UI tests
         working-directory: e2e/ui
-        env:
-          LATTICE: /usr/local/bin/lattice
-          LATTICE_SDK: ${{ github.workspace }}/app/vendor/lattice-sdk.js
-          LATTICE_WALLET: ${{ github.workspace }}/lattice-wallet/dist
         run: npm test
+      - if: failure()
+        name: The node's and the sponsor's logs
+        run: |
+          find "${RUNNER_TEMP:-/tmp}" /tmp -path '*stoa-ui-*' -name '*.log' -type f 2>/dev/null | sort -u |
+            while IFS= read -r f; do
+              echo "::group::$f"; tail -n 200 "$f" || true; echo "::endgroup::"
+            done

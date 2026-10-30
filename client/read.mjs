@@ -142,6 +142,26 @@ export const flair = (state, a) => state.get(`user/${a}/flair`);
 
 // Home chain.
 
+/** Longest a profile's fields are shown: a name, a bio, a link. */
+export const PROFILE_LIMITS = { name: 50, bio: 500, link: 300 };
+
+/**
+ * `a`'s Stoa profile, `{ name?, bio?, link? }`, or undefined. Written by its
+ * owner only, but read like any record: a field that isn't text, a link that
+ * isn't http(s), is dropped, and each is cut to its limit.
+ */
+export async function profile(state, a) {
+  const record = parse(await state.get(`user/${a}/profile`));
+  if (!isObject(record)) return undefined;
+  const found = {};
+  for (const [field, most] of Object.entries(PROFILE_LIMITS)) {
+    const value = typeof record[field] === "string" ? record[field].trim().slice(0, most) : "";
+    if (value) found[field] = value;
+  }
+  if (found.link && !/^https?:\/\/[^\s]+$/i.test(found.link)) delete found.link;
+  return Object.keys(found).length ? found : undefined;
+}
+
 /** The communities `a` has joined. */
 export async function joined(state, a) {
   const prefix = `user/${a}/join/`;

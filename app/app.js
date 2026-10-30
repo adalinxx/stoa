@@ -1,14 +1,25 @@
 // Stoa in the browser: reads every record from a node by CID, ranks and
-// filters here, and asks the reader's Lattice Wallet to sign each write. No
-// server of its own.
+// filters here, and asks Selfhold to sign each write: its window over the
+// page, whose key a passkey keeps, or Selfhold for Chrome. A fee sponsor takes
+// this device's work for each fee, and a storage sponsor for each file kept,
+// so taking part needs no coins. No server of its own.
 import * as sdk from "./vendor/lattice-sdk.js";
 import { judge, treatments } from "../client/moderation.mjs";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
-import { createMoniker, DEFAULTS as MONIKER } from "./vendor/moniker-sdk/src/index.mjs";
+import { mediaVolume } from "../client/media.mjs";
+import { StorageRefused, StorageStopped, store as storeFile, storageChain } from "../client/storage.mjs";
+import { hasher, workDevice } from "../client/work/hash.mjs";
+import { accountIcon, createMoniker, DEFAULTS as MONIKER } from "./vendor/moniker-sdk/src/index.mjs";
+import * as monikerNames from "./vendor/moniker-sdk/src/records/names.mjs";
+import { writeRequest } from "./vendor/moniker-sdk/src/records/wallet.mjs";
+import { stepFor } from "./vendor/moniker-sdk/src/picker.mjs";
+import { selfhold } from "./vendor/selfhold.mjs";
 import * as write from "../client/write.mjs";
-import { coinsMessage, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, safeLink, short, voteBox, when } from "./lib.mjs";
+import { commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, profileHref, safeLink, short, voteBox, when } from "./lib.mjs";
+
+const $ = (s) => document.querySelector(s);
 
 // Settings and per-reader choices live in this browser.
 const store = {
@@ -29,8 +40,15 @@ const store = {
   },
 };
 const DEFAULT_NODE = "https://lattice-testnet-apps-iad.fly.dev";
+// The sponsor that takes this device's work for fees and for keeping files.
+const DEFAULT_SPONSOR = "https://lattice-testnet-apps-iad.fly.dev:8650/sponsor";
+// Selfhold's window; the tests serve their own.
+const DEFAULT_WALLET_PAGE = "https://wallet.selfhold.app/";
 // Nodes Stoa used to default to that no longer run.
 const RETIRED_NODES = ["lattice-testnet-stoa.fly.dev"];
+// Moniker's trial chains, before it launched as Nexus/moniker: a reader who
+// saved one follows the move.
+const RETIRED_MONIKER = /^Nexus\/testnet\/moniker-[0-9a-f]+$/;
 /** `url` as a node address the SDK will dial (https, or http on loopback), else null. */
 const nodeAddress = (url) => {
   try {
@@ -40,6 +58,31 @@ const nodeAddress = (url) => {
     return null;
   }
 };
+const local = (host) => host === "localhost" || host === "127.0.0.1";
+/**
+ * Selfhold's window: its own page, or, for a page served on this computer,
+ * one served on this computer too, as the tests do. Never anywhere else: the
+ * window keeps the account.
+ */
+function walletPageOf(saved) {
+  try {
+    const url = new URL(saved);
+    if (url.protocol === "http:" && local(url.hostname) && local(location.hostname) && !url.username && !url.password) return url.href;
+  } catch {}
+  return DEFAULT_WALLET_PAGE;
+}
+/** A sponsor's address as typed: https (http only on this computer), else "" for none. */
+const sponsorAddress = (url) => {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || (parsed.protocol === "http:" && local(parsed.hostname)) ? parsed.href.replace(/\/$/, "") : "";
+  } catch {
+    return "";
+  }
+};
+const savedMoniker = store.get("monikerChain", null);
+const savedSponsor = store.get("sponsor", null);
+const savedStorage = store.get("storage", null);
 const settings = {
   // A node saved before addresses were checked, or since retired, falls back
   // to the default.
@@ -47,7 +90,13 @@ const settings = {
   home: store.get("home", "Nexus/testnet/stoa-41d5ab"),
   // Kept only when the reader chose a chain other than the SDK's, so a
   // reader on the default follows it when an SDK release moves Moniker.
-  moniker: store.get("monikerChain", null) ?? MONIKER.chain.join("/"),
+  moniker: savedMoniker && !RETIRED_MONIKER.test(savedMoniker) ? savedMoniker : MONIKER.chain.join("/"),
+  // Kept only when the reader chose another (or none, ""), as the moniker chain is.
+  sponsor: typeof savedSponsor === "string" ? savedSponsor : DEFAULT_SPONSOR,
+  storage: typeof savedStorage === "string" ? savedStorage : DEFAULT_SPONSOR,
+  // Selfhold for Chrome only where Settings choose it; else Selfhold's window.
+  extension: store.get("wallet", "web") === "extension",
+  walletPage: walletPageOf(store.get("walletPage", DEFAULT_WALLET_PAGE)),
 };
 const homePath = () => settings.home.split("/");
 // The Stoa chain is a community too, s/all: posts of its own, and its page
@@ -66,35 +115,39 @@ const ADDRESS = /^b[a-z2-7]{40,}$/;
 
 // ---------------------------------------------------------------- wallet
 
-// The reader's account: the address the Lattice Wallet gave this site. The
-// wallet holds the key and asks the reader to approve every write.
+// The reader's account: the address Selfhold gave this site. Selfhold holds
+// the key and asks the reader to approve every write.
 let connected = null;
-const wallet = () => window.lattice ?? null;
+// Selfhold's window, opened over the page from a click, for Stoa's chains
+// (sent to the node in Settings) and for Moniker's (sent to its hosts). Its
+// fee is paid with this device's work, through the sponsor in Settings.
+const webFor = (hosts) => selfhold({ use: "window", wallet: settings.walletPage, hosts, sponsor: () => settings.sponsor || undefined });
+const web = webFor(() => [settings.node]);
+const webMoniker = webFor(() => moniker.hosts());
+// Selfhold for Chrome, through the same calls.
+const chrome = selfhold({ use: "extension", hosts: () => [settings.node] });
+const chromeMoniker = selfhold({ use: "extension", hosts: () => moniker.hosts() });
+/** Selfhold for Chrome where Settings choose it and it is installed, else Selfhold's window. */
+const extension = () => settings.extension && Boolean(window.lattice?.isLatticeWallet);
+const wallet = () => (extension() ? chrome : web);
+const monikerWallet = () => (extension() ? chromeMoniker : webMoniker);
+/** Where the reader approves: said in every prompt. */
+const walletName = () => (extension() ? "Selfhold" : "Selfhold's window");
 const signer = () => (connected ? { address: connected } : null);
 
 /** An error already in the page's words (its text may hold a community name). */
 class Said extends Error {}
 const said = (error) => (error instanceof Said ? error.message : walletMessage(error));
-/** The wallet went quiet: the write may yet be signed in a window still open. */
-class Unanswered extends Error {
-  constructor() {
-    super("Lattice Wallet hasn't answered. If its window is still open, answer it there; if not, reload this page and try again.");
-  }
-}
 /** A draft's record already holds something else: an earlier send of it landed. */
 class Landed extends Error {
   constructor() {
-    super("An earlier send of this landed while the wallet was quiet. Send again to post this as a new one.");
+    super("An earlier send of this landed. Send again to post this as a new one.");
   }
 }
 /** The reader closed the dialog before the wallet was asked: nothing to say. */
 class Withdrawn extends Error {}
-
-class NoWallet extends Error {
-  constructor() {
-    super("This needs Lattice Wallet.");
-  }
-}
+/** This write needs an account, and this click made one (or connected it): the next click sends. */
+class JustConnected extends Error {}
 
 /** The reader's account changed: what was pending or noted was theirs. */
 function setConnected(address) {
@@ -106,48 +159,76 @@ function setConnected(address) {
   connected = address;
 }
 
+/** Asks Selfhold for this site's account. Its window opens only from a click: call it before any other wait. */
 async function connectWallet() {
-  if (!wallet()) throw new NoWallet();
   setConnected(await wallet().connect());
   renderWho();
+  welcome();
   return signer();
 }
 
-/** The reader's signer, connecting first if they have not; NoWallet without the extension. */
-const me = async () => signer() ?? (await connectWallet());
+/**
+ * The reader's signer. Not connected yet, it connects in this click; with
+ * Selfhold's window that click is spent opening it, so JustConnected says to
+ * press again (Selfhold for Chrome answers within the same click).
+ */
+async function me() {
+  if (signer()) return signer();
+  await connectWallet();
+  if (extension()) return signer();
+  throw new JustConnected();
+}
 
-/** What the wallet said, in the page's words. */
+/** What Selfhold said, in the page's words. */
 function walletMessage(error) {
   const text = String(error?.message ?? error);
-  if (/just declined|ask again in a moment/i.test(text)) return "Lattice Wallet waits a few seconds after a decline. Try again in a moment.";
-  if (/declined|rejected|denied/i.test(text)) return "You declined it in the wallet. Nothing was sent.";
-  if (/locked/i.test(text)) return "Unlock Lattice Wallet, then try again.";
+  if (error?.code === "NeedsCoins") return needsCoins(error);
+  if (/just declined|ask again in a moment/i.test(text)) return "Selfhold waits a few seconds after a decline. Try again in a moment.";
+  if (/declined|rejected|denied/i.test(text)) return "You declined it in Selfhold. Nothing was sent.";
+  if (/locked/i.test(text) && extension()) return "Unlock Selfhold, then try again.";
   return text;
 }
 
-// The wallet takes one request from a page at a time: writes wait their turn.
-let walletTurn = Promise.resolve();
-// After a decline the wallet turns the site away for a few seconds: the next
-// request waits that out rather than failing at once.
-const DECLINE_PAUSE = 5500;
-// A wallet that never answers (reloaded or updated under an open page) must
-// not hold a dialog, or every later write, forever. The draft is kept: while
-// an old window is still open the wallet refuses a second request from the
-// site, so trying again cannot send it twice.
-const WALLET_SILENCE = 5 * 60_000;
-const answered = (asked) => Promise.race([asked, new Promise((_, reject) =>
-  setTimeout(() => reject(new Unanswered()), WALLET_SILENCE))]);
-function viaWallet(ask) {
-  const run = walletTurn.then(() => answered(ask()), () => answered(ask()));
-  walletTurn = run.then(() => {}, (error) =>
-    /declined/i.test(String(error?.message ?? error)) ? new Promise((resolve) => setTimeout(resolve, DECLINE_PAUSE)) : undefined);
-  return run;
+/**
+ * The fee couldn't be paid in work this time, and the account holds too few
+ * coins: why, and the way out. Stoa's fees are usually paid with this device's work.
+ */
+function needsCoins({ sponsor: why, address }) {
+  const reason = {
+    down: "This device's work usually pays the fee, but the fee sponsor isn't answering right now. Try again in a few minutes.",
+    dear: "This device can't do the fee's work in reasonable time right now. Try again in a few minutes.",
+  }[why] ?? (settings.sponsor ? "The fee sponsor couldn't pay this fee. Try again in a few minutes." : "No fee sponsor is set in Settings, so the fee is paid in coins.");
+  return `${reason} Or send coins to your account ID (${short(address ?? connected ?? "")}).`;
 }
 
-/** Shown when something needs the wallet and the browser does not have it. */
-function needWallet(why) {
-  $("#gw-why").textContent = why ?? "";
-  if (!$("#getwallet").open) $("#getwallet").showModal();
+/** Said when something needs an account and the reader has none here yet. */
+function needAccount(why) {
+  $("#join-why").textContent = why ?? "";
+  $("#join-status").textContent = "";
+  if (!$("#signin").open) $("#signin").showModal();
+}
+$("#join-continue").onclick = async () => {
+  $("#join-status").classList.remove("bad");
+  $("#join-status").textContent = `Continue in ${walletName()}…`;
+  try {
+    await connectWallet();
+    $("#signin").close();
+    render();
+  } catch (error) {
+    $("#join-status").classList.add("bad");
+    $("#join-status").textContent = walletMessage(error);
+  }
+};
+
+/** Once connected, a reader with no name yet is asked to choose how they appear. */
+function welcome() {
+  const reader = signer()?.address;
+  if (!reader || store.get(`welcomed:${reader}`, false)) return;
+  loadNames([reader]).then(() => {
+    if (signer()?.address !== reader || profiles.get(reader)?.name || handles.get(reader)) return;
+    store.set(`welcomed:${reader}`, true);
+    notice("Welcome to Stoa. Choose the name and @handle people see on your posts.", { action: { label: "Set up your profile", run: () => openProfile() } });
+  }, () => {});
 }
 
 // --------------------------------------------------------------- network
@@ -198,103 +279,64 @@ async function stateOf(chain) {
 
 const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(homePath().length).join("/") : ALL);
 
-/** An amount from the node as a whole number of coins (missing is 0), or null if it isn't one. */
-function whole(value) {
-  if (value === undefined || value === null) return 0n;
-  if (typeof value === "number" ? !Number.isSafeInteger(value) || value < 0 : !/^\d+$/.test(String(value))) return null;
-  return BigInt(value);
-}
-
 /**
- * What `address` holds on `chain`, or null when it can't be told. The node
- * answers 404 both for an account it has no record of (0) and for a chain it
- * does not serve, so 404 counts as 0 only on a chain it serves.
- */
-async function balanceOn(chain, address) {
-  return nodes.read(chain, async (node) => (await accountOn(node, chain, address)).balance).catch(() => null);
-}
-
-/**
- * What `node` says `address` holds on `chain` (a 404 is an account it has no
- * record of: nothing held), with the chain's info, both from that one node.
- */
-async function accountOn(node, chain, address) {
-  const [info, account] = await Promise.all([
-    apiOn(node.url, "/api/chain/info", chain),
-    // Any other failure leaves what is held unknown.
-    address ? apiOn(node.url, `/api/state/account/${address}`, chain).catch((error) => (error.status === 404 ? {} : null)) : {},
-  ]);
-  return { info, balance: account ? whole(account.balance) : null };
-}
-
-/** What writing on `chain` costs the reader, and what they hold there. */
-async function costOn(chain, address) {
-  const cost = await nodes.read(chain, async (node) => {
-    // A found node's word sets no fee: the write goes with none, and a node
-    // that wants one refuses it in the wallet rather than charging what it says.
-    if (node.found) return { fee: 0n, balance: null };
-    const { info, balance } = await accountOn(node, chain, address);
-    return { fee: whole(info.minRelayFee), balance };
-  });
-  // Said, not passed to the next node: a bad fee is this node's answer.
-  if (cost.fee === null) throw new Error("its fee isn't a whole number of coins");
-  return cost;
-}
-
-/**
- * Sign and send: resolves once the wallet has sent the write, with a promise
- * of its landing (true once every write reads back; `onSlow` after a minute
- * without it). Throws NoWallet, the no-coins message, or what the wallet said.
- */
-/**
+ * Sign and send `records` on `chain`, as the connected account. Selfhold's
+ * window opens at once, in the click, while the page reads the chain and
+ * builds the write; Selfhold shows it, pays its fee (with this device's
+ * work, through the fee sponsor) and sends it. Resolves once it is sent, with
+ * a promise of its landing (true once every write reads back; `onSlow`
+ * after a minute without it), or of true at once when nothing needed
+ * changing. `status(text)` hears where it stands.
+ *
+ * `beforeWallet()` is asked first: false withdraws it, nothing sent.
  * `fresh`: the key of a draft's record, which this write may create (or
  * rewrite identically) but never change: if it holds something else, an
  * earlier send landed, and Landed is thrown rather than editing it.
  */
 async function send(chain, records, status = () => {}, beforeWallet = () => true, fresh) {
-  const { address } = await me();
-  status("Preparing…");
+  const address = connected;
+  if (!address) throw new Said("Connect Selfhold first.");
+  if (!beforeWallet()) throw new Withdrawn();
   const community = communityOf(chain);
-  let state, cost;
+  // Our own refusal while building, said as is (the window closes, nothing sent).
+  let refused = null;
+  let sentActions = [];
+  const request = (async () => {
+    let state;
+    try {
+      state = await stateOf(chain);
+    } catch (error) {
+      throw new Said(readFailure(error, community));
+    }
+    // A key already holding its new value is no change: nothing to sign for it.
+    const actions = (await write.changes(state, records)).filter((a) => a.oldValue !== a.newValue);
+    const record = fresh && actions.find((a) => a.key === fresh);
+    if (record && record.oldValue !== undefined) throw new Landed();
+    // Already so on the chain: nothing to sign, nothing to pay.
+    if (!actions.length) return null;
+    sentActions = actions;
+    return { chainPath: chain, actions };
+  })().catch((error) => {
+    refused = error;
+    throw error;
+  });
+  status(`Approve it in ${walletName()}…`);
+  let sent;
   try {
-    [state, cost] = await Promise.all([stateOf(chain), costOn(chain, address)]);
+    sent = await wallet().writeRecords(request, { account: address, progress: (text) => status(`${text}…`.replace(/[.…]+…$/, "…")) });
   } catch (error) {
-    throw new Said(readFailure(error, community));
-  }
-  // A key already holding its new value is no change: nothing to sign for it.
-  const prepare = async () => (await write.changes(state, records)).filter((a) => a.oldValue !== a.newValue);
-  let actions = await prepare();
-  const record = fresh && actions.find((a) => a.key === fresh);
-  if (record && record.oldValue !== undefined) throw new Landed();
-  // Already so on the chain: nothing to sign, nothing to pay.
-  if (!actions.length) return () => Promise.resolve(true);
-  if (cost.fee > 0n && cost.balance !== null && cost.balance < cost.fee) {
-    throw new Said(coinsMessage(community, address, cost.fee));
-  }
-  status("Waiting for Lattice Wallet…");
-  try {
-    // The wallet chooses the nonce and sends the write, from and to its own node.
-    // Held, and asked, only when it is this write's turn in the wallet.
-    await viaWallet(async () => {
-      // Built for this account: if another is connected (or none) by its turn, it is dropped.
-      if (connected !== address || !beforeWallet()) throw new Withdrawn();
-      status("Approve it in Lattice Wallet…");
-      // Made again now, so a new post says it was written when it was sent.
-      try {
-        actions = await prepare();
-      } catch (error) {
-        throw new Said(readFailure(error, community));
-      }
-      return wallet().writeRecords({ chainPath: chain, actions, fee: String(cost.fee) });
-    });
-  } catch (error) {
-    if (error instanceof Withdrawn || error instanceof Unanswered || error instanceof Said) throw error;
+    if (refused) throw refused;
+    if (error?.code === "AccountChanged" || error?.code === "NotConnected") {
+      setConnected(await wallet().address().catch(() => null));
+      render();
+    }
     // Sent, though the node did not confirm it: it is on its way, and the
     // landing poll decides. Calling it a failure would invite a second copy.
     if (!/may still land/i.test(String(error?.message ?? error))) throw new Said(walletMessage(error));
   }
-  const sent = actions.map((a) => [a.key, a.newValue]);
-  return (onSlow = () => {}) => landing(chain, sent, onSlow);
+  if (sent === null) return () => Promise.resolve(true);
+  const landed = sentActions.map((a) => [a.key, a.newValue]);
+  return (onSlow = () => {}) => landing(chain, landed, onSlow);
 }
 
 async function landing(chain, records, onSlow) {
@@ -408,44 +450,51 @@ function saveChoice(records, keepLocally, what, { about = what } = {}) {
   const Whats = what[0].toUpperCase() + what.slice(1);
   const keys = records.map(([key]) => key);
   keys.forEach((key) => savingKeys.add(key));
-  const shown = notice(`Saving ${what}: approve it in Lattice Wallet.`);
+  const shown = notice(`Saving ${what}: approve it in ${walletName()}.`);
   send(homePath(), records)
     .then((land) => {
       shown.update(`Saving ${what}: waiting for a block…`);
       return land(() => shown.update(`Saving ${what}: sent, not in a block yet. It may still land.`));
     })
     .then((landed) => (landed ? shown.close() : shown.update(`${Whats} was sent but hasn't landed yet. It may still land.`)))
-    .catch((error) => shown.update(error instanceof Unanswered ? `${Whats}: ${error.message}` : `${Whats} is kept in this browser only. ${said(error)}`, { bad: true }))
+    .catch((error) => shown.update(`${Whats} is kept in this browser only. ${said(error)}`, { bad: true }))
     .finally(() => keys.forEach((key) => savingKeys.delete(key)));
   return true;
 }
 
-// Names from Moniker cards, read once per address per visit through the
-// Moniker SDK: from the reader's node, else (for Moniker's own chain) from
-// Moniker's hosts, tried per read. A name says who wrote a post, so it is not
-// taken from a node no one chose. When none serves it, everyone is shown by
-// address.
+// How an author appears: the name on their Stoa profile (home chain,
+// `user/<a>/profile`) and the @handle Moniker shows for them, verified there
+// (it names the handle and the handle points back). Read once per address
+// per visit; without either, an author is shown by account ID.
+//
+// Moniker is read from the reader's node, else, for Moniker's own chain,
+// from the hosts Nexus lists for it, tried per read.
 function monikerFor() {
   const chain = settings.moniker.split("/");
   const own = createMoniker({ sdk, chain, nodes: [settings.node] });
   // Moniker's hosts serve only Moniker's chain; `shared` also gives its pages.
   const shared = chain.join("/") === MONIKER.chain.join("/") ? createMoniker({ sdk, chain }) : null;
+  const either = (read) => read(own).catch((error) => {
+    if (!shared) throw error;
+    return read(shared);
+  });
   return {
+    chain,
     shared,
-    profile: (a) =>
-      own.profile(a).catch((error) => {
-        if (!shared) throw error;
-        return shared.profile(a);
-      }),
+    handlesOf: (addresses) => either((m) => m.handlesOf(addresses)),
+    handleOf: (address) => either((m) => m.handleOf(address)),
+    state: () => either((m) => m.state({ fresh: true })),
+    /** Where a Moniker write goes: Moniker's hosts, and the reader's node. */
+    hosts: async () => [...new Set([...(shared ? await shared.hosts().catch(() => []) : []), settings.node])],
   };
 }
 let moniker = monikerFor();
-/** What a byline shows from a profile: its name, else its @handle, at most 40 characters. */
-const bylineOf = (p) => (p.name?.trim() || (p.handle ? `@${p.handle}` : ""))?.slice(0, 40) || undefined;
-const names = new Map();
+const profiles = new Map(); // address → { name?, bio?, link? }, from the home chain
+const handles = new Map(); // address → "alice", while Moniker shows it
+const names = new Map(); // address → what a byline says: "Alice Ng @alice", "@alice", "Alice Ng"
 // Lookups in flight or done, shared by overlapping renders. A lookup that
 // failed to read is dropped so a later render tries again; a change of node
-// or Moniker chain starts a new set, and older lookups write nothing.
+// or chain starts a new set, and older lookups write nothing.
 let lookups = new Map(); // address → Promise
 // Names that come in after a render stopped waiting are drawn in one redraw.
 let nameRedraw = null;
@@ -457,25 +506,47 @@ const nameArrived = () => {
     redraw(again);
   }, 300);
 };
+/** The byline for `a` from what is known of them, or nothing to add to their account ID. */
+function setName(a) {
+  const name = monikerNames.displayName(profiles.get(a)?.name)?.slice(0, read.PROFILE_LIMITS.name);
+  const handle = handles.get(a);
+  if (name || handle) names.set(a, monikerNames.label(a, { name, handle }));
+  else names.delete(a);
+}
 async function loadNames(addresses) {
   const set = lookups;
-  const wanted = [...new Set(addresses)].filter((a) => !set.has(a));
+  const wanted = [...new Set(addresses)].filter((a) => a && !set.has(a));
   if (wanted.length) {
-    for (const a of wanted) {
-      set.set(a, moniker.profile(a).then(
-        (profile) => {
-          const name = bylineOf(profile);
-          if (!name || set !== lookups) return;
-          names.set(a, name);
-          nameArrived();
-        },
-        () => set.delete(a),
-      ));
+    // One read of Moniker for the lot, and the profiles from the home chain.
+    const handlesRead = moniker.handlesOf(wanted);
+    const home = homeState ? Promise.resolve(homeState) : stateOf(homePath());
+    for (const [n, a] of wanted.entries()) {
+      set.set(a, Promise.allSettled([handlesRead.then((found) => found[n]), home.then((state) => read.profile(state, a))]).then(([handle, profile]) => {
+        if (set !== lookups) return;
+        // A read that failed is tried again by a later render.
+        if (handle.status === "rejected" && profile.status === "rejected") return set.delete(a);
+        if (handle.status === "fulfilled") {
+          if (handle.value) handles.set(a, handle.value);
+          else handles.delete(a);
+        }
+        if (profile.status === "fulfilled") {
+          if (profile.value) profiles.set(a, profile.value);
+          else profiles.delete(a);
+        }
+        if (handle.status === "rejected" || profile.status === "rejected") set.delete(a);
+        const before = names.get(a);
+        setName(a);
+        if (names.get(a) !== before) nameArrived();
+      }));
     }
   }
   // A render waits for its names a moment at most: they are a nicety, and one
   // stalled read must not hold every page that shows that author.
   await Promise.race([Promise.all([...new Set(addresses)].map((a) => set.get(a))), new Promise((resolve) => setTimeout(resolve, 2000))]);
+}
+/** Reads `a`'s name and handle again, as they changed them. */
+function forgetName(a) {
+  lookups.delete(a);
 }
 const labelActions = () => store.get("labelActions", { spam: "hide", nsfw: "blur", "off-topic": "collapse" });
 let showAll = false;
@@ -547,25 +618,18 @@ async function castVote(button) {
   const mine = () => connected === owner;
   let land;
   try {
-    // Connect first if needed: the wallet asks within this click. The page
-    // was then read without the reader's own votes, so it reads again and the
-    // reader votes on what is really there.
-    if (!signer()) {
-      await connectWallet();
-      return refresh();
-    }
+    // No account here yet: the reader is told what Selfhold is, and continues
+    // from there. The page then reads again, with the reader's own votes.
+    if (!signer()) return needAccount("Votes are signed by your account, so others can count them.");
     pendingVotes.set(key, { direction });
     redraw();
     land = await send(chainOf(community), write.vote(signer().address, author, id, direction));
   } catch (error) {
     if (error instanceof Withdrawn || !mine()) return;
     pendingVotes.delete(key);
-    if (error instanceof NoWallet) return needWallet("Voting is signed by your key, so it needs the wallet.");
-    const quiet = error instanceof Unanswered;
-    const message = quiet ? error.message : `Vote not counted. ${said(error)}`;
-    // Shown until the reader leaves this page or votes here again; a quiet
-    // wallet's note also goes once the chain shows the vote (it may yet land).
-    itemErrors.set(key, { message, untilNavigation: true, ...(quiet && { direction }) });
+    const message = `Vote not counted. ${said(error)}`;
+    // Shown until the reader leaves this page or votes here again.
+    itemErrors.set(key, { message, untilNavigation: true });
     announce(message);
     return redraw();
   }
@@ -586,8 +650,6 @@ async function castVote(button) {
 }
 
 // ---------------------------------------------------------------- render
-
-const $ = (s) => document.querySelector(s);
 
 let communities = [];
 let route = { view: "home" };
@@ -618,17 +680,13 @@ function renderRail() {
 function renderWho() {
   const reader = signer();
   const html = reader
-    ? `<button class="btn" type="button" id="account-btn" popovertarget="account" title="${esc(reader.address)}"><span class="account-name">${esc(nameOf(reader.address, names))}</span><span aria-hidden="true">▾</span></button>`
-    : wallet()
-      ? '<button class="btn" type="button" id="connect">Connect wallet</button>'
-      : '<button class="btn" type="button" id="get-wallet">Get wallet</button>';
+    ? `<button class="btn" type="button" id="account-btn" popovertarget="account" title="${esc(reader.address)}"><span class="avatar" aria-hidden="true">${accountIcon(reader.address, 20)}</span><span class="account-name">${esc(nameOf(reader.address, names))}</span><span aria-hidden="true">▾</span></button>`
+    : '<button class="btn" type="button" id="sign-in">Sign in</button>';
   // Unchanged, it is left as is: an open account menu keeps its button.
   if ($("#who").dataset.html === html) return;
   $("#who").dataset.html = html;
   $("#who").innerHTML = html;
-  $("#connect")?.addEventListener("click", () =>
-    connectWallet().then(render).catch((error) => notice(`Not connected. ${walletMessage(error)}`, { bad: true })));
-  $("#get-wallet")?.addEventListener("click", () => needWallet());
+  $("#sign-in")?.addEventListener("click", () => needAccount());
 }
 
 function setTitle(text) {
@@ -709,7 +767,7 @@ function drawFeed() {
   const read = new Set(posts.map((q) => keyOf(q.community, q.author, q.id)));
   for (const p of pendingItems.values()) if (p.kind === "post" && read.has(p.key)) pendingItems.delete(p.key);
   const pending = [...pendingItems.values()].filter((p) => p.kind === "post" && list.includes(p.community))
-    .map((p) => ({ ...p.value, tags: p.value.tags ?? [], media: [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, verdict: { treatment: "show", labels: [] }, pending: p.slow ? "slow" : "waiting" }));
+    .map((p) => ({ ...p.value, tags: p.value.tags ?? [], media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, verdict: { treatment: "show", labels: [] }, pending: p.slow ? "slow" : "waiting" }));
   const keyed = (p) => `${p.community}|${p.author}|${p.id}`;
   if (shown.sort !== sort || !shown.order) {
     shown.order = rank(posts, sort).map(keyed);
@@ -785,7 +843,7 @@ function drawThread() {
   let tree = shown.tree && ordered(structuredClone(shown.tree));
   if (tree) pendingItems.delete(keyOf(community, author, id));
   const pendingPost = pendingItems.get(keyOf(community, author, id));
-  if (!tree && pendingPost) tree = { ...pendingPost.value, author, id, tags: pendingPost.value.tags ?? [], labels: [], media: [], replies: [], ups: 0, downs: 0, mine: 0, pending: pendingPost.slow ? "slow" : "waiting" };
+  if (!tree && pendingPost) tree = { ...pendingPost.value, author, id, tags: pendingPost.value.tags ?? [], labels: [], media: pendingPost.media ?? [], replies: [], ups: 0, downs: 0, mine: 0, pending: pendingPost.slow ? "slow" : "waiting" };
   if (!tree) {
     $("#thread").innerHTML = `<div class="panel"><h2>This post isn't here</h2><p>${esc(nodeHost())} doesn't have it in s/${esc(community)}. Its author may have deleted it, or it hasn't reached this node yet.</p><div class="row2"><a class="btn" href="#/s/${encodeURIComponent(community)}">Back to s/${esc(community)}</a></div></div>`;
     return;
@@ -845,6 +903,96 @@ function drawThread() {
   loadMedia();
 }
 
+// A profile page: how an account appears, what it wrote in each community,
+// and its karma. Read from every community chain (one prefix scan each).
+let profileTab = "posts";
+
+async function showProfile({ address }, renderId) {
+  const fresh = frame(`profile|${address}`, `<a class="back" href="#/">← Home</a><div id="profile"><p class="empty">Reading from ${esc(nodeHost())}…</p></div>`);
+  if (fresh) profileTab = "posts";
+  const reader = signer()?.address;
+  const [, results] = await Promise.all([
+    loadNames([address]).catch(() => {}),
+    Promise.all(communities.map(async (c) => {
+      try {
+        const state = await stateOf(chainOf(c));
+        const [items, judgeItem] = await Promise.all([read.itemsBy(state, address), judgeFor(state, c)]);
+        return {
+          c,
+          items: await Promise.all(items.map(async (item) => {
+            const votes = await read.votes(state, item.author, item.id);
+            let comments = 0, on;
+            if (item.on) on = await read.item(state, item.on.author, item.on.id);
+            else for await (const _ of state.list(`index/comment/${item.author}/${item.id}/`)) comments++;
+            return { ...item, community: c, ups: votes.ups, downs: votes.downs, mine: reader ? votes.voters.get(reader) ?? 0 : 0, comments, verdict: judgeItem(item), onTitle: on?.title };
+          })),
+        };
+      } catch (error) {
+        return { c, error };
+      }
+    })),
+  ]);
+  if (stale(renderId)) return;
+  const items = results.flatMap((r) => r.items ?? []);
+  shown = { view: "profile", address, items, failures: results.filter((r) => r.error) };
+  redraw();
+}
+
+function drawProfile() {
+  if (!$("#profile")) return;
+  const { address, items, failures } = shown;
+  const mine = signer()?.address === address;
+  const profile = profiles.get(address) ?? {};
+  const handle = handles.get(address);
+  const name = monikerNames.displayName(profile.name)?.slice(0, read.PROFILE_LIMITS.name);
+  setTitle(name || (handle ? `@${handle}` : short(address)));
+  // The reader's own posts not yet in a block are shown here too.
+  const pending = mine ? [...pendingItems.values()].filter((p) => p.kind === "post" && p.author === address && !items.some((i) => i.community === p.community && i.id === p.id)) : [];
+  const posts = items.filter((i) => i.title !== undefined && !i.on);
+  const comments = items.filter((i) => i.on);
+  const karma = items.reduce((total, i) => total + i.ups - i.downs, 0);
+  const handleLine = handle
+    ? `<a class="handle" href="${esc(`${MONIKER.app}#/@${handle}`)}" target="_blank" rel="noopener" title="This handle points at this account on Moniker">@${esc(handle)}</a>`
+    : `<span class="muted">${mine ? "No @handle yet" : "No @handle"}</span>`;
+  const link = safeLink(profile.link);
+  const list = profileTab === "posts"
+    ? [...pending.map((p) => ({ ...p.value, tags: p.value.tags ?? [], media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, verdict: { treatment: "show", labels: [] }, pending: p.slow ? "slow" : "waiting" })),
+      ...rank(posts, "new").map((p) => withVote(p, p.community))].map((p) => postRow(p, names)).join("")
+    : rank(comments, "new").map((c) => commentRow(withVote(c, c.community))).join("");
+  const empty = profileTab === "posts"
+    ? `<p class="empty">${mine ? "You haven't posted yet." : "No posts yet."}</p>`
+    : `<p class="empty">${mine ? "You haven't commented yet." : "No comments yet."}</p>`;
+  $("#profile").innerHTML = `<section class="profile-head">
+      <span class="avatar big" aria-hidden="true">${accountIcon(address, 64)}</span>
+      <div class="who-lines">
+        <h1>${esc(name || (handle ? `@${handle}` : short(address)))}</h1>
+        <p class="handle-line">${handleLine}</p>
+        <p class="id-line">${name || handle ? `<span class="mono muted" title="${esc(address)}">${esc(short(address))}</span> ` : ""}<button class="linkish" type="button" data-copy-id="${esc(address)}">Copy account ID</button></p>
+      </div>
+      ${mine ? '<button class="btn" type="button" data-edit-profile>Edit profile</button>' : ""}
+    </section>
+    ${profile.bio ? `<p class="bio">${esc(profile.bio)}</p>` : mine && !profile.name ? '<p class="bio muted">Add a name and a few words about yourself, so people know who\'s posting.</p>' : ""}
+    ${link ? `<a class="link" href="${esc(link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(link)} ↗</a>` : ""}
+    <dl class="stats"><div><dt>Karma</dt><dd>${karma}</dd></div><div><dt>Posts</dt><dd>${posts.length}</dd></div><div><dt>Comments</dt><dd>${comments.length}</dd></div></dl>
+    ${failures.length ? `<div class="panel bad"><p style="margin:0">${failures.map((f) => esc(readFailure(f.error, f.c))).join(" ")} What they wrote there is missing below.</p></div>` : ""}
+    <div class="tabs" role="group" aria-label="Show"><button type="button" class="tab" data-profile-tab="posts" aria-pressed="${profileTab === "posts"}">Posts</button><button type="button" class="tab" data-profile-tab="comments" aria-pressed="${profileTab === "comments"}">Comments</button></div>
+    <div id="profile-items">${list || empty}</div>`;
+  loadMedia();
+}
+
+/** One of an account's comments, on its profile: where, on what, and what it said. */
+function commentRow(c) {
+  const href = postHref(c.community, c.on.author, c.on.id);
+  const { treatment, labels } = c.verdict;
+  const folded = treatment === "hide" || treatment === "collapse";
+  return `<article class="mini">
+    <div class="meta"><a href="#/s/${encodeURIComponent(c.community)}">s/${esc(c.community)}</a><span>on <a href="${href}">${esc(c.onTitle ?? "a post")}</a></span>${when(c.time)}${c.labels.map((l) => `<span class="tag label">${esc(l)}</span>`).join("")}</div>
+    ${folded ? `<p class="muted" style="margin:2px 0">Labelled ${esc(labels.map((l) => l.label).join(", "))}. <a href="${href}">See it in the thread</a></p>` : `<div class="body">${esc((c.body ?? "").slice(0, 600))}</div>`}
+    <div class="acts">${voteBox({ ...c, community: c.community }, { row: true })}<a href="${href}">Open thread</a></div>
+    ${c.error ? `<p class="inline-error">${esc(c.error)}</p>` : ""}
+  </article>`;
+}
+
 /**
  * A selector that finds the focused control again after a redraw replaces
  * it, or null. Writes land in the background, so redraws come at any time.
@@ -860,7 +1008,7 @@ function focusIn(el) {
   const by = (attr) => `[${attr}="${CSS.escape(el.getAttribute(attr))}"]`;
   if (el.dataset.vote) return `${by("data-vote")}${by("data-target")}`;
   if (el.tagName === "SUMMARY") return "summary";
-  for (const attr of ["data-reply", "data-label", "data-reveal", "data-follow", "data-sort", "data-mods", "data-join", "data-connect-or-get", "data-cid"]) {
+  for (const attr of ["data-reply", "data-label", "data-reveal", "data-follow", "data-sort", "data-mods", "data-join", "data-cid", "data-profile-tab", "data-edit-profile", "data-copy-id"]) {
     if (el.hasAttribute(attr)) return `${el.tagName.toLowerCase()}${by(attr)}`;
   }
   if (el.id) return `#${CSS.escape(el.id)}`;
@@ -877,6 +1025,7 @@ const refocus = (selector) => {
 function redraw(again = focusSelector()) {
   if (shown?.view === "feed") drawFeed();
   else if (shown?.view === "post") drawThread();
+  else if (shown?.view === "profile") drawProfile();
   refocus(again);
 }
 
@@ -942,10 +1091,17 @@ async function loadMedia() {
   }));
 }
 
+/** For a reader without an account here: what taking part takes, which is nothing to install and no coins. */
+const joinCard = () => signer() ? "" : `<div class="card"><h4>Take part</h4><p class="muted">Post, comment and vote for free. Selfhold makes your account with a passkey: nothing to install, no coins.</p><button class="btn primary" type="button" data-sign-in>Sign in</button></div>`;
+
 function showAside() {
   const c = route.community;
+  if (route.view === "profile") {
+    $("#aside").innerHTML = `<div class="card"><h4>Profiles</h4><p class="muted">A name and a few words, kept on Stoa's chain and changed only by their owner. The @handle comes from Moniker, which every Lattice app shares: it shows only while the handle points at this account.</p></div>${joinCard()}`;
+    return;
+  }
   if (!c) {
-    $("#aside").innerHTML = `<div class="card"><h4>Home</h4><p class="muted">Posts from the communities you joined, ranked on this page from votes and post times.</p><dl class="kv"><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></div>`;
+    $("#aside").innerHTML = `<div class="card"><h4>Home</h4><p class="muted">Posts from the communities you joined, ranked on this page from votes and post times.</p><dl class="kv"><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></div>${joinCard()}`;
     return;
   }
   const n = follows(c).length;
@@ -954,20 +1110,19 @@ function showAside() {
     ? "Every community's posts, with posts of its own on the Stoa chain. Anyone can post here, and anyone can mine it."
     : "A community with a chain of its own. Anyone can post here, and anyone can mine it.";
   $("#aside").innerHTML = `<div class="card"><h4>s/${esc(c)}</h4><p class="muted">${about}</p>
-    <dl class="kv"><dt>Your coins</dt><dd id="aside-balance">${signer() ? "…" : `<button class="linkish" type="button" data-connect-or-get>Connect to see</button>`}</dd>
-    <dt>Labels</dt><dd>${n ? `you follow ${plural(n, "account")}` : "you follow no one"} · <button class="linkish" type="button" data-mods="${esc(c)}">Manage</button></dd></dl>
-    <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>`;
+    <dl class="kv"><dt>Labels</dt><dd>${n ? `you follow ${plural(n, "account")}` : "you follow no one"} · <button class="linkish" type="button" data-mods="${esc(c)}">Manage</button></dd></dl>
+    <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>${joinCard()}`;
   // Each read fills only the aside it was made for.
-  const height = $("#aside-height"), balance = $("#aside-balance"), node = $("#aside-node");
+  const height = $("#aside-height"), node = $("#aside-node");
   nodes.list(chainOf(c)).then(([first]) => first && (node.textContent = first.found ? `${hostOf(first.url)}, found for this community: its operator declared it, and what it serves isn't checked` : hostOf(first.url)), () => {});
   api("/api/chain/info", chainOf(c)).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
-  const reader = signer();
-  if (reader) balanceOn(chainOf(c), reader.address).then((b) => (balance.textContent = b === null ? "unavailable" : String(b)));
 }
 
 // Renders overlap (a navigation while the last one still reads the node);
 // only the newest one writes the page.
 let renderId = 0;
+// The home chain as the last render read it: profiles are read from it.
+let homeState = null;
 const stale = (id) => id !== renderId;
 
 async function render() {
@@ -976,6 +1131,7 @@ async function render() {
   // is drawn, not while its reads run under the old page.
   const next = parseRoute(location.hash);
   const home = await stateOf(homePath()).catch(() => null);
+  homeState = home;
   if (home) {
     await loadMine(home).catch(() => {});
     const reader = signer();
@@ -994,6 +1150,7 @@ async function render() {
   showAside();
   refocus(again);
   if (route.view === "post") await showPost(route, id);
+  else if (route.view === "profile") await showProfile(route, id);
   else if (route.view === "community") await showFeed(route.community === ALL ? communities : [route.community], { title: `s/${route.community}`, community: route.community }, id);
   else await showFeed(joinedList().filter((c) => communities.includes(c)), { title: "Home" }, id);
   if (!stale(id)) refocus(again);
@@ -1040,11 +1197,30 @@ document.addEventListener("click", async (event) => {
     openSettings({ advanced: true });
   } else if (el.hasAttribute("data-new-post")) {
     openNewPost();
-  } else if (el.hasAttribute("data-connect-or-get")) {
-    if (!wallet()) needWallet();
-    else connectWallet().then(render).catch((error) => notice(`Not connected. ${walletMessage(error)}`, { bad: true }));
+  } else if (el.hasAttribute("data-sign-in")) {
+    needAccount();
+  } else if (el.dataset.profileTab) {
+    profileTab = el.dataset.profileTab;
+    if (shown?.view === "profile") redraw();
+  } else if (el.hasAttribute("data-edit-profile")) {
+    openProfile();
+  } else if (el.dataset.copyId) {
+    copyText(el, el.dataset.copyId, "Copied");
   }
 });
+
+/** Copies `text`, saying so on `button` for a moment; where it can't, the text is shown to select. */
+async function copyText(button, text, done = "Copied") {
+  const was = button.textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = done;
+  } catch {
+    button.textContent = text;
+    return;
+  }
+  setTimeout(() => button.isConnected && (button.textContent = was), 2000);
+}
 
 function toggleJoin(c) {
   const joining = !joinedList().includes(c);
@@ -1067,7 +1243,7 @@ function toggleJoin(c) {
  * makes the write once the reader's address is known. A failure is said in
  * the dialog, or in a notice if it was closed anyway.
  */
-async function sendFromDialog({ status, button, build, sent = () => {}, forget = () => {}, done }) {
+async function sendFromDialog({ status, button, build, sent = () => {}, forget = () => {}, done, landed: afterLanding = () => {} }) {
   const dialog = button.closest("dialog");
   // This opening of the dialog: a later one (after Cancel) is not touched.
   const opening = dialog.dataset.opening;
@@ -1097,11 +1273,12 @@ async function sendFromDialog({ status, button, build, sent = () => {}, forget =
   status.classList.remove("bad");
   let land, pending;
   try {
+    // An account first, in this click, if there is none here yet.
     const reader = await me().catch((error) => {
-      if (error instanceof NoWallet) return null;
+      if (error instanceof JustConnected) throw error;
       throw new Said(walletMessage(error));
     });
-    const made = build(reader?.address ?? "");
+    const made = build(reader.address);
     pending = made.pending;
     land = await send(made.chain, made.records, (s) => same() && (status.textContent = s), () => {
       if (!same()) return false;
@@ -1114,15 +1291,17 @@ async function sendFromDialog({ status, button, build, sent = () => {}, forget =
     // The draft's id is taken by what landed: the next send gets a new one.
     if (error instanceof Landed) forget();
     if (!same()) {
-      if (!(error instanceof NoWallet)) notice(said(error), { bad: true });
+      if (!(error instanceof JustConnected)) notice(said(error), { bad: true });
+      return;
+    }
+    if (error instanceof JustConnected) {
+      dialog.querySelector(".cost").textContent = signingNote();
+      status.textContent = `You're signed in. Press ${button.textContent} to send it.`;
+      button.focus();
       return;
     }
     status.classList.add("bad");
-    if (error instanceof NoWallet) {
-      status.innerHTML = `This needs Lattice Wallet, which holds your key. <a href="https://github.com/adalinxx/lattice-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a> Your draft stays here.`;
-    } else {
-      status.textContent = said(error);
-    }
+    status.textContent = said(error);
     return;
   }
   const owner = connected;
@@ -1142,7 +1321,10 @@ async function sendFromDialog({ status, button, build, sent = () => {}, forget =
   if (connected !== owner) return;
   // Kept until a read contains it (the draws drop it then), so it never
   // vanishes between landing and the re-read.
-  if (landed) pending.landed = true;
+  if (landed) {
+    pending.landed = true;
+    afterLanding(owner);
+  }
   refresh();
 }
 
@@ -1177,7 +1359,7 @@ function openReply(target, labelling) {
   $("#rp-status").textContent = "";
   $("#reply").showModal();
   $(labelling ? "#rp-chips input" : "#rp-b").focus();
-  showCost($("#rp-cost"), route.community, labelling ? "Labelling" : "Replying");
+  $("#rp-cost").textContent = signingNote();
 }
 $("#rp-b").addEventListener("input", () => replyTarget && drafts.set(replyTarget.key, $("#rp-b").value));
 $("#reply-form").addEventListener("submit", async (event) => {
@@ -1218,46 +1400,12 @@ $("#reply-form").addEventListener("submit", async (event) => {
   });
 });
 
-/** The line in a dialog that says what a write costs before it is made. */
-async function showCost(line, community, doing) {
-  // Only the newest check may write the line (the community can change while one runs).
-  const request = String(Number(line.dataset.request ?? 0) + 1);
-  line.dataset.request = request;
-  const current = () => line.dataset.request === request;
-  line.classList.remove("bad");
-  const button = line.closest("form").querySelector(".btn.primary");
-  if (!line.closest("dialog").hasAttribute("data-busy")) button.disabled = false;
-  if (!community) return (line.textContent = "");
-  if (!wallet()) {
-    line.innerHTML = `${esc(doing)} needs Lattice Wallet, a free browser extension that holds your key. <a href="https://github.com/adalinxx/lattice-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a> You can write your draft now.`;
-    return;
-  }
-  const reader = signer();
-  line.textContent = "";
-  let cost;
-  try {
-    cost = await costOn(chainOf(community), reader?.address);
-  } catch (error) {
-    if (!current()) return;
-    line.classList.add("bad");
-    line.textContent = `${readFailure(error, community)} ${doing} won't work until a node serves it.`;
-    button.disabled = true;
-    return;
-  }
-  if (!current()) return;
-  const fee = cost.fee === 0n ? "Free" : `Costs ${cost.fee} s/${community} ${cost.fee === 1n ? "coin" : "coins"}`;
-  if (!reader) return (line.textContent = `${fee}. You'll connect and approve it in Lattice Wallet.`);
-  if (cost.balance === null) return (line.textContent = `${fee}. Couldn't read your balance; you'll approve it in Lattice Wallet.`);
-  if (cost.balance < cost.fee) {
-    line.classList.add("bad");
-    line.innerHTML = `${esc(coinsMessage(community, reader.address, cost.fee))} <button class="linkish" type="button" data-copy-address>Copy address</button>`;
-    line.querySelector("[data-copy-address]").onclick = async (event) => {
-      event.target.textContent = await navigator.clipboard.writeText(reader.address).then(() => "Copied", () => reader.address);
-    };
-    button.disabled = true;
-    return;
-  }
-  line.textContent = `${fee} · you have ${cost.balance}. You'll approve it in Lattice Wallet.`;
+/** The line in a dialog that says how a write is signed and paid for: without coins, wherever a sponsor takes work. */
+function signingNote() {
+  if (!signer()) return "Free. You'll sign in with Selfhold first: a passkey makes your account, with nothing to install.";
+  if (extension()) return "You'll approve it, and its fee, in Selfhold.";
+  if (!settings.sponsor) return "You'll approve it, and its fee, in Selfhold's window.";
+  return "Free: this device does a moment's work for the fee. You'll approve it in Selfhold's window.";
 }
 
 /** A new opening of a dialog: a send still running from an earlier one leaves it alone. */
@@ -1278,7 +1426,9 @@ function openNewPost() {
   if (route.community && communities.includes(route.community)) $("#np-c").value = route.community;
   $("#new").showModal();
   $("#np-t").focus();
-  showCost($("#np-cost"), $("#np-c").value, "Posting");
+  $("#np-cost").textContent = signingNote();
+  drawAttachment();
+  drawMediaPicker();
 }
 $("#open-new").onclick = openNewPost;
 document.querySelectorAll("dialog").forEach((dialog) => {
@@ -1295,12 +1445,15 @@ document.querySelectorAll("dialog").forEach((dialog) => {
   });
   dialog.querySelectorAll("[data-close]").forEach((button) => (button.onclick = () => dialog.close("cancel")));
 });
-$("#np-c").addEventListener("change", () => showCost($("#np-cost"), $("#np-c").value, "Posting"));
+$("#np-c").addEventListener("change", drawMediaPicker);
 $("#new-form").addEventListener("submit", async (event) => {
   if (event.submitter?.value !== "post") return;
   event.preventDefault();
   const status = $("#np-status");
   status.classList.add("bad");
+  if (attachment && attachment.state !== "kept") {
+    return (status.textContent = attachment.state === "failed" ? "Your file wasn't kept: try again, or remove it." : "Your file is still being kept. Post once it's ready.");
+  }
   const community = $("#np-c").value;
   const title = $("#np-t").value.trim();
   const link = $("#np-l").value.trim();
@@ -1315,15 +1468,18 @@ $("#new-form").addEventListener("submit", async (event) => {
   const tags = [...document.querySelectorAll("#new-form .checks input:checked")].map((i) => i.value);
   const value = { title, ...(link && { link }), ...($("#np-b").value.trim() && { body: $("#np-b").value.trim() }), ...(tags.length && { tags }) };
   let made;
+  const media = attachment ? [attachment.cid] : [];
   await sendFromDialog({
     status, button: $("#np-post"),
     build: (author) => {
       const id = draftId(`new-post:${community}`);
       made = { author, id };
-      return { chain: chainOf(community), records: write.post(author, id, value), fresh: `user/${author}/post/${id}`, pending: { key: keyOf(community, author, id), kind: "post", community, author, id, value } };
+      return { chain: chainOf(community), records: write.post(author, id, value, media), fresh: `user/${author}/post/${id}`, pending: { key: keyOf(community, author, id), kind: "post", community, author, id, value, media } };
     },
     sent: () => {
       $("#new-form").reset();
+      attachment = null;
+      drawAttachment();
       draftIds.delete(`new-post:${community}`);
     },
     forget: () => draftIds.delete(`new-post:${community}`),
@@ -1398,10 +1554,276 @@ $("#mods").addEventListener("close", () => {
   refresh();
 });
 
+// ---------------------------------------------------------------- profile
+
+/** The reader's profile, to change: the @handle from Moniker, and the name, bio and link kept on Stoa. */
+function openProfile() {
+  const reader = signer();
+  if (!reader) return needAccount("Your profile belongs to your account.");
+  const dialog = $("#profile-dialog");
+  opened(dialog);
+  const profile = profiles.get(reader.address) ?? {};
+  $("#pf-name").value = profile.name ?? "";
+  $("#pf-bio").value = profile.bio ?? "";
+  $("#pf-link").value = profile.link ?? "";
+  $("#pf-status").textContent = "";
+  $("#pf-status").classList.remove("bad");
+  $("#pf-cost").textContent = signingNote();
+  $("#pf-handle").value = "";
+  $("#pf-handle-status").textContent = "";
+  $("#pf-handle-status").classList.remove("bad");
+  $("#pf-handle-btn").disabled = false;
+  drawHandleNow(reader.address);
+  dialog.showModal();
+  $("#pf-name").focus();
+  // The names the account owns on Moniker, to pick from.
+  $("#pf-handle-mine").innerHTML = "";
+  moniker.state().then((state) => monikerNames.namesOf(state, reader.address)).then((owned) => {
+    if (signer()?.address !== reader.address || !owned.length) return;
+    const now = handles.get(reader.address);
+    $("#pf-handle-mine").innerHTML = `Your names on Moniker: ${owned.map(({ handle }) => `<button class="chip" type="button" data-pick-handle="${esc(handle)}"${handle === now ? ' aria-current="true"' : ""}>@${esc(handle)}</button>`).join(" ")}`;
+  }, () => {});
+}
+
+function drawHandleNow(address) {
+  const now = handles.get(address);
+  $("#pf-handle-now").innerHTML = now
+    ? `You show <strong>@${esc(now)}</strong> in every Lattice app. Choose another below, or claim a free one.`
+    : "You have no @handle yet. Claim a free one: it's yours, and every Lattice app shows it.";
+}
+
+$("#pf-handle-mine").addEventListener("click", (event) => {
+  const pick = event.target.closest("[data-pick-handle]");
+  if (!pick) return;
+  $("#pf-handle").value = pick.dataset.pickHandle;
+  $("#pf-handle").focus();
+});
+$("#pf-handle").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    $("#pf-handle-btn").click();
+  }
+});
+
+/**
+ * Shows the typed @handle for the reader, through Moniker: a free one is
+ * claimed, pointed at them and shown, in one transaction; one they own or
+ * that points at them is shown. Selfhold's window opens at once, in the
+ * click, while the page reads Moniker and builds the write.
+ */
+$("#pf-handle-btn").onclick = async () => {
+  const status = $("#pf-handle-status");
+  const button = $("#pf-handle-btn");
+  const say = (text, bad = false) => {
+    status.textContent = text;
+    status.classList.toggle("bad", bad);
+  };
+  const handle = $("#pf-handle").value.trim().replace(/^@/, "").toLowerCase();
+  if (!handle) return say("Type a handle first.", true);
+  if (!/^[a-z0-9_]+$/.test(handle)) return say("A handle is lowercase letters, digits and _.", true);
+  const account = connected;
+  if (!account) return needAccount();
+  let refused = null;
+  let step;
+  const request = (async () => {
+    const state = await moniker.state();
+    const [entry, shownNow] = await Promise.all([monikerNames.resolve(state, handle), monikerNames.handleOf(state, account)]);
+    step = stepFor(entry, account, handle, shownNow);
+    if (step.refused) throw new Said(step.refused);
+    if (step === "shown") return null;
+    const made = step === "claim" ? await monikerNames.claim(state, account, handle, { show: true }) : await monikerNames.showName(state, account, handle);
+    return writeRequest(moniker.chain, made);
+  })().catch((error) => {
+    refused = error;
+    throw error;
+  });
+  button.disabled = true;
+  say(`Approve it in ${walletName()}…`);
+  let sent;
+  try {
+    sent = await monikerWallet().writeRecords(request, { account, progress: (text) => say(`${text}…`.replace(/[.…]+…$/, "…")) });
+  } catch (error) {
+    button.disabled = false;
+    if (refused) return say(refused instanceof Said ? refused.message : `Couldn't read Moniker: ${refused?.message ?? refused}`, true);
+    return say(walletMessage(error), true);
+  }
+  if (sent === null) {
+    button.disabled = false;
+    return say(`@${handle} is your handle already.`);
+  }
+  say(`Sent. Moniker shows @${handle} for you in about 10 seconds.`);
+  const started = Date.now();
+  while (Date.now() - started < 10 * 60_000) {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    if (connected !== account) return;
+    const now = await moniker.handleOf(account).catch(() => undefined);
+    if (now !== handle) continue;
+    handles.set(account, handle);
+    forgetName(account);
+    setName(account);
+    renderWho();
+    redraw();
+    if ($("#profile-dialog").open) {
+      button.disabled = false;
+      $("#pf-handle").value = "";
+      drawHandleNow(account);
+      say(`@${handle} is your handle now.`);
+    } else {
+      notice(`@${handle} is your handle now.`);
+    }
+    return;
+  }
+  button.disabled = false;
+  say(`@${handle} hasn't shown yet. It may still go through: look again in a minute.`, true);
+};
+
+$("#profile-form").addEventListener("submit", async (event) => {
+  if (event.submitter?.value !== "save") return;
+  event.preventDefault();
+  const status = $("#pf-status");
+  const link = $("#pf-link").value.trim();
+  if (link && !safeLink(link)) {
+    status.classList.add("bad");
+    $("#pf-link").focus();
+    return (status.textContent = "The link must start with https:// or http://");
+  }
+  const value = { name: $("#pf-name").value, bio: $("#pf-bio").value, link };
+  await sendFromDialog({
+    status, button: $("#pf-save"),
+    build: (author) => ({ chain: homePath(), records: write.profile(author, value), pending: { key: `profile|${author}`, kind: "profile", author } }),
+    done: () => {
+      const reader = signer().address;
+      // Shown at once; read again from the chain once it lands.
+      const kept = Object.fromEntries(Object.entries(value).map(([k, v]) => [k, v.trim()]).filter(([, v]) => v));
+      if (Object.keys(kept).length) profiles.set(reader, kept);
+      else profiles.delete(reader);
+      setName(reader);
+      $("#profile-dialog").close();
+      renderWho();
+      redraw();
+    },
+    landed: (author) => {
+      pendingItems.delete(`profile|${author}`);
+      forgetName(author);
+    },
+  });
+});
+
+// ------------------------------------------------------------------ media
+
+// A post's image or video is kept for good by the storage sponsor, paid with
+// this device's work: no coins, and no node of the poster's own.
+const MOST_MEDIA = (1 << 20) - 256; // one Volume of at most 1 MiB, its block's framing included
+const UPLOADS = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm))$/;
+let attachment = null; // { cid, file: { kind, url }, state: "storing" | "kept" | "failed", stop, chain }
+const storageChains = new Map(); // "<sponsor> <community>" → Promise<chain | null>
+const storageOn = (community) => {
+  if (!settings.storage) return Promise.resolve(null);
+  const key = `${settings.storage} ${community}`;
+  if (!storageChains.has(key)) {
+    const asked = storageChain(settings.storage, [chainOf(community).join("/"), homePath().join("/")]);
+    storageChains.set(key, asked);
+    // A sponsor that didn't answer is asked again next time.
+    asked.then((chain) => chain || storageChains.delete(key));
+  }
+  return storageChains.get(key);
+};
+
+/** Shows whether a file can be added, for the community chosen. */
+async function drawMediaPicker() {
+  const community = $("#np-c").value;
+  const chain = await storageOn(community);
+  if ($("#np-c").value !== community) return;
+  $("#np-file-wrap").hidden = !chain && !attachment;
+  $("#np-media-off").hidden = Boolean(chain || attachment);
+  $("#np-media-off").textContent = settings.storage
+    ? "Images and video can't be added right now: the storage sponsor in Settings isn't keeping files."
+    : "Images and video need a storage sponsor, set in Settings.";
+}
+
+function drawAttachment() {
+  const box = $("#np-media");
+  box.hidden = !attachment;
+  $("#np-file").hidden = Boolean(attachment);
+  if (!attachment) return;
+  const { file, state, text } = attachment;
+  box.querySelector(".preview").innerHTML = file.kind === "video" ? `<video src="${file.url}" muted></video>` : `<img src="${file.url}" alt="">`;
+  const line = box.querySelector(".media-status");
+  line.textContent = text;
+  line.classList.toggle("bad", state === "failed");
+  $("#np-media-retry").hidden = state !== "failed";
+  $("#np-post").disabled = state === "storing" || $("#new").hasAttribute("data-busy");
+}
+
+/** Keeps the chosen file through the storage sponsor, saying how far along it is. */
+async function keepAttachment() {
+  const mine = attachment;
+  const stop = new AbortController();
+  Object.assign(mine, { state: "storing", stop: () => stop.abort(), text: "Getting ready…" });
+  drawAttachment();
+  const device = await workDevice();
+  const say = (text, state = "storing") => {
+    if (attachment !== mine) return;
+    Object.assign(mine, { text, state });
+    drawAttachment();
+  };
+  try {
+    const chain = await storageOn($("#np-c").value);
+    if (!chain) throw new StorageRefused("The storage sponsor isn't keeping files right now.");
+    await storeFile(settings.storage, mine.volume, {
+      chain, hash: hasher, signal: stop.signal,
+      progress: ({ stage, done }) => say({
+        upload: "Sending it to the storage sponsor…",
+        work: `Keeping it for good: this device's ${device} is paying with work…`,
+        busy: "The storage sponsor is busy: waiting a moment…",
+        grind: `Keeping it for good: this device's ${device} is paying with work… ${Math.round((done ?? 0) * 100)}%`,
+        pin: "Paid. The storage sponsor is keeping it…",
+      }[stage]),
+    });
+    // Kept: shown at once in the post, without reading it back.
+    settled.set(mine.cid, mine.file);
+    say(`Kept for good by ${hostOf(settings.storage)}, paid with this device's work.`, "kept");
+  } catch (error) {
+    if (error instanceof StorageStopped) return;
+    say(error instanceof StorageRefused ? error.message : `Couldn't keep it: ${error?.message ?? error}`, "failed");
+  }
+}
+
+$("#np-file").addEventListener("change", async () => {
+  const chosen = $("#np-file").files?.[0];
+  $("#np-file").value = "";
+  if (!chosen) return;
+  const status = $("#np-status");
+  status.classList.add("bad");
+  if (!UPLOADS.test(chosen.type)) return (status.textContent = "Choose a PNG, JPEG, GIF, WebP or AVIF image, or an MP4 or WebM video.");
+  if (chosen.size > MOST_MEDIA) return (status.textContent = `That file is ${(chosen.size / 1048576).toFixed(1)} MB. Files up to 1 MB can be kept: try a smaller one.`);
+  status.textContent = "";
+  const bytes = new Uint8Array(await chosen.arrayBuffer());
+  const volume = mediaVolume(sdk, chosen.type, bytes);
+  attachment?.stop?.();
+  attachment = { cid: volume.cid, volume, file: { kind: chosen.type.startsWith("video/") ? "video" : "img", url: URL.createObjectURL(chosen) } };
+  keepAttachment();
+});
+$("#np-media-retry").onclick = () => attachment && keepAttachment();
+$("#np-media-remove").onclick = () => {
+  attachment?.stop?.();
+  attachment = null;
+  drawAttachment();
+  $("#np-post").disabled = false;
+  drawMediaPicker();
+  $("#np-file").focus();
+};
+
+// ---------------------------------------------------------------- settings
+
 function openSettings({ advanced = false } = {}) {
   $("#st-node").value = settings.node;
   $("#st-home").value = settings.home;
   $("#st-moniker").value = settings.moniker;
+  $("#st-sponsor").value = settings.sponsor;
+  $("#st-storage").value = settings.storage;
+  $("#st-extension-row").hidden = !window.lattice?.isLatticeWallet;
+  $("#st-extension").checked = settings.extension;
   $("#st-status").textContent = "";
   $("#st-advanced").open = advanced;
   renderAccount();
@@ -1411,34 +1833,52 @@ function openSettings({ advanced = false } = {}) {
 $("#open-settings").onclick = () => openSettings();
 function renderAccount() {
   const reader = signer();
-  $("#st-account-hint").innerHTML = reader ? "Lattice Wallet holds your key and asks you to approve each post, comment, vote and label."
-    : wallet() ? "Connect Lattice Wallet to post, comment and vote."
-      : 'Lattice Wallet, a browser extension, holds your key. <a href="https://github.com/adalinxx/lattice-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get it ↗</a>';
+  $("#st-account-hint").textContent = reader
+    ? extension() ? "Selfhold for Chrome keeps your key and asks you to approve each post, comment, vote and label."
+      : "Your key is kept by your passkey, in Selfhold's window. It asks you to approve each post, comment, vote and label; Stoa never sees the key."
+    : "Selfhold makes your account with a passkey: your face, fingerprint or screen lock. Nothing to install, and no coins.";
   $("#st-address-row").hidden = !reader;
+  $("#st-icon").innerHTML = reader ? accountIcon(reader.address, 20) : "";
   $("#st-address").textContent = reader?.address ?? "";
-  $("#st-connect").hidden = !wallet() || Boolean(reader);
+  $("#st-connect").hidden = Boolean(reader);
   $("#st-disconnect").hidden = !reader;
 }
 $("#st-connect").onclick = () =>
   connectWallet().then(() => { renderAccount(); render(); }).catch((error) => ($("#st-status").textContent = walletMessage(error)));
 async function disconnect() {
-  await wallet()?.disconnect().catch(() => {});
+  await wallet().disconnect().catch(() => {});
   setConnected(null);
   renderAccount();
   render();
 }
 $("#st-disconnect").onclick = disconnect;
-$("#settings-form").addEventListener("submit", (event) => {
+$("#settings-form").addEventListener("submit", async (event) => {
   if (event.submitter?.value !== "save") return;
   const typed = $("#st-node").value.trim();
   const node = typed && nodeAddress(typed);
-  if (typed && !node) {
+  const bad = (field, message) => {
     event.preventDefault();
     $("#st-advanced").open = true;
     $("#st-status").classList.add("bad");
-    $("#st-status").textContent = "The node must be an https address, like https://node.example (http only for this computer).";
-    return $("#st-node").focus();
+    $("#st-status").textContent = message;
+    field.focus();
+  };
+  if (typed && !node) return bad($("#st-node"), "The node must be an https address, like https://node.example (http only for this computer).");
+  const sponsor = $("#st-sponsor").value.trim(), storage = $("#st-storage").value.trim();
+  if (sponsor && !sponsorAddress(sponsor)) return bad($("#st-sponsor"), "The fee sponsor must be an https address, or empty to pay fees in coins.");
+  if (storage && !sponsorAddress(storage)) return bad($("#st-storage"), "The storage sponsor must be an https address, or empty for none.");
+  // Selfhold for Chrome or the window: each keeps its own account.
+  const useExtension = $("#st-extension").checked;
+  if (useExtension !== settings.extension) {
+    settings.extension = useExtension;
+    store.set("wallet", useExtension ? "extension" : "web");
+    setConnected(await wallet().address().catch(() => null));
+    render();
   }
+  settings.sponsor = sponsor && sponsorAddress(sponsor);
+  settings.storage = storage && sponsorAddress(storage);
+  store.set("sponsor", settings.sponsor === DEFAULT_SPONSOR ? null : settings.sponsor);
+  store.set("storage", settings.storage === DEFAULT_SPONSOR ? null : settings.storage);
   const home = $("#st-home").value.trim(), monikerChain = $("#st-moniker").value.trim();
   const moved = (node && node !== settings.node) || (home && home !== settings.home) || (monikerChain && monikerChain !== settings.moniker);
   if (!moved) return;
@@ -1448,8 +1888,10 @@ $("#settings-form").addEventListener("submit", (event) => {
   store.set("node", settings.node);
   store.set("home", settings.home);
   store.set("monikerChain", settings.moniker === MONIKER.chain.join("/") ? null : settings.moniker);
-  // Names are read again, from the node and Moniker chain now chosen.
+  // Names are read again, from the node and chains now chosen.
   names.clear();
+  profiles.clear();
+  handles.clear();
   lookups = new Map();
   nodes = findNodes();
   moniker = monikerFor();
@@ -1458,31 +1900,28 @@ $("#settings-form").addEventListener("submit", (event) => {
 });
 
 // The account menu.
-$("#account").addEventListener("toggle", async (event) => {
+$("#account").addEventListener("toggle", (event) => {
   if (event.newState !== "open") return;
   const reader = signer();
   if (!reader) return $("#account").hidePopover();
-  $("#acc-name").textContent = nameOf(reader.address, names);
-  $("#acc-address").textContent = reader.address;
-  // Moniker's pages show its own chain; another chain's card is edited elsewhere.
-  $("#acc-profile").hidden = !moniker.shared;
-  if (moniker.shared) $("#acc-profile").href = moniker.shared.pageURL(reader.address);
-  $("#acc-copy").textContent = "Copy address";
-  $("#acc-coins").innerHTML = communities.map((c) => `<dt>s/${esc(c)}</dt><dd data-coins="${esc(c)}">…</dd>`).join("");
-  for (const c of communities) {
-    balanceOn(chainOf(c), reader.address)
-      .then((b) => (b === null ? "unavailable" : `${b} coins`))
-      .then((text) => { const dd = $(`#acc-coins [data-coins="${CSS.escape(c)}"]`); if (dd) dd.textContent = text; });
-  }
+  const handle = handles.get(reader.address);
+  $("#acc-icon").innerHTML = accountIcon(reader.address, 40);
+  $("#acc-name").textContent = monikerNames.displayName(profiles.get(reader.address)?.name) || (handle ? `@${handle}` : "Your account");
+  $("#acc-handle").textContent = handle ? `@${handle}` : "No @handle yet";
+  $("#acc-handle").hidden = Boolean(handle) && !profiles.get(reader.address)?.name;
+  $("#acc-address").textContent = short(reader.address);
+  $("#acc-address").title = reader.address;
+  $("#acc-wallet").textContent = extension() ? "Kept in Selfhold for Chrome." : "Kept by your passkey, in Selfhold's window.";
+  $("#acc-profile").href = profileHref(reader.address);
+  $("#acc-copy").textContent = "Copy account ID";
 });
-$("#acc-copy").onclick = async () => {
-  try {
-    await navigator.clipboard.writeText(signer()?.address ?? "");
-    $("#acc-copy").textContent = "Copied";
-  } catch {
-    $("#acc-copy").textContent = "Couldn't copy: select the address above";
-  }
+$("#acc-profile").onclick = () => $("#account").hidePopover();
+$("#acc-edit").onclick = () => {
+  $("#account").hidePopover();
+  openProfile();
+  $("#profile-dialog").dataset.from = "#who #account-btn";
 };
+$("#acc-copy").onclick = () => copyText($("#acc-copy"), signer()?.address ?? "");
 $("#acc-settings").onclick = () => {
   $("#account").hidePopover();
   openSettings();
@@ -1497,7 +1936,7 @@ $("#acc-disconnect").onclick = () => {
 // ------------------------------------------------------------------ boot
 
 async function boot() {
-  setConnected((await wallet()?.address().catch(() => null)) ?? null);
+  setConnected(await wallet().address().catch(() => null));
   try {
     const children = (await api("/api/chain/children", homePath())).directories ?? [];
     communities = [ALL, ...children.filter((c) => c !== ALL)];

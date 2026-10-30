@@ -39,6 +39,35 @@ header.top { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; 
 .btn svg { width: 18px; height: 18px; }
 .who { display: flex; }
 .account-name { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; }
+.avatar { display: inline-flex; flex: none; border-radius: 50%; overflow: hidden; line-height: 0; }
+.avatar svg { width: 100%; height: 100%; }
+#account-btn .avatar { width: 20px; height: 20px; }
+.avatar.big { width: 64px; height: 64px; }
+a.author { color: inherit; text-decoration: none; } a.author:hover { color: var(--accent); text-decoration: underline; }
+.profile-head { display: flex; gap: 16px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+.profile-head .who-lines { flex: 1; min-width: 0; }
+.profile-head h1 { margin: 0; }
+.profile-head p { margin: 2px 0 0; font-size: 13.5px; }
+.handle { color: var(--accent); text-decoration: none; font-weight: 600; } .handle:hover { text-decoration: underline; }
+.bio { white-space: pre-wrap; overflow-wrap: anywhere; margin: 14px 0 6px; }
+.stats { display: flex; gap: 28px; margin: 14px 0 0; padding: 12px 0; border-block: 1px solid var(--line); }
+.stats div { display: flex; flex-direction: column-reverse; }
+.stats dt { font-size: 12px; color: var(--muted); } .stats dd { margin: 0; font: 600 20px var(--display); font-variant-numeric: tabular-nums; }
+.mini { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.mini .body { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 4px; }
+.mini .acts a { color: var(--muted); text-decoration: none; } .mini .acts a:hover { color: var(--accent); }
+.chip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 1px 9px; cursor: pointer; font-size: 12.5px; color: var(--ink); }
+.chip:hover { border-color: var(--accent); } .chip[aria-current="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.at { align-self: center; color: var(--muted); }
+.media-pick { display: flex; gap: 12px; align-items: center; margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.media-pick .preview { width: 72px; height: 72px; flex: none; border-radius: 6px; overflow: hidden; background: var(--surface); }
+.media-pick .preview img, .media-pick .preview video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.media-pick .media-status { flex: 1; font-size: 12.5px; color: var(--muted); margin: 0; }
+.media-pick .media-status.bad { color: var(--down); }
+.media-pick .acts-col { display: flex; flex-direction: column; gap: 6px; }
+input[type=file] { font-size: 13px; color: var(--muted); max-width: 100%; }
+#account .acc-head { display: flex; gap: 12px; align-items: center; }
+#account .acc-head .avatar { width: 40px; height: 40px; }
 nav.rail { font-size: 14px; padding-top: 12px; }
 nav.rail h3 { font: 600 11px var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 18px 8px 6px; }
 .tree { list-style: none; margin: 0; padding: 0; }
@@ -190,27 +219,51 @@ td:last-child { text-align: right; }
 </div>
 
 <div id="account" popover>
-  <div class="who-name" id="acc-name"></div>
-  <div class="mono muted" id="acc-address" style="margin-top:2px"></div>
-  <dl class="kv" id="acc-coins" style="margin-top:10px"></dl>
+  <div class="acc-head"><span class="avatar" id="acc-icon" aria-hidden="true"></span><div><div class="who-name" id="acc-name"></div><div class="muted" id="acc-handle"></div></div></div>
+  <div class="mono muted" id="acc-address" style="margin-top:10px"></div>
+  <p class="hint" id="acc-wallet" style="margin-top:2px"></p>
   <div class="menu">
-    <a class="btn" id="acc-profile" target="_blank" rel="noopener">Edit profile on Moniker</a>
-    <button class="btn" type="button" id="acc-copy">Copy address</button>
+    <a class="btn" id="acc-profile" href="#/">Your profile</a>
+    <button class="btn" type="button" id="acc-edit">Edit profile</button>
+    <button class="btn" type="button" id="acc-copy">Copy account ID</button>
     <button class="btn" type="button" id="acc-settings">Settings</button>
-    <button class="btn" type="button" id="acc-disconnect">Disconnect</button>
+    <button class="btn" type="button" id="acc-disconnect">Sign out</button>
   </div>
 </div>
 
-<dialog id="getwallet" aria-labelledby="gw-title">
+<dialog id="signin" aria-labelledby="join-title">
   <form method="dialog">
-    <h3 id="gw-title">Get Lattice Wallet to take part</h3>
-    <p class="lede">Stoa has no sign-up and no passwords. Your account lives in Lattice Wallet, a browser extension: it keeps your key and asks you to approve each post, comment and vote. Reading needs nothing.</p>
-    <p class="hint" id="gw-why"></p>
+    <h3 id="join-title">Take part in Stoa</h3>
+    <p class="hint" id="join-why"></p>
+    <p class="lede">Stoa has no sign-up and no passwords. Selfhold opens in a window over this page, and a passkey makes your account: your face, fingerprint or screen lock unlocks it, on this device and the ones it syncs to. Stoa never sees your key.</p>
+    <p class="lede">It's free. Each post, comment and vote is approved in Selfhold, and this device does a moment's work for its fee, so you need no coins.</p>
     <div class="row2">
-      <span class="status">Installed it? Reload this page.</span>
+      <span class="status" id="join-status" role="status"></span>
       <button class="btn" value="close">Not now</button>
-      <a class="btn primary" href="https://github.com/adalinxx/lattice-wallet/releases/latest" target="_blank" rel="noopener noreferrer">Get Lattice Wallet ↗</a>
+      <button class="btn primary" type="button" id="join-continue">Continue with Selfhold</button>
     </div>
+  </form>
+</dialog>
+
+<dialog id="profile-dialog" aria-labelledby="pf-title">
+  <form method="dialog" id="profile-form">
+    <h3 id="pf-title">Your profile</h3>
+    <p class="lede">How you appear on Stoa. Your @handle comes from Moniker and shows in every Lattice app; your name and the rest are kept on Stoa's chain. Only you can change either.</p>
+    <p class="section">@handle</p>
+    <p class="hint" id="pf-handle-now"></p>
+    <label for="pf-handle" class="sr-only">Handle</label>
+    <div class="inline" style="margin-top:8px"><span class="at" aria-hidden="true">@</span><input type="text" id="pf-handle" placeholder="yourname" autocomplete="off" spellcheck="false" autocapitalize="none"><button class="btn" type="button" id="pf-handle-btn">Use this handle</button></div>
+    <p class="hint" id="pf-handle-mine"></p>
+    <p class="status" id="pf-handle-status" role="status" style="margin-top:6px"></p>
+    <p class="section">On Stoa</p>
+    <label for="pf-name">Name <span class="muted">(optional)</span></label>
+    <input type="text" id="pf-name" maxlength="50" autocomplete="name">
+    <label for="pf-bio">About you <span class="muted">(optional)</span></label>
+    <textarea id="pf-bio" maxlength="500"></textarea>
+    <label for="pf-link">Link <span class="muted">(optional)</span></label>
+    <input type="url" id="pf-link" placeholder="https://" autocomplete="url">
+    <p class="cost" id="pf-cost" aria-live="polite"></p>
+    <div class="row2"><span class="status" id="pf-status" role="status"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" id="pf-save" value="save">Save profile</button></div>
   </form>
 </dialog>
 
@@ -227,7 +280,16 @@ td:last-child { text-align: right; }
     <textarea id="np-b"></textarea>
     <label id="np-tags-label">Tags <span class="muted">(optional)</span></label>
     <div class="checks" role="group" aria-labelledby="np-tags-label"><label><input type="checkbox" value="oc"> OC</label><label><input type="checkbox" value="nsfw"> NSFW</label><label><input type="checkbox" value="spoiler"> Spoiler</label></div>
-    <p class="hint">Images and video can't be added from the browser yet.</p>
+    <div id="np-file-wrap" hidden>
+      <label for="np-file">Image or video <span class="muted">(optional, up to 1 MB)</span></label>
+      <input type="file" id="np-file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,video/mp4,video/webm">
+      <div class="media-pick" id="np-media" hidden>
+        <div class="preview" aria-hidden="true"></div>
+        <p class="media-status" role="status" aria-live="polite"></p>
+        <div class="acts-col"><button class="btn small" type="button" id="np-media-retry" hidden>Try again</button><button class="btn small" type="button" id="np-media-remove">Remove</button></div>
+      </div>
+    </div>
+    <p class="hint" id="np-media-off" hidden></p>
     <p class="cost" id="np-cost" aria-live="polite"></p>
     <div class="row2"><span class="status" id="np-status" role="status"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" id="np-post" value="post">Post</button></div>
   </form>
@@ -274,17 +336,21 @@ td:last-child { text-align: right; }
     <h3 id="st-title">Settings</h3>
     <p class="section">Your account</p>
     <p class="hint" id="st-account-hint"></p>
-    <dl class="kv" style="margin-top:8px" id="st-address-row"><dt>Address</dt><dd class="mono" id="st-address"></dd></dl>
-    <div class="row2" style="justify-content:flex-start;margin-top:10px"><button class="btn" type="button" id="st-connect">Connect wallet</button><button class="btn" type="button" id="st-disconnect">Disconnect</button></div>
-    <p class="hint">Your name comes from your Moniker profile, which every Lattice app shares.</p>
+    <dl class="kv" style="margin-top:8px;align-items:center" id="st-address-row"><dt>Account ID</dt><dd style="display:flex;gap:8px;align-items:center"><span class="avatar" id="st-icon" aria-hidden="true" style="width:20px;height:20px"></span><span class="mono" id="st-address"></span></dd></dl>
+    <div class="row2" style="justify-content:flex-start;margin-top:10px"><button class="btn" type="button" id="st-connect">Sign in</button><button class="btn" type="button" id="st-disconnect">Sign out</button></div>
+    <label class="check" id="st-extension-row" hidden style="display:flex;gap:6px;align-items:center;color:var(--ink);font-size:13.5px"><input type="checkbox" id="st-extension"> Use Selfhold for Chrome, not Selfhold's window <span class="muted">(each keeps its own account)</span></label>
     <details class="more" id="st-advanced">
       <summary>Node and chains</summary>
       <label for="st-node">Node <span class="muted">(any node hosting Stoa; your own is the trustless choice)</span></label>
       <input type="url" id="st-node" autocomplete="url">
       <label for="st-home">Stoa home chain</label>
       <input type="text" id="st-home" autocomplete="off">
-      <label for="st-moniker">Moniker chain <span class="muted">(where names come from)</span></label>
+      <label for="st-moniker">Moniker chain <span class="muted">(where @handles come from)</span></label>
       <input type="text" id="st-moniker" autocomplete="off">
+      <label for="st-sponsor">Fee sponsor <span class="muted">(pays each fee for this device's work; empty to pay fees in coins)</span></label>
+      <input type="url" id="st-sponsor" placeholder="Fees paid in coins" autocomplete="off" spellcheck="false" autocapitalize="none">
+      <label for="st-storage">Storage sponsor <span class="muted">(keeps images and video for this device's work; empty for none)</span></label>
+      <input type="url" id="st-storage" placeholder="No images or video" autocomplete="off" spellcheck="false" autocapitalize="none">
     </details>
     <div class="row2"><span class="status" id="st-status" role="status"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" value="save">Save</button></div>
   </form>

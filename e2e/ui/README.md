@@ -2,33 +2,41 @@
 
 The real page (`app/`) in headless Chromium, driven through Playwright,
 against a private Lattice stack (`stack.mjs`): one host mining Nexus, a Stoa
-home chain, one community and a Moniker chain (names) from a 2-second test spec, admitting any fee
-like the Stoa node. Each test opens its own browser with the real Lattice
-Wallet extension loaded (Chrome's `--headless=new`, which runs extensions);
-an account's key is imported into that wallet, whose node is set to the
-stack's (the copy loaded is allowed to reach 127.0.0.1, as the wallet's
-Allow button would grant), the test connects by clicking
-Connect wallet, and every approval window the wallet opens is answered
-(Connect or Sign, or Decline where a test says so) and counted.
+home chain and one community (Stoa's policy) and Moniker (its own policy, the
+module `Nexus/moniker` launched with, in `moniker/`), all from a 2-second test
+spec with a fee of 1; a sponsor (lattice-sponsor) that pays fees and keeps
+files on the home chain for work; and Selfhold's window, built from
+selfhold-wallet and served on localhost.
 
-Covered: the community list; a visitor without the wallet told to install
-it (keeping their draft, and when they vote); writing free, so an account
-without coins posts; a write declined in the wallet not sent; a community the
-node does not serve shown as such, not as empty; writes shown at once as
-pending and settling when their block lands; posting a
-link post and reading it back in its thread and the feed; nested comments;
-voting and taking a vote back; an author's name read from their Moniker
-card (the stack runs a chain at Nexus/moniker for it); labels hiding a post only for a reader who follows
-the labeller, at once, with Show and unfollow; media a node serves and media
-nobody serves; Top and New ordering; and an earlier render finishing after a
-newer one without writing over it.
+Each test is one person in a fresh browser context: Chromium's virtual
+authenticator gives them a passkey in Selfhold's window, where they create an
+account, connect it, and approve (or decline) each write. Nobody the page
+signs for holds coins: every fee is paid by the sponsor for work, and a test
+checks the account still holds nothing. Pop-ups are blocked as for anyone, so
+a window not opened in a click fails a test. Accounts of other clients write
+with keys the tests hold.
+
+Covered: the community list, and what taking part takes; signing in from a
+write (the draft kept, sent on the next press) and from a vote; posting,
+nested comments, voting and taking a vote back, all coinless; a profile
+(name, bio) on Stoa and an @handle claimed on Moniker, refused when it is
+someone else's, on bylines and the profile page; an image kept for good by
+the storage sponsor for this device's work, and shown; a write declined in
+Selfhold's window not sent; s/all; labels hiding a post only for a reader who
+follows the labeller, at once, with Show and unfollow; media nobody serves;
+Top and New ordering; an earlier render finishing after a newer one without
+writing over it; and a community the node does not serve shown as such.
 
 ```sh
 cd e2e/ui && npm ci && npx playwright install chromium
 LATTICE=<lattice-node>/.build/debug/lattice \
+LATTICE_SPONSOR=<lattice-sponsor>/.build/debug/lattice-sponsor \
 LATTICE_SDK=$PWD/../../app/vendor/lattice-sdk.js \
-LATTICE_WALLET=<lattice-wallet>/dist npm test
+LATTICE_WALLET_WEB=<selfhold-wallet>/dist-web npm test
 ```
+
+`LATTICE_SPONSOR` defaults to `lattice-sponsor` beside `lattice`. Without a
+GPU (Linux CI), Chromium's SwiftShader does the work in software.
 
 The suite runs under `node --test` with the Playwright library: Playwright
 Test's runner hangs while collecting tests under Node 26 (1.48.2).
