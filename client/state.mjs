@@ -102,18 +102,64 @@ async function* entries(load, node, volume, path) {
   }
 }
 
+// Nodes without `/api/state/tip`, by URL: asked the old way from then on.
+const noTipRoute = new Set();
+
 /**
- * A node's current tip: the latest block's hash, and the general-state root
- * inside its post state. Only the hash is the node's word; the root is read
- * from the block by CID.
+ * A node's current tip: the latest block's hash, the general-state root
+ * inside its post state, and `volumes` to read that state through. Only the
+ * hash is the node's word; the root is read from the block by CID.
+ *
+ * One request where the node has `/api/state/tip`: the hash with the
+ * Volumes of the block, its post state and the general-state root. Each is
+ * taken only as the Volume of the CID read from the one before, and checked
+ * against it; anything missing is read from `volumes` as before.
  */
 export async function tip(sdk, nodeURL, chainPath, volumes) {
-  const url = new URL(`${nodeURL.replace(/\/+$/, "")}/api/block/latest`);
-  url.searchParams.set("chainPath", chainPath.join("/"));
-  const response = await fetch(url);
+  const base = nodeURL.replace(/\/+$/, "");
+  const ask = async (path) => {
+    const url = new URL(`${base}${path}`);
+    url.searchParams.set("chainPath", chainPath.join("/"));
+    return fetch(url);
+  };
+  if (!noTipRoute.has(base)) {
+    const response = await ask("/api/state/tip").catch(() => null);
+    if (response?.ok) {
+      const { hash, volumes: archives = [] } = await response.json();
+      const held = withArchives(sdk, volumes, archives.map(fromBase64));
+      return { ...(await atBlock(sdk, held, hash)), volumes: held };
+    }
+    if (response?.status === 404 || response?.status === 405) noTipRoute.add(base);
+  }
+  const response = await ask("/api/block/latest");
   if (!response.ok) throw new Error(`latest block: HTTP ${response.status}`);
   const { hash } = await response.json();
-  return atBlock(sdk, volumes, hash);
+  return { ...(await atBlock(sdk, volumes, hash)), volumes };
+}
+
+const fromBase64 = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+
+/**
+ * `volumes`, with Volume archives already in hand served first: an archive
+ * answers for a CID only when it holds a Volume rooted there whose every
+ * entry matches its CID.
+ */
+function withArchives(sdk, volumes, archives) {
+  const unread = [...archives];
+  return {
+    async get(cid, signal) {
+      for (const [n, archive] of unread.entries()) {
+        try {
+          const volume = sdk.verifyVolume(sdk.decodeVolumeArchive(cid, archive), cid);
+          unread.splice(n, 1);
+          return volume;
+        } catch {
+          // Not this one's root, or not sound: another, or the node, answers.
+        }
+      }
+      return volumes.get(cid, signal);
+    },
+  };
 }
 
 /** The general-state root at block `hash`, read from the block by CID. */
