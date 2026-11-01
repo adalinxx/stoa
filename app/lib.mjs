@@ -1,13 +1,19 @@
 // The parts of the page that are pure: no network, no DOM, no storage. The
 // page and its tests share them.
+import { shortAccount } from "./vendor/moniker-sdk/src/records/account.mjs";
 
 export const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 
-export const short = (address) => (address ? `${address.slice(0, 8)}…${address.slice(-4)}` : "");
+/** An account ID by both its ends, as Moniker and every Lattice app show it ("bc6g…mbbt6a"). */
+export const short = (address) => (address ? shortAccount(address) : "");
 
-/** An author's name: from their Moniker card, else their shortened address. */
+/** An author's name: their Stoa profile name and Moniker @handle, else their short account ID. */
 export const nameOf = (address, names) => names.get(address) ?? short(address);
+
+/** An author's name, linking to their profile. */
+export const byline = (address, names, tag = "a") =>
+  `<${tag} class="author" href="${profileHref(address)}">${esc(nameOf(address, names))}</${tag}>`;
 
 /** `n` and the word, singular for one. */
 export const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -44,7 +50,7 @@ export function when(time, now = Date.now()) {
 /** A chain path that may wrap after each slash. */
 export const pathHTML = (path) => path.map(esc).join("/<wbr>");
 
-/** `#/`, `#/s/<community>`, `#/s/<community>/<author>/<id>`. */
+/** `#/`, `#/s/<community>`, `#/s/<community>/<author>/<id>`, `#/u/<account>`. */
 export function parseRoute(hash) {
   // A malformed escape (a hand-edited link) is taken as written, not thrown.
   const decode = (part) => {
@@ -55,6 +61,7 @@ export function parseRoute(hash) {
     }
   };
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decode);
+  if (parts[0] === "u" && parts[1]) return { view: "profile", address: parts[1] };
   if (parts[0] === "s" && parts.length >= 4) return { view: "post", community: parts[1], author: parts[2], id: parts[3] };
   if (parts[0] === "s" && parts[1]) return { view: "community", community: parts[1] };
   return { view: "home" };
@@ -63,10 +70,7 @@ export function parseRoute(hash) {
 export const postHref = (community, author, id) =>
   `#/s/${encodeURIComponent(community)}/${encodeURIComponent(author)}/${encodeURIComponent(id)}`;
 
-/** What a poster without coins is told: there is no faucet, coins are earned or received. */
-export const coinsMessage = (community, address, fee) =>
-  `Writing on s/${community} costs ${fee} s/${community} ${fee === 1n ? "coin" : "coins"}, and you have none. ` +
-  `Receive some at your address (${short(address)}), or mine s/${community}.`;
+export const profileHref = (address) => `#/u/${encodeURIComponent(address)}`;
 
 /**
  * Comments in reading order at every level: higher score first, then older
@@ -122,7 +126,7 @@ export function postRow(p, names, { now = Date.now(), inCommunity = false } = {}
     <div>
       <h2><a href="${href}">${esc(p.title)}</a></h2>
       ${link ? linkTag(link, new URL(link).host) : ""}
-      <div class="meta">${inCommunity ? "" : `<a href="#/s/${encodeURIComponent(p.community)}">s/${esc(p.community)}</a>`}<span>${esc(nameOf(p.author, names))}</span>${p.pending ? pendingNote(p.pending) : when(p.time, now)}<a href="${href}">${plural(p.comments, "comment")}</a>${p.tags.map((t) => `<span class="tag">${esc(t.toUpperCase())}</span>`).join("")}${labels.length ? `<span class="tag label">${labelText(labels, names)}</span>` : ""}</div>
+      <div class="meta">${inCommunity ? "" : `<a href="#/s/${encodeURIComponent(p.community)}">s/${esc(p.community)}</a>`}${byline(p.author, names)}${p.pending ? pendingNote(p.pending) : when(p.time, now)}<a href="${href}">${plural(p.comments, "comment")}</a>${p.tags.map((t) => `<span class="tag">${esc(t.toUpperCase())}</span>`).join("")}${labels.length ? `<span class="tag label">${labelText(labels, names)}</span>` : ""}</div>
       ${treatment === "collapse" ? "" : p.media.map((cid) => mediaSlot(cid, p.community, treatment === "blur" || p.tags.includes("nsfw"))).join("")}
       ${p.error ? `<p class="inline-error">${esc(p.error)}</p>` : ""}
     </div></article>`;
@@ -151,7 +155,7 @@ export function commentNode(c, community, judgeItem, followed, names, now = Date
       : `<button class="linkish" type="button" data-follow="${esc(c.author)}">Follow their labels</button>`
     : "";
   return `<div class="c${note ? " note" : ""}${c.pending ? " pending" : ""}">
-    <div class="by"><strong>${esc(nameOf(c.author, names))}</strong>${c.pending ? pendingNote(c.pending) : when(c.time, now)}${follow}</div>
+    <div class="by"><strong>${byline(c.author, names)}</strong>${c.pending ? pendingNote(c.pending) : when(c.time, now)}${follow}</div>
     ${body}${link ? linkTag(link, link) : ""}
     <div class="acts">${c.pending ? "" : `${voteBox({ ...c, community }, { row: true })}<button type="button" data-reply="${esc(c.author)}/${esc(c.id)}">Reply</button><button type="button" data-label="${esc(c.author)}/${esc(c.id)}">Label…</button>`}</div>
     ${c.error ? `<p class="inline-error">${esc(c.error)}</p>` : ""}

@@ -139,3 +139,14 @@ export const label = (a, id, on, labels, { target, body = "" } = {}) =>
 
 /** `a`'s flair in the community. */
 export const flair = (a, text) => [[`user/${a}/flair`, text]];
+
+// Home chain: the profile.
+
+/**
+ * `a`'s Stoa profile `{ name?, bio?, link? }`, kept on the home chain; empty
+ * fields are dropped, and undefined (or nothing left) deletes it.
+ */
+export const profile = (a, value) => {
+  const kept = Object.fromEntries(Object.entries(value ?? {}).filter(([, v]) => typeof v === "string" && v.trim()).map(([k, v]) => [k, v.trim()]));
+  return [[`user/${a}/profile`, Object.keys(kept).length ? json(kept) : undefined]];
+};

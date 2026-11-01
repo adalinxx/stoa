@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { judge } from "../client/moderation.mjs";
-import { ago, coinsMessage, commentNode, nameOf, ordered, parseRoute, pathHTML, plural, postRow, safeLink } from "./lib.mjs";
+import { ago, commentNode, nameOf, ordered, parseRoute, pathHTML, plural, postRow, safeLink } from "./lib.mjs";
 
 const NOW = 1_800_000_000_000;
 const names = new Map([["bafy-alice-address", "Alice"]]);
@@ -36,13 +36,7 @@ test("times and names", () => {
   assert.equal(plural(0, "comment"), "0 comments");
   assert.equal(pathHTML(["Nexus", "<x>"]), "Nexus/<wbr>&lt;x&gt;");
   assert.equal(nameOf("bafy-alice-address", names), "Alice");
-  assert.equal(nameOf("bafyreiddhbge4sc33fsm55rxixcjh3bk2blcqpke75tlte4vyd6wci3woa", names), "bafyreid…3woa");
-});
-
-test("a poster without coins is told how to get them, not given them", () => {
-  const message = coinsMessage("bitcoin", "bafyreiddhbge4sc33fsm55rxixcjh3bk2blcqpke75tlte4vyd6wci3woa", 1n);
-  assert.match(message, /costs 1 s\/bitcoin coin, and you have none/);
-  assert.match(message, /Receive some at your address \(bafyreid…3woa\), or mine s\/bitcoin/);
+  assert.equal(nameOf("bafyreiddhbge4sc33fsm55rxixcjh3bk2blcqpke75tlte4vyd6wci3woa", names), "ddhb…ci3woa", "the short ID Moniker shows, past the bafyrei every ID shares");
 });
 
 test("what people write is escaped, and a bad link is not linked", () => {
@@ -139,4 +133,11 @@ test("an id with a | cannot shift what a vote is for", () => {
   const html = postRow(post({ id: "x|y" }), names, { now: NOW });
   const targetAttr = html.match(/data-target="([^"]+)"/)[1];
   assert.deepEqual(targetAttr.split("|").map(decodeURIComponent), ["bitcoin", "bafy-alice-address", "x|y"]);
+});
+
+test("a profile route, and bylines that link to it", () => {
+  assert.deepEqual(parseRoute("#/u/bafyreiabc"), { view: "profile", address: "bafyreiabc" });
+  assert.deepEqual(parseRoute("#/u/"), { view: "home" });
+  const html = postRow(post({}), names, { now: NOW });
+  assert.match(html, /<a class="author" href="#\/u\/bafy-alice-address">Alice<\/a>/);
 });

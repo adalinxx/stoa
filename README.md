@@ -20,8 +20,11 @@ decides what to show.
 ## Web app
 
 `app/` is Stoa in the browser: a static page that reads every record by CID
-from a node, ranks and filters in the page, and asks the reader's Lattice
-Wallet to sign each write.
+from a node, ranks and filters in the page, and asks
+[Selfhold](https://github.com/adalinxx/selfhold-wallet) to sign each write: a
+window a passkey opens, nothing to install. Nobody needs coins: a fee sponsor
+takes a moment of the reader's device's work for each fee, and a storage
+sponsor keeps a post's media for good, for work too.
 It is published at https://adalinxx.github.io/stoa/app/ and reads the Stoa
 trial chains (`Nexus/testnet/stoa-41d5ab`) by default; see `app/README.md`.
 
@@ -38,18 +41,20 @@ transaction that writes it. There are two shapes:
 That rule is the chain's only rule (`policy/`). Everything below is a
 convention clients share; values are JSON strings.
 
-Stoa keeps no profile. An author's name is the `name` on their card on
-Moniker, the profile chain every Lattice app shares (now the testnet trial,
-`Nexus/testnet/moniker-da6f57`), else their `@handle` there; without either,
-they are shown by address. The page reads cards with the
-[Moniker SDK](https://github.com/adalinxx/moniker-sdk), a submodule at
-`app/vendor/moniker-sdk` pinned to a release: clone with
+An author is shown as their Stoa profile's name (`user/<a>/profile` on the
+home chain) and their `@handle` on [Moniker](https://github.com/adalinxx/moniker)
+(`Nexus/moniker`), the names chain every Lattice app shares: a handle shows
+only while the name points at the account and the account shows it. Without
+either, they are shown by account ID. The page reads and claims handles with
+the [Moniker SDK](https://github.com/adalinxx/moniker-sdk), a submodule at
+`app/vendor/moniker-sdk` pinned to a commit: clone with
 `--recurse-submodules`, and review an upgrade like any dependency.
 
 Home chain `Nexus/stoa`:
 
 | Key | Value |
 |---|---|
+| `user/<a>/profile` | `{ name?, bio?, link? }`: how `<a>` appears on Stoa (name ≤ 50, bio ≤ 500, an http(s) link ≤ 300) |
 | `user/<a>/join/<community>` | `"1"`: `<a>` reads this community |
 | `user/<a>/feed/<name>` | `["bitcoin", "rust"]`: a custom feed |
 | `user/<a>/follow-mod/<community>/<mod>` | `"1"`: `<a>` follows an account's labels in a community |
@@ -120,6 +125,14 @@ writes at each start:
   and size the client takes. A file it keeps it pins, and its node serves it
   too.
 
+Without a node of one's own, a storage sponsor (lattice-sponsor run with
+`--sell-storage`) keeps it: `client/storage.mjs` uploads the Volume
+(`POST /store`), grinds the shares of work the sponsor asks for on the
+device's GPU, else its CPU cores (`client/work/`, from Selfhold), until the
+file is paid for, and the sponsor pins it on its node for good
+(`GET /store/:root` says when). The sponsor's `GET /terms` names the chains it
+keeps files for.
+
 ## Reading and writing
 
 `client/state.mjs` reads a chain's state without trusting the node that
@@ -148,7 +161,7 @@ lattice child create Nexus/stoa/bitcoin --spec chain/spec.json \
 ## Tests
 
 ```sh
-node --test client/*.test.mjs
+node --test client/*.test.mjs app/test-app.mjs
 
 cd policy
 cargo build --release --target wasm32-unknown-unknown

@@ -4,3 +4,4 @@ playwright-report/
 .stack.json
 *.local.mjs
 .ux-accounts.json
+shots/
