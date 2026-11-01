@@ -77,10 +77,15 @@ test("anyHost spreads reads and moves on from a host that cannot serve", async (
 // A chain's tip in Volumes: here an archive is a Volume's JSON, and a Volume
 // holds its root only. Block "B" commits post state "P", which holds root "G".
 const fakeSDK = {
-  decodeVolumeArchive: (root, bytes) => ({ root, ...JSON.parse(new TextDecoder().decode(bytes)) }),
-  verifyVolume: (volume, cid) => {
-    if (volume.has !== cid) throw new Error("missing-root");
-    return { rootBytes: () => volume.body };
+  decodeVolumeArchive: (root, bytes) => {
+    const { has, body } = JSON.parse(new TextDecoder().decode(bytes));
+    if (has !== root) throw new Error("missing-root");
+    return { rootCID: root, entries: [{ cid: root, bytes: body }] };
+  },
+  VerifiedVolume: class {
+    constructor(root, entries) {
+      this.rootBytes = () => entries.get(root);
+    }
   },
   decodeCanonicalBlock: (body) => ({ postStateCID: body }),
   decodeCanonicalLatticeState: (body) => ({ generalStateCID: body }),
@@ -133,4 +138,27 @@ test("a node without the route is read the old way, and not asked for it again",
     await tip(fakeSDK, "https://old.example", ["N"], node);
     assert.deepEqual(asked, ["/api/state/tip", "/api/block/latest", "/api/block/latest"]);
   });
+});
+
+test("a 404 for a chain the node doesn't serve leaves the route on for its other chains", async () => {
+  const answer = (url) =>
+    url.searchParams.get("chainPath") === "N/gone"
+      ? new Response("", { status: 404 })
+      : Response.json({ hash: "B", volumes: [archive("B", "P"), archive("P", "G")] });
+  await withFetch(answer, async (asked) => {
+    await assert.rejects(tip(fakeSDK, "https://three.example", ["N", "gone"], fromNode({})), /HTTP 404/);
+    assert.equal((await tip(fakeSDK, "https://three.example", ["N", "s"], fromNode({}))).generalStateCID, "G");
+    assert.deepEqual(asked, ["/api/state/tip", "/api/block/latest", "/api/state/tip"]);
+  });
+});
+
+test("an answer the route can't have given is read the old way", async () => {
+  for (const body of ["<html>proxy</html>", JSON.stringify({ hash: "B", volumes: ["%%%"] }), JSON.stringify({ volumes: null })]) {
+    const answer = (url) =>
+      url.pathname === "/api/state/tip" ? new Response(body, { status: 200 }) : Response.json({ hash: "B" });
+    await withFetch(answer, async () => {
+      const node = fromNode({ B: "P", P: "G" });
+      assert.equal((await tip(fakeSDK, "https://four.example", ["N"], node)).generalStateCID, "G");
+    });
+  }
 });

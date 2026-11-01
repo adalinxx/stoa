@@ -38,6 +38,13 @@ const store = {
       /* private window: choices last for this visit */
     }
   },
+  remove(key) {
+    try {
+      localStorage.removeItem(`stoa:${key}`);
+    } catch {
+      /* private window */
+    }
+  },
 };
 const DEFAULT_NODE = "https://lattice-testnet-apps-iad.fly.dev";
 // The sponsor that takes this device's work for fees and for keeping files.
@@ -296,10 +303,11 @@ async function stateOf(chain, { ahead = false } = {}) {
   });
 }
 
-// States read at boot, beside the page's other first reads, for the first
-// render (within a few seconds); every later render reads afresh.
+// States read at boot, beside the page's other first reads, for the render
+// boot starts (within a few seconds); every other render reads afresh.
 const AHEAD_FOR = 10_000;
 const readsAhead = new Map(); // "A/B" → { at, state }
+let aheadRender = 0; // the id of the render they are for
 function readAhead(chain) {
   const key = chain.join("/");
   if (readsAhead.has(key)) return;
@@ -779,8 +787,19 @@ const feedFrame = (title, community) => `<div class="titlebar"><h1>${esc(title)}
 
 // A feed as this browser last drew it, shown while the page reads it again:
 // dimmed and inert, as nothing in it can be acted on until it is read. Kept
-// per node, home chain, feed and sort.
-const lastFeedKey = (title) => `last-feed:${settings.node}|${settings.home}|${title}|${sort}`;
+// per node, home chain, account, feed and sort; the last few drawn are kept.
+const lastFeedKey = (title) => `last-feed:${settings.node}|${settings.home}|${connected ?? ""}|${title}|${sort}`;
+const LAST_FEEDS_KEPT = 4;
+const lastFeedsSaved = new Map(); // key → the HTML saved this visit
+function saveLastFeed(title, html) {
+  const key = lastFeedKey(title);
+  if (lastFeedsSaved.get(key) === html) return;
+  lastFeedsSaved.set(key, html);
+  const kept = [key, ...store.get("last-feeds", []).filter((k) => k !== key)];
+  for (const old of kept.splice(LAST_FEEDS_KEPT)) store.remove(old);
+  store.set("last-feeds", kept);
+  store.set(key, html);
+}
 function showLastFeed(title) {
   const html = store.get(lastFeedKey(title), null);
   const feed = $("#feed");
@@ -797,8 +816,11 @@ function paintLastFeed() {
   if (next.view !== "home" && next.view !== "community") return;
   const title = next.view === "home" ? "Home" : `s/${next.community}`;
   if (store.get(lastFeedKey(title), null) === null) return;
-  setTitle(next.view === "home" ? "Home" : title);
-  frame(`feed|${title}`, feedFrame(title, next.view === "community" ? next.community : undefined));
+  setTitle(title);
+  // Without Join or Moderation, and its sort tabs inert: nothing acts until
+  // the reader's own choices are read. The feed's own frame replaces it.
+  frame(`early|${title}`, feedFrame(title));
+  document.querySelector("#main .tabs").inert = true;
   showLastFeed(title);
 }
 
@@ -861,7 +883,9 @@ function drawFeed() {
   feed.classList.remove("earlier");
   document.querySelector("#main .tabs")?.toggleAttribute("hidden", rows.length < 2);
   // Before media fills its slots: their files are read again on the next visit.
-  if (rows.length && !failures.length && html.length < 200_000) store.set(lastFeedKey(shown.title), html);
+  // Not with this visit's own pending rows or posts shown past moderation.
+  const ownOnly = pending.length || rows.some((p) => revealed.has(`${p.author}/${p.id}`));
+  if (rows.length && !failures.length && !ownOnly && html.length < 200_000) saveLastFeed(shown.title, html);
   loadMedia();
 }
 
@@ -870,7 +894,7 @@ async function showPost({ community, author, id }, renderId) {
   if (fresh) setTitle(`s/${community}`);
   let tree, judgeItem;
   try {
-    const state = await stateOf(chainOf(community));
+    const state = await stateOf(chainOf(community), { ahead: true });
     [tree, judgeItem] = await Promise.all([read.thread(state, author, id), judgeFor(state, community)]);
     const reader = signer()?.address;
     if (tree) {
@@ -1191,8 +1215,8 @@ const stale = (id) => id !== renderId;
 
 async function render() {
   const id = ++renderId;
-  // A newer render reads afresh: what boot read ahead may still be held up.
-  if (id > 1) readsAhead.clear();
+  // Any other render reads afresh: what boot read ahead may still be held up.
+  if (id !== aheadRender) readsAhead.clear();
   // The page acts on the route it shows: the new one takes over only when it
   // is drawn, not while its reads run under the old page.
   const next = parseRoute(location.hash);
@@ -2085,13 +2109,16 @@ $("#acc-disconnect").onclick = () => {
 // ------------------------------------------------------------------ boot
 
 async function boot() {
-  paintLastFeed();
   // The first reads side by side: the community list, the home chain's state
   // and, as soon as the list is in, the states of the chains this page shows.
+  // A boot again (Try again, Settings) reads them anew.
+  readsAhead.clear();
+  aheadRender = renderId + 1;
   readAhead(homePath());
   const listed = api("/api/chain/children", homePath());
   listed.catch(() => {});
   setConnected(await wallet().address().catch(() => null));
+  paintLastFeed();
   try {
     const children = (await listed).directories ?? [];
     communities = [ALL, ...children.filter((c) => c !== ALL)];
@@ -2111,9 +2138,13 @@ async function boot() {
 /** The communities this route most likely reads, before the reader's joins are read. */
 function likelyShown() {
   const next = parseRoute(location.hash);
-  if (next.view === "post") return [next.community];
-  if (next.view === "community") return next.community === ALL ? communities : [next.community];
+  if (next.view === "post" || next.view === "community") {
+    if (next.community === ALL) return next.view === "post" ? [] : communities;
+    return communities.includes(next.community) ? [next.community] : [];
+  }
   if (next.view === "profile") return [];
+  // A reader's joins are on the chain, not read yet: nothing to guess from.
+  if (signer() && store.get("joined", null) === null) return [];
   return joinedList().filter((c) => communities.includes(c));
 }
 let navigated = false;

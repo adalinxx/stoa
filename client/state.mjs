@@ -113,7 +113,9 @@ const noTipRoute = new Set();
  * One request where the node has `/api/state/tip`: the hash with the
  * Volumes of the block, its post state and the general-state root. Each is
  * taken only as the Volume of the CID read from the one before, and checked
- * against it; anything missing is read from `volumes` as before.
+ * against it; anything missing is read from `volumes` as before. An answer
+ * that can't be read falls back to the old way; a node is taken to lack the
+ * route only when it 404s it for a chain it then answers for.
  */
 export async function tip(sdk, nodeURL, chainPath, volumes) {
   const base = nodeURL.replace(/\/+$/, "");
@@ -122,17 +124,29 @@ export async function tip(sdk, nodeURL, chainPath, volumes) {
     url.searchParams.set("chainPath", chainPath.join("/"));
     return fetch(url);
   };
+  let missing = false;
   if (!noTipRoute.has(base)) {
     const response = await ask("/api/state/tip").catch(() => null);
     if (response?.ok) {
-      const { hash, volumes: archives = [] } = await response.json();
-      const held = withArchives(sdk, volumes, archives.map(fromBase64));
-      return { ...(await atBlock(sdk, held, hash)), volumes: held };
+      let answer;
+      try {
+        const { hash, volumes: archives } = await response.json();
+        if (typeof hash !== "string") throw new TypeError("no hash");
+        answer = { hash, archives: (Array.isArray(archives) ? archives : []).map(fromBase64) };
+      } catch {
+        // Not the route's answer (a proxy's page, say): read the old way.
+      }
+      if (answer) {
+        const held = withArchives(sdk, volumes, answer.archives);
+        return { ...(await atBlock(sdk, held, answer.hash)), volumes: held };
+      }
     }
-    if (response?.status === 404 || response?.status === 405) noTipRoute.add(base);
+    // A 404 is also a chain the node doesn't serve: told apart below.
+    missing = response?.status === 404 || response?.status === 405;
   }
   const response = await ask("/api/block/latest");
   if (!response.ok) throw new Error(`latest block: HTTP ${response.status}`);
+  if (missing) noTipRoute.add(base);
   const { hash } = await response.json();
   return { ...(await atBlock(sdk, volumes, hash)), volumes };
 }
@@ -142,7 +156,7 @@ const fromBase64 = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0))
 /**
  * `volumes`, with Volume archives already in hand served first: an archive
  * answers for a CID only when it holds a Volume rooted there whose every
- * entry matches its CID.
+ * entry matches its CID (decoding checks both).
  */
 function withArchives(sdk, volumes, archives) {
   const unread = [...archives];
@@ -150,9 +164,9 @@ function withArchives(sdk, volumes, archives) {
     async get(cid, signal) {
       for (const [n, archive] of unread.entries()) {
         try {
-          const volume = sdk.verifyVolume(sdk.decodeVolumeArchive(cid, archive), cid);
+          const { entries } = sdk.decodeVolumeArchive(cid, archive);
           unread.splice(n, 1);
-          return volume;
+          return new sdk.VerifiedVolume(cid, new Map(entries.map((entry) => [entry.cid, entry.bytes])));
         } catch {
           // Not this one's root, or not sound: another, or the node, answers.
         }
