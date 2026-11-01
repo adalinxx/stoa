@@ -38,6 +38,13 @@ const store = {
       /* private window: choices last for this visit */
     }
   },
+  remove(key) {
+    try {
+      localStorage.removeItem(`stoa:${key}`);
+    } catch {
+      /* private window */
+    }
+  },
 };
 const DEFAULT_NODE = "https://lattice-testnet-apps-iad.fly.dev";
 // The sponsor that takes this device's work for fees and for keeping files.
@@ -281,13 +288,32 @@ function readFailure(error, community) {
   return `Couldn't read ${where} from ${nodeHost()}: ${error?.message ?? error}`;
 }
 
-/** A chain's state at the node's tip, read by CID from the node's Volumes. */
-async function stateOf(chain) {
+/**
+ * A chain's state at the node's tip, read by CID from the node's Volumes.
+ * `ahead`: a read of the first render takes the state boot read ahead for
+ * it; a write always reads its own.
+ */
+async function stateOf(chain, { ahead = false } = {}) {
+  const early = ahead && readsAhead.get(chain.join("/"));
+  if (early && Date.now() - early.at < AHEAD_FOR) return early.state;
   return nodes.read(chain, async (node) => {
-    const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${node.url}/volumes`, { chainPath: chain }));
-    const { hash, generalStateCID } = await tip(sdk, node.url, chain, volumes);
+    const http = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${node.url}/volumes`, { chainPath: chain }));
+    const { hash, generalStateCID, volumes } = await tip(sdk, node.url, chain, http);
     return { chain, hash, volumes, ...view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID) };
   });
+}
+
+// States read at boot, beside the page's other first reads, for the render
+// boot starts (within a few seconds); every other render reads afresh.
+const AHEAD_FOR = 10_000;
+const readsAhead = new Map(); // "A/B" → { at, state }
+let aheadRender = 0; // the id of the render they are for
+function readAhead(chain) {
+  const key = chain.join("/");
+  if (readsAhead.has(key)) return;
+  const state = stateOf(chain);
+  state.catch(() => readsAhead.get(key)?.state === state && readsAhead.delete(key));
+  readsAhead.set(key, { at: Date.now(), state });
 }
 
 const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(homePath().length).join("/") : ALL);
@@ -708,7 +734,7 @@ function setTitle(text) {
 
 /** One community's posts with their votes and comment counts. */
 async function loadPosts(community) {
-  const state = await stateOf(chainOf(community));
+  const state = await stateOf(chainOf(community), { ahead: true });
   const [posts, judgeItem] = await Promise.all([read.posts(state), judgeFor(state, community)]);
   const reader = signer()?.address;
   return Promise.all(
@@ -756,10 +782,51 @@ function announce(message, { once = false } = {}) {
   requestAnimationFrame(() => (region.textContent = message));
 }
 
+const feedFrame = (title, community) => `<div class="titlebar"><h1>${esc(title)}</h1>${community ? communityActions(community) : ""}</div>
+    ${sortTabs()}<div id="feed"><p class="empty">Reading from ${esc(nodeHost())}…</p></div>`;
+
+// A feed as this browser last drew it, shown while the page reads it again:
+// dimmed and inert, as nothing in it can be acted on until it is read. Kept
+// per node, home chain, account, feed and sort; the last few drawn are kept.
+const lastFeedKey = (title) => `last-feed:${settings.node}|${settings.home}|${connected ?? ""}|${title}|${sort}`;
+const LAST_FEEDS_KEPT = 4;
+const lastFeedsSaved = new Map(); // key → the HTML saved this visit
+function saveLastFeed(title, html) {
+  const key = lastFeedKey(title);
+  if (lastFeedsSaved.get(key) === html) return;
+  lastFeedsSaved.set(key, html);
+  const kept = [key, ...store.get("last-feeds", []).filter((k) => k !== key)];
+  for (const old of kept.splice(LAST_FEEDS_KEPT)) store.remove(old);
+  store.set("last-feeds", kept);
+  store.set(key, html);
+}
+function showLastFeed(title) {
+  const html = store.get(lastFeedKey(title), null);
+  const feed = $("#feed");
+  if (!html || !feed) return;
+  feed.innerHTML = html;
+  feed.inert = true;
+  feed.setAttribute("aria-busy", "true");
+  feed.classList.add("earlier");
+  document.querySelector("#main .tabs")?.toggleAttribute("hidden", feed.querySelectorAll(".post").length < 2);
+}
+/** At boot, before any read: the feed this route shows, as last drawn here. */
+function paintLastFeed() {
+  const next = parseRoute(location.hash);
+  if (next.view !== "home" && next.view !== "community") return;
+  const title = next.view === "home" ? "Home" : `s/${next.community}`;
+  if (store.get(lastFeedKey(title), null) === null) return;
+  setTitle(title);
+  // Without Join or Moderation, and its sort tabs inert: nothing acts until
+  // the reader's own choices are read. The feed's own frame replaces it.
+  frame(`early|${title}`, feedFrame(title));
+  document.querySelector("#main .tabs").inert = true;
+  showLastFeed(title);
+}
+
 async function showFeed(list, { title, community }, id) {
   setTitle(community ? `s/${community}` : "Home");
-  frame(`feed|${title}`, `<div class="titlebar"><h1>${esc(title)}</h1>${community ? communityActions(community) : ""}</div>
-    ${sortTabs()}<div id="feed"><p class="empty">Reading from ${esc(nodeHost())}…</p></div>`);
+  if (frame(`feed|${title}`, feedFrame(title, community))) showLastFeed(title);
   if (community && $("#join")) $("#join").textContent = joinedList().includes(community) ? "Leave" : "Join";
   const results = await Promise.all(list.map((c) => loadPosts(c).then((posts) => ({ c, posts }), (error) => ({ c, error }))));
   const posts = results.flatMap((r) => r.posts ?? []);
@@ -809,8 +876,16 @@ function drawFeed() {
       html += `<div class="panel"><h2>No posts${community ? ` in s/${esc(community)}` : ""} yet</h2><p>Start the conversation.</p><div class="row2"><button class="btn primary" type="button" data-new-post>Write the first post</button></div></div>`;
     }
   }
-  $("#feed").innerHTML = html;
+  const feed = $("#feed");
+  feed.innerHTML = html;
+  feed.inert = false;
+  feed.removeAttribute("aria-busy");
+  feed.classList.remove("earlier");
   document.querySelector("#main .tabs")?.toggleAttribute("hidden", rows.length < 2);
+  // Before media fills its slots: their files are read again on the next visit.
+  // Not with this visit's own pending rows or posts shown past moderation.
+  const ownOnly = pending.length || rows.some((p) => revealed.has(`${p.author}/${p.id}`));
+  if (rows.length && !failures.length && !ownOnly && html.length < 200_000) saveLastFeed(shown.title, html);
   loadMedia();
 }
 
@@ -819,7 +894,7 @@ async function showPost({ community, author, id }, renderId) {
   if (fresh) setTitle(`s/${community}`);
   let tree, judgeItem;
   try {
-    const state = await stateOf(chainOf(community));
+    const state = await stateOf(chainOf(community), { ahead: true });
     [tree, judgeItem] = await Promise.all([read.thread(state, author, id), judgeFor(state, community)]);
     const reader = signer()?.address;
     if (tree) {
@@ -1140,15 +1215,16 @@ const stale = (id) => id !== renderId;
 
 async function render() {
   const id = ++renderId;
+  // Any other render reads afresh: what boot read ahead may still be held up.
+  if (id !== aheadRender) readsAhead.clear();
   // The page acts on the route it shows: the new one takes over only when it
   // is drawn, not while its reads run under the old page.
   const next = parseRoute(location.hash);
-  const home = await stateOf(homePath()).catch(() => null);
+  const home = await stateOf(homePath(), { ahead: true }).catch(() => null);
   homeState = home;
   if (home) {
-    await loadMine(home).catch(() => {});
     const reader = signer();
-    if (reader) await loadNames([reader.address]).catch(() => {});
+    await Promise.all([loadMine(home).catch(() => {}), reader && loadNames([reader.address]).catch(() => {})]);
   }
   if (stale(id)) return;
   route = next;
@@ -1166,6 +1242,7 @@ async function render() {
   else if (route.view === "profile") await showProfile(route, id);
   else if (route.view === "community") await showFeed(route.community === ALL ? communities : [route.community], { title: `s/${route.community}`, community: route.community }, id);
   else await showFeed(joinedList().filter((c) => communities.includes(c)), { title: "Home" }, id);
+  readsAhead.clear();
   if (!stale(id)) refocus(again);
 }
 /** Re-read the current view in place. */
@@ -2032,10 +2109,20 @@ $("#acc-disconnect").onclick = () => {
 // ------------------------------------------------------------------ boot
 
 async function boot() {
+  // The first reads side by side: the community list, the home chain's state
+  // and, as soon as the list is in, the states of the chains this page shows.
+  // A boot again (Try again, Settings) reads them anew.
+  readsAhead.clear();
+  aheadRender = renderId + 1;
+  readAhead(homePath());
+  const listed = api("/api/chain/children", homePath());
+  listed.catch(() => {});
   setConnected(await wallet().address().catch(() => null));
+  paintLastFeed();
   try {
-    const children = (await api("/api/chain/children", homePath())).directories ?? [];
+    const children = (await listed).directories ?? [];
     communities = [ALL, ...children.filter((c) => c !== ALL)];
+    for (const c of likelyShown()) readAhead(chainOf(c));
   } catch (error) {
     communities = [];
     shown = null;
@@ -2047,6 +2134,18 @@ async function boot() {
     return;
   }
   render();
+}
+/** The communities this route most likely reads, before the reader's joins are read. */
+function likelyShown() {
+  const next = parseRoute(location.hash);
+  if (next.view === "post" || next.view === "community") {
+    if (next.community === ALL) return next.view === "post" ? [] : communities;
+    return communities.includes(next.community) ? [next.community] : [];
+  }
+  if (next.view === "profile") return [];
+  // A reader's joins are on the chain, not read yet: nothing to guess from.
+  if (signer() && store.get("joined", null) === null) return [];
+  return joinedList().filter((c) => communities.includes(c));
 }
 let navigated = false;
 // Blurred media is a button to the keyboard too.

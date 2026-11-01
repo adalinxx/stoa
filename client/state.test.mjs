@@ -1,7 +1,7 @@
 //   node --test client/state.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { anyHost, get, list } from "./state.mjs";
+import { anyHost, get, list, tip } from "./state.mjs";
 
 // An in-memory trie in the same shape the chain serves.
 const nodes = {
@@ -72,4 +72,93 @@ test("anyHost spreads reads and moves on from a host that cannot serve", async (
   assert.deepEqual(asked, ["a", "b", "c", "a"]);
   await assert.rejects(anyHost([host("c", () => Promise.reject(new Error("HTTP 429")))]).getVolume("x"));
   assert.equal(await anyHost([host("b", () => null)]).getVolume("x"), null);
+});
+
+// A chain's tip in Volumes: here an archive is a Volume's JSON, and a Volume
+// holds its root only. Block "B" commits post state "P", which holds root "G".
+const fakeSDK = {
+  decodeVolumeArchive: (root, bytes) => {
+    const { has, body } = JSON.parse(new TextDecoder().decode(bytes));
+    if (has !== root) throw new Error("missing-root");
+    return { rootCID: root, entries: [{ cid: root, bytes: body }] };
+  },
+  VerifiedVolume: class {
+    constructor(root, entries) {
+      this.rootBytes = () => entries.get(root);
+    }
+  },
+  decodeCanonicalBlock: (body) => ({ postStateCID: body }),
+  decodeCanonicalLatticeState: (body) => ({ generalStateCID: body }),
+};
+const archive = (has, body) => Buffer.from(JSON.stringify({ has, body })).toString("base64");
+const fromNode = (served) => {
+  const asked = [];
+  return { asked, get: async (cid) => (asked.push(cid), { rootBytes: () => served[cid] }) };
+};
+async function withFetch(answer, run) {
+  const asked = [];
+  const before = globalThis.fetch;
+  globalThis.fetch = async (url) => (asked.push(new URL(url).pathname), answer(new URL(url)));
+  try {
+    return await run(asked);
+  } finally {
+    globalThis.fetch = before;
+  }
+}
+
+test("a node with /api/state/tip gives the tip and its Volumes in one request", async () => {
+  const tipRoute = { hash: "B", volumes: [archive("B", "P"), archive("P", "G"), archive("G", "trie")] };
+  await withFetch(() => Response.json(tipRoute), async (asked) => {
+    const node = fromNode({});
+    const at = await tip(fakeSDK, "https://one.example/", ["N", "s"], node);
+    assert.deepEqual([at.hash, at.generalStateCID], ["B", "G"]);
+    assert.equal((await at.volumes.get("G")).rootBytes(), "trie");
+    assert.deepEqual(asked, ["/api/state/tip"]);
+    assert.deepEqual(node.asked, []);
+  });
+});
+
+test("an archive is taken only for the CID read from the Volume before it", async () => {
+  // The node sends a post state of its own; the block names another.
+  const tipRoute = { hash: "B", volumes: [archive("B", "P"), archive("X", "forged")] };
+  await withFetch(() => Response.json(tipRoute), async () => {
+    const node = fromNode({ P: "G" });
+    const at = await tip(fakeSDK, "https://two.example", ["N", "s"], node);
+    assert.equal(at.generalStateCID, "G");
+    assert.deepEqual(node.asked, ["P"]);
+  });
+});
+
+test("a node without the route is read the old way, and not asked for it again", async () => {
+  const answer = (url) =>
+    url.pathname === "/api/state/tip" ? new Response("{}", { status: 404 }) : Response.json({ hash: "B" });
+  await withFetch(answer, async (asked) => {
+    const node = fromNode({ B: "P", P: "G" });
+    assert.equal((await tip(fakeSDK, "https://old.example", ["N"], node)).generalStateCID, "G");
+    await tip(fakeSDK, "https://old.example", ["N"], node);
+    assert.deepEqual(asked, ["/api/state/tip", "/api/block/latest", "/api/block/latest"]);
+  });
+});
+
+test("a 404 for a chain the node doesn't serve leaves the route on for its other chains", async () => {
+  const answer = (url) =>
+    url.searchParams.get("chainPath") === "N/gone"
+      ? new Response("", { status: 404 })
+      : Response.json({ hash: "B", volumes: [archive("B", "P"), archive("P", "G")] });
+  await withFetch(answer, async (asked) => {
+    await assert.rejects(tip(fakeSDK, "https://three.example", ["N", "gone"], fromNode({})), /HTTP 404/);
+    assert.equal((await tip(fakeSDK, "https://three.example", ["N", "s"], fromNode({}))).generalStateCID, "G");
+    assert.deepEqual(asked, ["/api/state/tip", "/api/block/latest", "/api/state/tip"]);
+  });
+});
+
+test("an answer the route can't have given is read the old way", async () => {
+  for (const body of ["<html>proxy</html>", JSON.stringify({ hash: "B", volumes: ["%%%"] }), JSON.stringify({ volumes: null })]) {
+    const answer = (url) =>
+      url.pathname === "/api/state/tip" ? new Response(body, { status: 200 }) : Response.json({ hash: "B" });
+    await withFetch(answer, async () => {
+      const node = fromNode({ B: "P", P: "G" });
+      assert.equal((await tip(fakeSDK, "https://four.example", ["N"], node)).generalStateCID, "G");
+    });
+  }
 });
