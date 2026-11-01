@@ -1191,6 +1191,8 @@ const stale = (id) => id !== renderId;
 
 async function render() {
   const id = ++renderId;
+  // A newer render reads afresh: what boot read ahead may still be held up.
+  if (id > 1) readsAhead.clear();
   // The page acts on the route it shows: the new one takes over only when it
   // is drawn, not while its reads run under the old page.
   const next = parseRoute(location.hash);
