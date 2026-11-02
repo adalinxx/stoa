@@ -308,14 +308,16 @@ async function stateOf(chain, { ahead = false } = {}) {
 // and reads made together, as a walk reads a node's children, go as one
 // request.
 // One client per node and chain, so a node found without the many-Volumes
-// route is read one Volume at a time from then on.
+// route is read one Volume at a time from then on. Media is not kept across
+// visits: large files would push out the state every visit reads, and a
+// visit keeps what it showed.
 const volumeCache = new sdk.IndexedDBVolumeCache();
-const volumeClients = new Map(); // "url chain" → VolumeClient
-function volumesOn(url, chain) {
-  const key = `${url} ${chain.join("/")}`;
+const volumeClients = new Map(); // "url chain media?" → VolumeClient
+function volumesOn(url, chain, { media = false } = {}) {
+  const key = `${url} ${chain.join("/")}${media ? " media" : ""}`;
   if (!volumeClients.has(key)) {
     const http = new sdk.HTTPVolumeTransport(`${url}/volumes`, { chainPath: chain });
-    volumeClients.set(key, new sdk.VolumeClient(new sdk.BatchingVolumeTransport(http), undefined, { cache: volumeCache }));
+    volumeClients.set(key, new sdk.VolumeClient(new sdk.BatchingVolumeTransport(http), undefined, media ? {} : { cache: volumeCache }));
   }
   return volumeClients.get(key);
 }
@@ -1142,7 +1144,7 @@ const MEDIA_TYPES = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|ogg))$/;
 function mediaFile(cid, community) {
   if (!media.has(cid)) {
     media.set(cid, (async () => {
-      const volume = await nodes.read(chainOf(community), (node) => volumesOn(node.url, chainOf(community)).get(cid));
+      const volume = await nodes.read(chainOf(community), (node) => volumesOn(node.url, chainOf(community), { media: true }).get(cid));
       const file = sdk.decodeDagCbor(volume.bytes(cid));
       if (typeof file?.type !== "string" || !MEDIA_TYPES.test(file.type) || !(file.bytes instanceof Uint8Array) || file.bytes.length > 8 << 20) return { unsupported: true };
       return { kind: file.type.startsWith("video/") ? "video" : "img", url: URL.createObjectURL(new Blob([file.bytes], { type: file.type })) };
