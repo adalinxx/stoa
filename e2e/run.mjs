@@ -18,6 +18,7 @@ import { mediaVolume, operator, readMedia } from "../client/media.mjs";
 import { judge } from "../client/moderation.mjs";
 import { karma, rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
+import { memberVotes, seedsOf } from "../client/standing.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
 import * as write from "../client/write.mjs";
 
@@ -78,7 +79,10 @@ async function state(chain, at = authorNode) {
 
 /** Signs and submits record writes on `chain`; resolves to the node's response and the actions sent. */
 async function submit(chain, who, records, fee = 0n) {
-  const actions = await write.changes(await state(chain), records);
+  // Records may be built from the state they are written against (votes and
+  // replies rewrite the writer's edges records).
+  const now = await state(chain);
+  const actions = await write.changes(now, typeof records === "function" ? await records(now) : records);
   const nonce = BigInt((await api(`/api/state/account/${who.address}`, chain))?.nonce ?? 0);
   const body = write.transaction({ owner: who.address, actions, fee, nonce, chainPath: chain });
   const { publicKey, signature } = sdk.signTransactionBody(body, who.privateKey);
@@ -162,26 +166,28 @@ try {
   const textPost = { author: bob.address, id: write.newId() };
   await writes("text post", BITCOIN, bob, write.post(textPost.author, textPost.id, { title: "Buy my coin", body: "!!!" }));
 
-  const c1 = { author: bob.address, id: write.newId() };
-  await writes("comment", BITCOIN, bob, write.comment(c1.author, c1.id, linkPost, { body: "Section 11 still holds." }));
-  const c2 = { author: carol.address, id: write.newId() };
-  await writes(
-    "reply to the comment",
-    BITCOIN,
-    carol,
-    write.comment(c2.author, c2.id, linkPost, { body: "And section 6.", link: "https://example.com/s6" }, { parent: c1 }),
-  );
+  // The moderator posts among the first: the community's first authors are
+  // its seeds, so their votes count from the start.
+  await writes("rules post", BITCOIN, mod, write.post(mod.address, write.newId(), { title: "Rules" }));
 
-  await writes("votes", BITCOIN, carol, [
-    ...write.vote(carol.address, linkPost.author, linkPost.id, 1),
-    ...write.vote(carol.address, textPost.author, textPost.id, -1),
-    ...write.vote(carol.address, c1.author, c1.id, 1),
-  ]);
-  await writes("more votes", BITCOIN, mod, [
-    ...write.vote(mod.address, linkPost.author, linkPost.id, 1),
-    ...write.vote(mod.address, textPost.author, textPost.id, -1),
-  ]);
-  await writes("a vote changed", BITCOIN, carol, write.vote(carol.address, textPost.author, textPost.id, 1));
+  // A reply lists what it answers among its author's edges.
+  const reply = (a, id, value, parent) => async (now) => [
+    ...write.comment(a.address, id, linkPost, value, parent ? { parent } : {}),
+    ...write.replied(a.address, await read.edgesOf(now, a.address), (parent ?? linkPost).author, (parent ?? linkPost).id),
+  ];
+  const c1 = { author: bob.address, id: write.newId() };
+  await writes("comment", BITCOIN, bob, reply(bob, c1.id, { body: "Section 11 still holds." }));
+  const c2 = { author: carol.address, id: write.newId() };
+  await writes("reply to the comment", BITCOIN, carol, reply(carol, c2.id, { body: "And section 6.", link: "https://example.com/s6" }, c1));
+
+  // A vote rewrites the voter's edges record, one at a time.
+  const vote = (a, target, direction) => async (now) => write.vote(a.address, await read.edgesOf(now, a.address), target.author, target.id, direction);
+  await writes("vote", BITCOIN, carol, vote(carol, linkPost, 1));
+  await writes("vote", BITCOIN, carol, vote(carol, textPost, -1));
+  await writes("vote", BITCOIN, carol, vote(carol, c1, 1));
+  await writes("vote", BITCOIN, mod, vote(mod, linkPost, 1));
+  await writes("vote", BITCOIN, mod, vote(mod, textPost, -1));
+  await writes("a vote changed", BITCOIN, carol, vote(carol, textPost, 1));
 
   // Moderation is a labelled comment; a report is one from an account no
   // reader follows as a moderator.
@@ -212,13 +218,32 @@ try {
   assert.deepEqual([...(await read.communities(home)).keys()], ["bitcoin"]);
   console.log("reader: joins and communities from the home chain");
 
+  // Votes count from members. Carol only commented and nobody has engaged
+  // with her yet: her votes are kept, and not counted.
+  const posts = (await read.posts(community)).filter((post) => post.title !== "Rules");
+  const seeds = seedsOf(await read.posts(community));
+  assert.deepEqual(seeds, [alice.address, bob.address, mod.address]);
+  const counted = (votes, item) => [votes.get(`${item.author}/${item.id}`)?.ups ?? 0, votes.get(`${item.author}/${item.id}`)?.downs ?? 0];
+  let { members, votes } = await memberVotes(community, seeds);
+  assert.ok(!members.has(carol.address));
+  assert.deepEqual([counted(votes, linkPost), counted(votes, textPost)], [[1, 0], [0, 1]]);
+  console.log("reader: votes count from members; Carol's not yet");
+
+  // Alice upvotes Carol's reply: Carol is a member, and her votes count.
+  await writes("a member upvotes Carol's reply", BITCOIN, alice, vote(alice, c2, 1));
+  const later = await until("the reader's node has Alice's vote", async () => {
+    const fresh = await state(BITCOIN, readerNode);
+    return (await read.edgesOf(fresh, alice.address)).size > 0 && fresh;
+  });
+  ({ members, votes } = await memberVotes(later, seeds));
+  assert.ok(members.has(carol.address));
+  console.log("reader: Carol is a member once a member engages with her");
+
   // Posts with their votes and stated times, ranked.
-  const listed = await Promise.all(
-    (await read.posts(community)).map(async (post) => ({
-      ...post,
-      ...(await read.votes(community, post.author, post.id)),
-    })),
-  );
+  const listed = posts.map((post) => {
+    const [ups, downs] = counted(votes, post);
+    return { ...post, ups, downs };
+  });
   for (const post of listed) {
     assert.ok(post.time >= startedAt && post.time <= Date.now(), `post time ${post.time}`);
   }
@@ -236,9 +261,10 @@ try {
   assert.deepEqual(tree.replies.map((c) => c.id), [c1.id]);
   assert.deepEqual(tree.replies[0].replies.map((c) => c.id), [c2.id]);
   assert.equal(tree.replies[0].replies[0].link, "https://example.com/s6");
-  const bobsItems = await Promise.all(
-    (await read.itemsBy(community, bob.address)).map((i) => read.votes(community, i.author, i.id)),
-  );
+  const bobsItems = (await read.itemsBy(community, bob.address)).map((item) => {
+    const [ups, downs] = counted(votes, item);
+    return { ups, downs };
+  });
   assert.equal(karma(bobsItems), 1);
   console.log("reader: the thread as a tree; Bob's karma is 1");
 

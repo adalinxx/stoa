@@ -44,7 +44,7 @@ community has engaged with, as each reader's own client computes it.
 
 | Key | Value | Change |
 |---|---|---|
-| `user/<a>/edges/<n>` | `{ up: ["<author>/<id>"], reply: ["<author>/<id>"] }`: the account's upvotes and replies, a bucket of at most 64; taking an upvote back removes it | replaces `index/vote/<author>/<id>/<a>` |
+| `user/<a>/edges/<n>` | `{ up: ["<author>/<id>"], down: [...], reply: [...] }`: the account's votes and replies, a bucket of at most 64 entries; taking a vote back removes it | replaces `index/vote/<author>/<id>/<a>` |
 | `user/<a>/post/<id>` | a post or reply, as now | a reply with `labels` is a label, not a vouch |
 | `user/<a>/view/<name>` | a view | new |
 
@@ -52,7 +52,8 @@ community has engaged with, as each reader's own client computes it.
 chain's spec fixes at genesis, so they ship together in one relaunch of the
 home and community chains (see Relaunch).
 
-There are **no downvotes**: hiding is what labels do. Votes move under the
+Downvotes stay: a label says what an item is and changes how it is shown;
+a downvote says it adds little and only moves it down. Votes move under the
 voter, in a few records rather than one key each, so that "everything this
 account vouched for" is one or two Volumes, which is what the standing
 computation reads (see Read cost); each edge names the author, so a reader
@@ -91,9 +92,12 @@ An account is a **member** when it is among the accounts that together hold
 them until they hold 98% of it. The rule scales with the community, and a
 farm cannot move it, since its accounts each hold almost nothing and sit in
 the tail it cuts (see The gate rule). A post's score
-is the number of members who upvoted it (plus replies, at the reply weight).
-Hot, top and new keep Reddit's formulas from `client/rank.mjs` over that
-count.
+is members' upvotes less members' downvotes. Hot, top, best, controversial
+and new keep Reddit's formulas from `client/rank.mjs` over members' votes.
+
+Downvotes rank items; they never cost an author standing. If they did, a
+group of members could vote someone out of the community; standing is made
+only of what people vouch for.
 
 Using standing as a weight instead concentrates the ranking on the seeds'
 own taste (see below); as a gate, every member's vote counts the same, as on

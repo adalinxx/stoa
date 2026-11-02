@@ -73,16 +73,55 @@ export async function posts(state) {
   return found.filter((post) => post?.title !== undefined && post.on === undefined);
 }
 
-/** `{ ups, downs, voters }` for an item; `voters` maps each voter to 1 or -1. */
-export async function votes(state, author, id) {
-  const voters = new Map();
-  for await (const [key, value] of state.list(`index/vote/${author}/${id}/`)) {
-    const direction = Number(value);
-    if (direction === 1 || direction === -1) voters.set(key.slice(key.lastIndexOf("/") + 1), direction);
+const EDGE = /^[^/]+\/[^/]+$/;
+
+/**
+ * `a`'s edges records (see write.mjs): a Map from n to `{ up, down, reply }`,
+ * each a list of `<author>/<id>`. A record that doesn't parse, and any entry
+ * that isn't `<author>/<id>`, is skipped; an item voted both ways counts as
+ * neither.
+ */
+export async function edgesOf(state, a) {
+  const records = new Map();
+  for await (const [key, value] of state.list(`user/${a}/edges/`)) {
+    const n = Number(key.slice(key.lastIndexOf("/") + 1));
+    if (!Number.isSafeInteger(n) || n < 0) continue;
+    let record;
+    try {
+      record = JSON.parse(value);
+    } catch {
+      continue;
+    }
+    if (typeof record !== "object" || record === null || Array.isArray(record)) continue;
+    const list = (kind) => (Array.isArray(record[kind]) ? record[kind].filter((entry) => typeof entry === "string" && EDGE.test(entry)) : []);
+    records.set(n, { up: list("up"), down: list("down"), reply: list("reply") });
   }
-  let ups = 0;
-  for (const direction of voters.values()) if (direction === 1) ups++;
-  return { ups, downs: voters.size - ups, voters };
+  return records;
+}
+
+/** `edges` (as `edgesOf` returns them) as sets: `{ up, down, reply }`. */
+export function edgeSets(edges) {
+  const sets = { up: new Set(), down: new Set(), reply: new Set() };
+  for (const record of edges.values()) for (const kind of ["up", "down", "reply"]) for (const entry of record[kind]) sets[kind].add(entry);
+  for (const entry of sets.up) if (sets.down.has(entry)) (sets.up.delete(entry), sets.down.delete(entry));
+  return sets;
+}
+
+/**
+ * Votes by item from `setsBy` (a Map from account to its edges as sets, as
+ * `edgeSets` makes them), counting only the accounts `counts` admits (the
+ * members): a Map from `<author>/<id>` to `{ ups, downs, voters }`, `voters`
+ * mapping each voter to 1 or -1.
+ */
+export function tally(setsBy, counts = () => true) {
+  const items = new Map();
+  const of = (target) => items.get(target) ?? items.set(target, { ups: 0, downs: 0, voters: new Map() }).get(target);
+  for (const [a, { up, down }] of setsBy) {
+    if (!counts(a)) continue;
+    for (const target of up) (of(target).ups++, of(target).voters.set(a, 1));
+    for (const target of down) (of(target).downs++, of(target).voters.set(a, -1));
+  }
+  return items;
 }
 
 /**

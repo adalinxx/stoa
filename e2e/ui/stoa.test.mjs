@@ -11,6 +11,7 @@ import { writeFileSync } from "node:fs";
 import { after, before, test as nodeTest } from "node:test";
 import { chromium, expect as baseExpect } from "@playwright/test";
 import { mediaVolume } from "../../client/media.mjs";
+import * as read from "../../client/read.mjs";
 import * as write from "../../client/write.mjs";
 import { MONIKER, start } from "./stack.mjs";
 
@@ -335,19 +336,23 @@ test("media nobody serves says so", async ({ page }) => {
   await expect(page.locator(".post", { hasText: "A lost picture" })).toContainText("No one is serving this file right now.");
 });
 
-test("Top orders by score and New by post time", async ({ page }) => {
-  const voter = newAccount();
-  await fund(voter.address, 20n, [chainPath]);
+test("Top orders by members' score and New by post time; a stranger's vote counts for nothing", async ({ page }) => {
+  const stranger = newAccount();
+  await fund(stranger.address, 20n, [chainPath]);
   const first = write.newId(), second = write.newId();
   await writeAs(poster, chainPath, write.post(poster.address, first, { title: "Older, liked" }));
   await writeAs(poster, chainPath, write.post(poster.address, second, { title: "Newer, unliked" }));
-  await writeAs(voter, chainPath, write.vote(voter.address, poster.address, first, 1));
+  // The poster wrote among the community's first posts: a member.
+  await writeAs(poster, chainPath, async (state) => write.vote(poster.address, await read.edgesOf(state, poster.address), poster.address, first, 1));
+  // A fresh account nobody has engaged with: its vote is kept, and not counted.
+  await writeAs(stranger, chainPath, async (state) => write.vote(stranger.address, await read.edgesOf(state, stranger.address), poster.address, second, 1));
   await openApp(page, feed);
   const titles = () => page.locator(".post h2").allInnerTexts();
   await page.getByRole("button", { name: "Top", exact: true }).click();
   await expect.poll(async () => (await titles()).indexOf("Older, liked") < (await titles()).indexOf("Newer, unliked")).toBe(true);
   await page.getByRole("button", { name: "New", exact: true }).click();
-  await expect.poll(async () => (await titles())[0]).toBe("Newer, unliked");
+  await expect.poll(async () => (await titles())[0]).toBe("Newer, unliked");  const unliked = page.locator(".post", { hasText: "Newer, unliked" });
+  await expect(unliked.locator(".votes .score")).toHaveText("0");
 });
 
 test("an earlier render that finishes last does not write over a newer one", async ({ page }) => {

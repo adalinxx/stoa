@@ -1,7 +1,7 @@
 //   node --test client/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { accountEdges, standing } from "./standing.mjs";
+import { accountEdges, graphOf, members, standing } from "./standing.mjs";
 
 const close = (actual, expected, within = 1e-3) =>
   assert.ok(Math.abs(actual - expected) < within, `${actual} ≉ ${expected}`);
@@ -92,4 +92,35 @@ test("accountEdges: an upvote and a reply to one post add; repeats count once", 
     ["p", 3],
     ["q", 1],
   ]);
+});
+
+test("accountEdges: follows are the heaviest edge, and following oneself is nothing", () => {
+  assert.deepEqual(accountEdges({ upvotes: ["bob/p"], follows: ["bob", "me"] }, undefined, "me"), [
+    ["bob/p", 1],
+    ["bob", 4],
+  ]);
+});
+
+test("graphOf: posts point at their authors unread; accounts are read once, edges kept", async () => {
+  const asked = [];
+  const sets = (up = [], reply = []) => ({ up: new Set(up), down: new Set(["x/y"]), reply: new Set(reply) });
+  const { edges, read } = graphOf({
+    edgesOf: async (a) => (asked.push(a), a === "seed" ? sets(["alice/p1"]) : sets()),
+    followsOf: async (a) => (a === "seed" ? ["lurker"] : []),
+  });
+  const { standing: got } = await standing(["seed"], edges);
+  assert.deepEqual(asked.sort(), ["alice", "lurker", "seed"]);
+  assert.ok(got.get("lurker") > 0, "a followed lurker has standing");
+  assert.ok(got.get("alice") > 0, "an upvoted author has standing");
+  assert.equal(got.has("x"), false, "a downvote passes nothing");
+  assert.deepEqual([...read.get("seed").up], ["alice/p1"]);
+});
+
+test("members: the accounts holding 98% of account standing, posts aside, ties kept together", () => {
+  const s = new Map([["a", 0.5], ["b", 0.3], ["c", 0.19], ["d", 0.005], ["e", 0.005], ["a/p", 0.9]]);
+  assert.deepEqual([...members(s)], ["a", "b", "c"]);
+  // The cut (80%) falls after b; c ties with b, so it is kept too.
+  const tied = new Map([["a", 0.75], ["b", 0.125], ["c", 0.125], ["d", 0.0625]]);
+  assert.deepEqual([...members(tied, { delta: 0.2 })], ["a", "b", "c"]);
+  assert.equal(members(new Map()).size, 0);
 });
