@@ -672,7 +672,7 @@ function follow(community, address, following) {
 // community publishes a view, its seeds are the authors of its first posts,
 // which nobody can claim later: a post's time is held to its block.
 // Follows, the follow graph every app shares.
-const FOLLOWS = ["Nexus", "testnet", "follows-ade46a"];
+const FOLLOWS = ["Nexus", "testnet", "follows-17e400"];
 
 // The account showing each followed handle now, as every app reads it; a
 // failed read is tried again next time.
