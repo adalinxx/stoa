@@ -230,7 +230,7 @@ test("a profile: a name and bio on Stoa, and an @handle claimed on Moniker, on e
   await reader.close();
 });
 
-test("an image is kept for good by the storage sponsor, paid with this device's work, and shown in the post", async ({ page }) => {
+test("an image is kept for good by the sponsor, paid with this device's work, and shown in the post", async ({ page }) => {
   await openApp(page, feed);
   await signIn(page);
   await page.getByRole("button", { name: "New post" }).click();
@@ -285,16 +285,14 @@ test("a visitor who votes is asked to sign in, and told why", async ({ page }) =
   await expect(page.locator("#who #account-btn")).toBeVisible();
 });
 
-test("s/all is the Stoa chain's own community, and its page shows every community's posts too", async ({ page }) => {
+test("s/all shows every community's posts, each named, and is no place to post", async ({ page }) => {
   await fund(poster.address);
   await writeAs(poster, chainPath, write.post(poster.address, write.newId(), { title: "From another client" }));
-  await writeAs(poster, homePath, write.post(poster.address, write.newId(), { title: "Hello from the top" }));
   await openApp(page, "#/s/all");
   await expect(page.locator(".post", { hasText: "From another client" }).locator(".meta")).toContainText(`s/${community}`);
-  await expect(page.locator(".post", { hasText: "Hello from the top" }).locator(".meta")).toContainText("s/all");
-  await page.goto(stack.app + feed);
-  await expect(page.locator(".post", { hasText: "From another client" })).toBeVisible();
-  await expect(page.locator(".post", { hasText: "Hello from the top" })).toHaveCount(0);
+  await expect(page.locator("#join")).toHaveCount(0);
+  await page.getByRole("button", { name: "New post" }).first().click();
+  await expect(page.locator("#np-c option[value=all]")).toHaveCount(0);
 });
 
 test("what members downvoted more than upvoted is collapsed for every reader, with Show", async ({ page }) => {

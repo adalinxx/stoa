@@ -8,9 +8,8 @@ decides what to show.
 - A community is a chain: `Nexus/stoa/<name>`, a child of the home chain
   `Nexus/stoa`. Anyone can create one, and communities can nest
   (`Nexus/stoa/bitcoin/lightning`).
-- The home chain is a community too, `s/all`, like Reddit's r/all: anyone
-  can post on it, and its page shows its own posts with every community's.
-  The name `all` is therefore reserved: a child chain named `all` is not shown.
+- `s/all`, like Reddit's r/all, shows every community's posts at once. It is
+  not a chain: nobody posts to it, and a child chain named `all` is not shown.
 - Every record belongs to its author. Only the author can edit or delete it.
 - There are no moderators: votes count from a community's members, and what
   members downvote more than they upvote is collapsed, with Show. Nothing is
@@ -22,9 +21,9 @@ decides what to show.
 `app/` is Stoa in the browser: a static page that reads every record by CID
 from a node, ranks and filters in the page, and asks
 [Selfhold](https://github.com/adalinxx/selfhold-wallet) to sign each write: a
-window a passkey opens, nothing to install. Nobody needs coins: a fee sponsor
-takes a moment of the reader's device's work for each fee, and a storage
-sponsor keeps a post's media for good, for work too.
+window a passkey opens, nothing to install. Nobody needs coins: a sponsor
+takes a moment of the reader's device's work for each fee, and keeps a
+post's media for good, for work too.
 It is published at https://adalinxx.github.io/stoa/app/ and reads the Stoa
 trial chains (`Nexus/testnet/stoa-41d5ab`) by default; see `app/README.md`.
 
@@ -57,15 +56,15 @@ Home chain `Nexus/stoa`:
 | `user/<a>/profile` | `{ name?, bio?, link? }`: how `<a>` appears on Stoa (name ≤ 50, bio ≤ 500, an http(s) link ≤ 300) |
 | `user/<a>/join/<community>` | `"1"`: `<a>` reads this community |
 
-A community chain (and the home chain, as `s/all`):
+A community chain:
 
 | Key | Value |
 |---|---|
-| `user/<a>/post/<id>` | a post `{ title, body?, link?, tags?, time }`, or a comment `{ body, link?, on, parent?, time }` |
+| `user/<a>/post/<id>` | a post `{ title, body?, link?, time }`, or a comment `{ body, link?, on, parent?, time }` |
 | `user/<a>/post/<id>/media/<n>` | the CID of its `<n>`th image or video |
 | `index/post/<id>/<a>` | `"1"`: lists the post in the community |
 | `index/comment/<author>/<id>/<commentId>/<a>` | `"1"`: lists a comment under the post it belongs to |
-| `user/<a>/edges/<n>` | `{ up?, down?, reply? }`: lists of `<author>/<id>`, `<a>`'s votes and what it replied to, at most 64 entries a record; a vote is in one list at most, and taking it back removes it |
+| `user/<a>/edges/<n>` | `{ up?, down? }`: lists of `<author>/<id>`, `<a>`'s votes, at most 64 entries a record; a vote is in one list at most, and taking it back removes it |
 
 A comment is a post without a title that names its post (`on`) and, when it
 answers a comment, that comment (`parent`), both as `<author>/<id>`. Votes,
@@ -88,12 +87,12 @@ record, as the chain admitted it.
 ## Ranking
 
 Votes count from a community's **members**: the accounts that together hold
-98% of the standing its seeds' upvotes, replies and follows (on
+98% of the standing its seeds' upvotes and follows (on
 [Follows](https://github.com/adalinxx/follows)) pass on, by personalized
-PageRank (`client/standing.mjs`). Until a community publishes a view, its
-seeds are the authors of its first five posts. A fresh account's vote is
-kept and counts once members engage with what it writes or follow it, so a
-crowd of new accounts moves nothing. Downvotes rank items and never cost an
+PageRank (`client/standing.mjs`). Its seeds are the authors of its first
+five posts. A fresh account's vote is kept and counts once members upvote
+what it writes or follow it, so a crowd of new accounts moves nothing.
+Replying vouches for nothing. Downvotes rank items and never cost an
 author standing. The design and its simulations are in
 `docs/standing.md`.
 
@@ -105,9 +104,8 @@ Comments are ordered by score. A client may use others.
 
 There are no moderators and no labels. What a community's members downvoted
 more than they upvoted is collapsed, for every reader, to one line with
-Show; a reader who voted on it sees it as is. An author tags their own post
-`nsfw` or `spoiler` to blur its media until tapped. Nothing is removed from
-the chain.
+Show; a reader who voted on it sees it as is. Nothing is removed from the
+chain.
 
 ## Media
 
@@ -123,7 +121,7 @@ writes at each start:
   and size the client takes. A file it keeps it pins, and its node serves it
   too.
 
-Without a node of one's own, a storage sponsor (lattice-sponsor run with
+Without a node of one's own, the sponsor (lattice-sponsor run with
 `--sell-storage`) keeps it: `client/storage.mjs` uploads the Volume
 (`POST /store`), grinds the shares of work the sponsor asks for on the
 device's GPU, else its CPU cores (`client/work/`, from Selfhold), until the

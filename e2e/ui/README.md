@@ -21,7 +21,7 @@ write (the draft kept, sent on the next press) and from a vote; posting,
 nested comments, voting and taking a vote back, all coinless; a profile
 (name, bio) on Stoa and an @handle claimed on Moniker, refused when it is
 someone else's, on bylines and the profile page; an image kept for good by
-the storage sponsor for this device's work, and shown; a write declined in
+the sponsor for this device's work, and shown; a write declined in
 Selfhold's window not sent; s/all; what members downvoted collapsed for every
 reader, with Show; media nobody serves;
 Top and New ordering; an earlier render finishing after a newer one without

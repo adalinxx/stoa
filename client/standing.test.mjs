@@ -87,23 +87,16 @@ test("without seeds, nothing has standing", async () => {
   assert.equal((await standing([], graph({}).edges)).standing.size, 0);
 });
 
-test("accountEdges: an upvote and a reply to one post add; repeats count once", () => {
-  assert.deepEqual(accountEdges({ upvotes: ["p", "p", "q"], replies: ["p", "p"] }), [
-    ["p", 3],
-    ["q", 1],
-  ]);
-});
-
-test("accountEdges: follows are the heaviest edge, and vouching for oneself is nothing", () => {
-  assert.deepEqual(accountEdges({ upvotes: ["bob/p", "me/own"], replies: ["me/own"], follows: ["bob", "me"] }, undefined, "me"), [
+test("accountEdges: upvotes and follows alike; repeats count once; vouching for oneself is nothing", () => {
+  assert.deepEqual(accountEdges({ upvotes: ["bob/p", "bob/p", "me/own"], follows: ["bob", "bob", "me"] }, "me"), [
     ["bob/p", 1],
-    ["bob", 4],
+    ["bob", 1],
   ]);
 });
 
 test("graphOf: posts point at their authors unread; accounts are read once, edges kept", async () => {
   const asked = [];
-  const sets = (up = [], reply = []) => ({ up: new Set(up), down: new Set(["x/y"]), reply: new Set(reply) });
+  const sets = (up = []) => ({ up: new Set(up), down: new Set(["x/y"]) });
   const { edges, read } = graphOf({
     edgesOf: async (a) => (asked.push(a), a === "seed" ? sets(["alice/p1"]) : sets()),
     followsOf: async (a) => (a === "seed" ? ["lurker"] : []),

@@ -9,15 +9,13 @@ import { edgeSets, edgesOf, tally } from "./read.mjs";
 // however they engage with each other: a ring of fresh accounts gains only
 // what the view's own edges lead into it.
 //
-// The graph: an account points at the posts it upvoted, the posts it replied
-// to and the accounts it follows; a post points at its author. So a post's
-// standing is the engagement it drew from accounts with standing, and an
-// author's is what their posts drew and who follows them. Downvotes are not
-// edges: they rank items, and never cost anyone standing. Accounts are ids
-// without a slash; posts are `<author>/<id>`.
-
-/** Edge weights: what an account's act passes on, before its share is split. */
-export const WEIGHTS = { upvote: 1, reply: 2, follow: 4 };
+// The graph: an account points at the posts it upvoted and the accounts it
+// follows, each edge alike; a post points at its author. So a post's standing
+// is the upvotes it drew from accounts with standing, and an author's is what
+// their posts drew and who follows them. Replying vouches for nothing (an
+// argument would feed whoever started it), and downvotes are not edges: they
+// rank items, and never cost anyone standing. Accounts are ids without a
+// slash; posts are `<author>/<id>`.
 
 /**
  * Standing from `seeds` (node ids, sharing the start equally) over the graph
@@ -61,19 +59,16 @@ export async function standing(seeds, edges, { restart = 0.15, epsilon = 1e-4 } 
 }
 
 /**
- * The out-edges of one account's acts: its upvotes, replies and follows, as
- * `{ upvotes: [post], replies: [post], follows: [account] }`. Repeats count
- * once. An account vouching for itself (following itself, upvoting or
- * answering its own items) counts for nothing: that would only feed its
- * standing back to it.
+ * The out-edges of one account's acts, `{ upvotes: [post], follows:
+ * [account] }`, each of weight 1. Repeats count once. An account vouching for
+ * itself (following itself, upvoting its own items) counts for nothing: that
+ * would only feed its standing back to it.
  */
-export function accountEdges({ upvotes = [], replies = [], follows = [] }, weights = WEIGHTS, self) {
-  const out = new Map();
-  const others = (posts) => [...new Set(posts)].filter((post) => self === undefined || !post.startsWith(`${self}/`));
-  for (const post of others(upvotes)) out.set(post, weights.upvote);
-  for (const post of others(replies)) out.set(post, (out.get(post) ?? 0) + weights.reply);
-  for (const account of new Set(follows)) if (account !== self) out.set(account, weights.follow);
-  return [...out];
+export function accountEdges({ upvotes = [], follows = [] }, self) {
+  const out = new Set();
+  for (const post of upvotes) if (self === undefined || !post.startsWith(`${self}/`)) out.add(post);
+  for (const account of follows) if (account !== self) out.add(account);
+  return [...out].map((target) => [target, 1]);
 }
 
 /**
@@ -83,7 +78,7 @@ export function accountEdges({ upvotes = [], replies = [], follows = [] }, weigh
  * so posts cost no reads. `read` keeps each account's edges as read, for
  * tallying votes without reading them again.
  */
-export function graphOf({ edgesOf, followsOf, weights = WEIGHTS }) {
+export function graphOf({ edgesOf, followsOf }) {
   const read = new Map();
   const edges = async (ids) =>
     new Map(
@@ -93,7 +88,7 @@ export function graphOf({ edgesOf, followsOf, weights = WEIGHTS }) {
           if (slash >= 0) return [id, [[id.slice(0, slash), 1]]];
           const [own, follows] = await Promise.all([edgesOf(id), followsOf(id)]);
           read.set(id, own);
-          return [id, accountEdges({ upvotes: [...own.up], replies: [...own.reply], follows }, weights, id)];
+          return [id, accountEdges({ upvotes: [...own.up], follows }, id)];
         }),
       ),
     );

@@ -169,11 +169,7 @@ try {
   // its seeds, so their votes count from the start.
   await writes("rules post", BITCOIN, mod, write.post(mod.address, write.newId(), { title: "Rules" }));
 
-  // A reply lists what it answers among its author's edges.
-  const reply = (a, id, value, parent) => async (now) => [
-    ...write.comment(a.address, id, linkPost, value, parent ? { parent } : {}),
-    ...write.replied(a.address, await read.edgesOf(now, a.address), (parent ?? linkPost).author, (parent ?? linkPost).id),
-  ];
+  const reply = (a, id, value, parent) => write.comment(a.address, id, linkPost, value, parent ? { parent } : {});
   const c1 = { author: bob.address, id: write.newId() };
   await writes("comment", BITCOIN, bob, reply(bob, c1.id, { body: "Section 11 still holds." }));
   const c2 = { author: carol.address, id: write.newId() };

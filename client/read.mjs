@@ -75,7 +75,7 @@ const RECORD = /^(0|[1-9]\d*)$/;
 export const EDGES_READ = { records: 64, entries: 64 };
 
 /**
- * `a`'s edges records (see write.mjs): a Map from n to `{ up, down, reply }`,
+ * `a`'s edges records (see write.mjs): a Map from n to `{ up, down }`,
  * each a list of `<author>/<id>`. A record that doesn't parse, and any entry
  * that isn't `<author>/<id>`, is skipped; an item voted both ways counts as
  * neither.
@@ -98,15 +98,15 @@ export async function edgesOf(state, a) {
     if (typeof record !== "object" || record === null || Array.isArray(record)) continue;
     const list = (kind) =>
       Array.isArray(record[kind]) ? record[kind].slice(0, EDGES_READ.entries).filter((entry) => typeof entry === "string" && EDGE.test(entry)) : [];
-    records.set(n, { up: list("up"), down: list("down"), reply: list("reply") });
+    records.set(n, { up: list("up"), down: list("down") });
   }
   return records;
 }
 
-/** `edges` (as `edgesOf` returns them) as sets: `{ up, down, reply }`. */
+/** `edges` (as `edgesOf` returns them) as sets: `{ up, down }`. */
 export function edgeSets(edges) {
-  const sets = { up: new Set(), down: new Set(), reply: new Set() };
-  for (const record of edges.values()) for (const kind of ["up", "down", "reply"]) for (const entry of record[kind]) sets[kind].add(entry);
+  const sets = { up: new Set(), down: new Set() };
+  for (const record of edges.values()) for (const kind of ["up", "down"]) for (const entry of record[kind]) sets[kind].add(entry);
   for (const entry of sets.up) if (sets.down.has(entry)) (sets.up.delete(entry), sets.down.delete(entry));
   return sets;
 }

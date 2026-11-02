@@ -118,11 +118,6 @@ test("edges: a full record starts the next; a vote changed stays where it is", a
   await state.apply(writes);
   edges = await read.edgesOf(state, "bob");
   assert.ok(edges.get(0).down.includes("alice/p0") && !edges.get(0).up.includes("alice/p0"));
-  // A reply is listed, and taken back.
-  await state.apply(write.replied("bob", edges, "carol", "c1"));
-  assert.ok(read.edgeSets(await read.edgesOf(state, "bob")).reply.has("carol/c1"));
-  await state.apply(write.replied("bob", await read.edgesOf(state, "bob"), "carol", "c1", false));
-  assert.ok(!read.edgeSets(await read.edgesOf(state, "bob")).reply.has("carol/c1"));
 });
 
 test("edges: records that don't parse, and entries that aren't items, are skipped", async () => {
@@ -137,7 +132,7 @@ test("edges: records that don't parse, and entries that aren't items, are skippe
   const edges = await read.edgesOf(state, "bob");
   assert.deepEqual([...edges.keys()], [1, 2, 4]);
   assert.equal(edges.get(4).up.length, read.EDGES_READ.entries, "past what an honest writer keeps is not read");
-  assert.deepEqual(edges.get(1), { up: ["alice/p1"], down: [], reply: [] });
+  assert.deepEqual(edges.get(1), { up: ["alice/p1"], down: [] });
   // Voted both ways: neither.
   const sets = read.edgeSets(edges);
   assert.equal(sets.up.has("alice/p1") || sets.down.has("alice/p1"), false);
@@ -220,8 +215,7 @@ test("votes count from members: a commenter's once a member upvotes them", async
   await state.apply(write.post("alice", "link", { title: "The whitepaper", ...at(0) }));
   await state.apply(write.post("bob", "text", { title: "Buy my coin", ...at(1) }));
   await state.apply(write.post("mod", "rules", { title: "Rules", ...at(2) }));
-  const reply = async (a, id, on, parent) =>
-    state.apply([...write.comment(a, id, on, { body: "…" }, parent ? { parent } : {}), ...write.replied(a, await read.edgesOf(state, a), (parent ?? on).author, (parent ?? on).id)]);
+  const reply = async (a, id, on, parent) => state.apply(write.comment(a, id, on, { body: "…" }, parent ? { parent } : {}));
   const link = { author: "alice", id: "link" }, text = { author: "bob", id: "text" };
   await reply("bob", "c1", link);
   await reply("carol", "c2", link, { author: "bob", id: "c1" });

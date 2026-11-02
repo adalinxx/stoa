@@ -112,16 +112,16 @@ export const comment = (a, id, on, value, { parent, mediaCIDs = [] } = {}) => [
 /** The `n`th media CID of `a`'s post or comment `id`; undefined deletes it. */
 export const media = (a, id, n, cid) => [[`user/${a}/post/${id}/media/${n}`, cid]];
 
-// An account's votes and replies, kept together so that everything it
-// vouched for is one or two records to read: `user/<a>/edges/<n>` holds
-// `{ up, down, reply }`, lists of `<author>/<id>`, at most EDGES_PER_RECORD
-// entries in all. `edges` below is an account's records as
-// `read.edgesOf` returns them, a Map from n to `{ up, down, reply }`.
+// An account's votes, kept together so that everything it vouched for is
+// one or two records to read: `user/<a>/edges/<n>` holds `{ up, down }`,
+// lists of `<author>/<id>`, at most EDGES_PER_RECORD entries in all. `edges`
+// below is an account's records as `read.edgesOf` returns them, a Map from n
+// to `{ up, down }`.
 
 /** Most entries one edges record holds; past it, a new record is started. */
 export const EDGES_PER_RECORD = 64;
 
-const KINDS = ["up", "down", "reply"];
+const KINDS = ["up", "down"];
 
 /**
  * The writes that take `target` out of the lists `from` in `a`'s edges and,
@@ -146,7 +146,7 @@ function moveEdge(a, edges, target, from, to) {
     const numbers = [...records.keys()];
     const last = numbers.length ? Math.max(...numbers) : undefined;
     const n = home ?? (last !== undefined && size(records.get(last)) < EDGES_PER_RECORD ? last : (last ?? -1) + 1);
-    if (!records.has(n)) records.set(n, { up: [], down: [], reply: [] });
+    if (!records.has(n)) records.set(n, { up: [], down: [] });
     records.get(n)[to].push(target);
     changed.add(n);
   }
@@ -164,13 +164,6 @@ function moveEdge(a, edges, target, from, to) {
  */
 export const vote = (a, edges, author, id, direction) =>
   moveEdge(a, edges, `${author}/${id}`, ["up", "down"], direction > 0 ? "up" : direction < 0 ? "down" : undefined);
-
-/**
- * That `a` replied to `author`'s post or comment `id`, or with `replied`
- * false no longer has: sent with the comment itself (`comment`).
- */
-export const replied = (a, edges, author, id, replied = true) =>
-  moveEdge(a, edges, `${author}/${id}`, ["reply"], replied ? "reply" : undefined);
 
 
 // Home chain: the profile.

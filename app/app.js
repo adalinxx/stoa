@@ -1,8 +1,8 @@
 // Stoa in the browser: reads every record from a node by CID, ranks and
 // filters here, and asks Selfhold to sign each write: its window over the
-// page, whose key a passkey keeps, or Selfhold for Chrome. A fee sponsor takes
-// this device's work for each fee, and a storage sponsor for each file kept,
-// so taking part needs no coins. No server of its own.
+// page, whose key a passkey keeps, or Selfhold for Chrome. A sponsor takes
+// this device's work for each fee and each file kept, so taking part needs
+// no coins. No server of its own.
 import * as sdk from "./vendor/lattice-sdk.js";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
@@ -89,7 +89,6 @@ const sponsorAddress = (url) => {
 };
 const savedMoniker = store.get("monikerChain", null);
 const savedSponsor = store.get("sponsor", null);
-const savedStorage = store.get("storage", null);
 const settings = {
   // A node saved before addresses were checked, or since retired, falls back
   // to the default.
@@ -99,15 +98,14 @@ const settings = {
   // reader on the default follows it when an SDK release moves Moniker.
   moniker: savedMoniker && !RETIRED_MONIKER.test(savedMoniker) ? savedMoniker : MONIKER.chain.join("/"),
   // Kept only when the reader chose another (or none, ""), as the moniker chain is.
+  // The sponsor pays fees and keeps files, each for this device's work.
   sponsor: typeof savedSponsor === "string" ? savedSponsor : DEFAULT_SPONSOR,
-  storage: typeof savedStorage === "string" ? savedStorage : DEFAULT_SPONSOR,
   // Selfhold for Chrome only where Settings choose it; else Selfhold's window.
   extension: store.get("wallet", "web") === "extension",
   walletPage: walletPageOf(store.get("walletPage", DEFAULT_WALLET_PAGE)),
 };
 const homePath = () => settings.home.split("/");
-// The Stoa chain is a community too, s/all: posts of its own, and its page
-// shows every community's posts with them.
+// s/all: every community's posts at once. It is no chain of its own.
 const ALL = "all";
 const chainOf = (community) => (community === ALL ? homePath() : [...homePath(), ...community.split("/")]);
 const hostOf = (url) => {
@@ -205,10 +203,10 @@ function needsCoins({ sponsor: why, address }) {
   const reason = extension()
     ? "Selfhold for Chrome pays fees in coins, and this account holds too few. Turn off Selfhold for Chrome in Settings to take part with Selfhold's window, where this device's work pays."
     : {
-      down: "This device's work usually pays the fee, but the fee sponsor isn't answering right now. Try again in a few minutes.",
+      down: "This device's work usually pays the fee, but the sponsor isn't answering right now. Try again in a few minutes.",
       dear: "This device can't do the fee's work in reasonable time right now. Try again in a few minutes.",
-      most: "The fee sponsor pays only so much for one write, and this one costs more than that.",
-    }[why] ?? (settings.sponsor ? "The fee sponsor couldn't pay this fee. Try again in a few minutes." : "No fee sponsor is set in Settings, so the fee is paid in coins.");
+      most: "The sponsor pays only so much for one write, and this one costs more than that.",
+    }[why] ?? (settings.sponsor ? "The sponsor couldn't pay this fee. Try again in a few minutes." : "No sponsor is set in Settings, so the fee is paid in coins.");
   return `${reason} Or send coins to your account ID (${short(address ?? connected ?? "")}).`;
 }
 
@@ -340,7 +338,7 @@ const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(h
  * Sign and send `records` on `chain`, as the connected account. Selfhold's
  * window opens at once, in the click, while the page reads the chain and
  * builds the write; Selfhold shows it, pays its fee (with this device's
- * work, through the fee sponsor) and sends it. Resolves once it is sent, with
+ * work, through the sponsor) and sends it. Resolves once it is sent, with
  * a promise of its landing (true once every write reads back; `onSlow`
  * after a minute without it), or of true at once when nothing needed
  * changing. `status(text)` hears where it stands.
@@ -805,7 +803,7 @@ function renderRail() {
   const others = communities.filter((c) => !joined.includes(c));
   $("#communities").innerHTML = !communities.length
     ? '<p class="muted" style="padding:5px 8px;margin:0">No communities yet.</p>'
-    : (mineList.length ? `<h3>Your communities</h3><ul class="tree">${mineList.map(link).join("")}</ul>` : "")
+    : `<ul class="tree">${link(ALL)}</ul>` + (mineList.length ? `<h3>Your communities</h3><ul class="tree">${mineList.map(link).join("")}</ul>` : "")
       + (others.length ? `<h3>${mineList.length ? "More communities" : "Communities"}</h3><ul class="tree">${others.map(link).join("")}</ul>` : "");
   document.querySelectorAll(".tree a").forEach((a) => {
     const on = (route.view === "home" && a.dataset.nav === "home") || a.dataset.c === route.community;
@@ -851,6 +849,7 @@ async function loadPosts(community) {
 const sortTabs = () => `<div class="tabs" role="group" aria-label="Sort posts">${SORTS.map((s) => `<button type="button" class="tab" data-sort="${s}" aria-pressed="${s === sort}">${s[0].toUpperCase() + s.slice(1)}</button>`).join("")}</div>`;
 
 function communityActions(c) {
+  if (c === ALL) return "";
   return `<button class="btn" type="button" id="join" data-join="${esc(c)}">${joinedList().includes(c) ? "Leave" : "Join"}</button>`;
 }
 
@@ -1283,9 +1282,11 @@ function showAside() {
     return;
   }
   const detailsOpen = $("#aside details")?.open ? " open" : "";
-  const about = c === ALL
-    ? "Every community's posts, with posts of its own on the Stoa chain. Anyone can post here, and anyone can mine it."
-    : "A community with a chain of its own. Anyone can post here, and anyone can mine it.";
+  if (c === ALL) {
+    $("#aside").innerHTML = `<div class="card"><h4>s/all</h4><p class="muted">Every community's posts at once, each ranked by its own members' votes.</p><dl class="kv"><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></div>${joinCard()}`;
+    return;
+  }
+  const about = "A community with a chain of its own. Anyone can post here, and anyone can mine it.";
   $("#aside").innerHTML = `<div class="card"><h4>s/${esc(c)}</h4><p class="muted">${about}</p>
     <dl class="kv"><dt>Votes</dt><dd>count from its members: the accounts its first posters' upvotes, replies and follows reach. What members downvote more than upvote is collapsed.</dd></dl>
     <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>${joinCard()}`;
@@ -1543,11 +1544,7 @@ $("#reply-form").addEventListener("submit", async (event) => {
       const newId = draftId(draftKey);
       return {
         chain: chainOf(community),
-        // A reply is listed among the author's edges: it vouches for what it answers.
-        records: async (state) => [
-          ...write.comment(author, newId, on, { body }, target ? { parent: target } : {}),
-          ...write.replied(author, await read.edgesOf(state, author), (target ?? on).author, (target ?? on).id),
-        ],
+        records: write.comment(author, newId, on, { body }, target ? { parent: target } : {}),
         fresh: `user/${author}/post/${newId}`,
         pending: { key: keyOf(community, author, newId), kind: "comment", community, author, id: newId, value, on, parent: target },
       };
@@ -1893,17 +1890,17 @@ $("#profile-form").addEventListener("submit", async (event) => {
 
 // ------------------------------------------------------------------ media
 
-// A post's image or video is kept for good by the storage sponsor, paid with
+// A post's image or video is kept for good by the sponsor, paid with
 // this device's work: no coins, and no node of the poster's own.
 const MOST_MEDIA = (1 << 20) - 256; // one Volume of at most 1 MiB, its block's framing included
 const UPLOADS = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm))$/;
 let attachment = null; // { cid, file: { kind, url }, state: "storing" | "kept" | "failed", stop, chain }
 const storageChains = new Map(); // "<sponsor> <community>" → Promise<chain | null>
 const storageOn = (community) => {
-  if (!settings.storage) return Promise.resolve(null);
-  const key = `${settings.storage} ${community}`;
+  if (!settings.sponsor) return Promise.resolve(null);
+  const key = `${settings.sponsor} ${community}`;
   if (!storageChains.has(key)) {
-    const asked = storageChain(settings.storage, [chainOf(community).join("/"), homePath().join("/")]);
+    const asked = storageChain(settings.sponsor, [chainOf(community).join("/"), homePath().join("/")]);
     storageChains.set(key, asked);
     // A sponsor that didn't answer is asked again next time.
     asked.then((chain) => chain || storageChains.delete(key));
@@ -1918,9 +1915,9 @@ async function drawMediaPicker() {
   if ($("#np-c").value !== community) return;
   $("#np-file-wrap").hidden = !chain && !attachment;
   $("#np-media-off").hidden = Boolean(chain || attachment);
-  $("#np-media-off").textContent = settings.storage
-    ? "Images and video can't be added right now: the storage sponsor in Settings isn't keeping files."
-    : "Images and video need a storage sponsor, set in Settings.";
+  $("#np-media-off").textContent = settings.sponsor
+    ? "Images and video can't be added right now: the sponsor in Settings isn't keeping files."
+    : "Images and video need a sponsor, set in Settings.";
 }
 
 function drawAttachment() {
@@ -1937,7 +1934,7 @@ function drawAttachment() {
   $("#np-post").disabled = state === "storing" || $("#new").hasAttribute("data-busy");
 }
 
-/** Keeps the chosen file through the storage sponsor, saying how far along it is. */
+/** Keeps the chosen file through the sponsor, saying how far along it is. */
 async function keepAttachment() {
   const mine = attachment;
   const stop = new AbortController();
@@ -1951,15 +1948,15 @@ async function keepAttachment() {
   };
   try {
     const chain = await storageOn($("#np-c").value);
-    if (!chain) throw new StorageRefused("The storage sponsor isn't keeping files right now.");
-    await storeFile(settings.storage, mine.volume, {
+    if (!chain) throw new StorageRefused("The sponsor isn't keeping files right now.");
+    await storeFile(settings.sponsor, mine.volume, {
       chain, hash: hasher, signal: stop.signal,
       progress: ({ stage, done }) => say({
-        upload: "Sending it to the storage sponsor…",
+        upload: "Sending it to the sponsor…",
         work: `Keeping it for good: this device's ${device} is paying with work…`,
-        busy: "The storage sponsor is busy: waiting a moment…",
+        busy: "The sponsor is busy: waiting a moment…",
         grind: `Keeping it for good: this device's ${device} is paying with work… ${Math.round((done ?? 0) * 100)}%`,
-        pin: "Paid. The storage sponsor is keeping it…",
+        pin: "Paid. The sponsor is keeping it…",
       }[stage]),
     });
     // Kept: shown at once in the post, without reading it back.
@@ -2003,7 +2000,6 @@ function openSettings({ advanced = false } = {}) {
   $("#st-home").value = settings.home;
   $("#st-moniker").value = settings.moniker;
   $("#st-sponsor").value = settings.sponsor;
-  $("#st-storage").value = settings.storage;
   $("#st-extension-row").hidden = !window.lattice?.isLatticeWallet;
   $("#st-extension").checked = settings.extension;
   $("#st-status").textContent = "";
@@ -2046,9 +2042,8 @@ $("#settings-form").addEventListener("submit", async (event) => {
     field.focus();
   };
   if (typed && !node) return bad($("#st-node"), "The node must be an https address, like https://node.example (http only for this computer).");
-  const sponsor = $("#st-sponsor").value.trim(), storage = $("#st-storage").value.trim();
-  if (sponsor && !sponsorAddress(sponsor)) return bad($("#st-sponsor"), "The fee sponsor must be an https address, or empty to pay fees in coins.");
-  if (storage && !sponsorAddress(storage)) return bad($("#st-storage"), "The storage sponsor must be an https address, or empty for none.");
+  const sponsor = $("#st-sponsor").value.trim();
+  if (sponsor && !sponsorAddress(sponsor)) return bad($("#st-sponsor"), "The sponsor must be an https address, or empty to pay fees in coins and add no files.");
   // Selfhold for Chrome or the window: each keeps its own account.
   const useExtension = $("#st-extension").checked;
   if (useExtension !== settings.extension) {
@@ -2058,9 +2053,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
     render();
   }
   settings.sponsor = sponsor && sponsorAddress(sponsor);
-  settings.storage = storage && sponsorAddress(storage);
   store.set("sponsor", settings.sponsor === DEFAULT_SPONSOR ? null : settings.sponsor);
-  store.set("storage", settings.storage === DEFAULT_SPONSOR ? null : settings.storage);
   const home = $("#st-home").value.trim(), monikerChain = $("#st-moniker").value.trim();
   const moved = (node && node !== settings.node) || (home && home !== settings.home) || (monikerChain && monikerChain !== settings.moniker);
   if (!moved) return;
@@ -2130,7 +2123,8 @@ async function boot() {
   paintLastFeed();
   try {
     const children = (await listed).directories ?? [];
-    communities = [ALL, ...children.filter((c) => c !== ALL)];
+    // s/all is every community at once, not a chain: no child may take its name.
+    communities = children.filter((c) => c !== ALL);
     for (const c of likelyShown()) readAhead(chainOf(c));
   } catch (error) {
     communities = [];
