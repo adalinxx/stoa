@@ -72,18 +72,14 @@ const flag = (on) => (on ? "1" : undefined);
 /** `a` joins a community, or leaves it with `joined` false. */
 export const join = (a, community, joined = true) => [[`user/${a}/join/${community}`, flag(joined)]];
 
-/** `a`'s custom feed `name`: a list of communities, or undefined to delete it. */
-export const feed = (a, name, communities) => [[`user/${a}/feed/${name}`, json(communities)]];
 
-/** `a` advertises a community `{ about }`, so clients can list communities. */
-export const advertise = (a, community, value) => [[`index/community/${community}/${a}`, json(value)]];
 
 // Community chains.
 
 const mediaWrites = (a, id, cids) => cids.map((cid, n) => [`user/${a}/post/${id}/media/${n}`, cid]);
 
 /**
- * A post `{ title, body?, link?, tags? }` with the CIDs of its media, listed
+ * A post `{ title, body?, link? }` with the CIDs of its media, listed
  * in the community. Undefined deletes the post and its listing (delete media
  * with `media`).
  */
@@ -176,8 +172,6 @@ export const vote = (a, edges, author, id, direction) =>
 export const replied = (a, edges, author, id, replied = true) =>
   moveEdge(a, edges, `${author}/${id}`, ["reply"], replied ? "reply" : undefined);
 
-/** `a`'s flair in the community. */
-export const flair = (a, text) => [[`user/${a}/flair`, text]];
 
 // Home chain: the profile.
 

@@ -15,7 +15,7 @@ decides what to show.
 - There are no moderators: votes count from a community's members, and what
   members downvote more than they upvote is collapsed, with Show. Nothing is
   deleted.
-- Ranking, feeds, karma and filters are computed by the client.
+- Ranking and feeds are computed by the client.
 
 ## Web app
 
@@ -56,8 +56,6 @@ Home chain `Nexus/stoa`:
 |---|---|
 | `user/<a>/profile` | `{ name?, bio?, link? }`: how `<a>` appears on Stoa (name ≤ 50, bio ≤ 500, an http(s) link ≤ 300) |
 | `user/<a>/join/<community>` | `"1"`: `<a>` reads this community |
-| `user/<a>/feed/<name>` | `["bitcoin", "rust"]`: a custom feed |
-| `index/community/<community>/<a>` | `{ about }`: `<a>` lists a community so clients can find it |
 
 A community chain (and the home chain, as `s/all`):
 
@@ -68,7 +66,6 @@ A community chain (and the home chain, as `s/all`):
 | `index/post/<id>/<a>` | `"1"`: lists the post in the community |
 | `index/comment/<author>/<id>/<commentId>/<a>` | `"1"`: lists a comment under the post it belongs to |
 | `user/<a>/edges/<n>` | `{ up?, down?, reply? }`: lists of `<author>/<id>`, `<a>`'s votes and what it replied to, at most 64 entries a record; a vote is in one list at most, and taking it back removes it |
-| `user/<a>/flair` | text |
 
 A comment is a post without a title that names its post (`on`) and, when it
 answers a comment, that comment (`parent`), both as `<author>/<id>`. Votes,
@@ -101,9 +98,8 @@ author standing. The design and its simulations are in
 `docs/standing.md`.
 
 `client/rank.mjs` has Reddit's orderings from its open-source code: hot
-(score magnitude plus age, a tenfold score per 12.5 hours), new, top, best
-(the Wilson lower bound, for comments) and controversial; and karma, the
-summed score of an account's items. A client may use others.
+(score magnitude plus age, a tenfold score per 12.5 hours), new and top.
+Comments are ordered by score. A client may use others.
 
 ## Collapsing
 

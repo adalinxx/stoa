@@ -15,7 +15,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { mediaVolume, operator, readMedia } from "../client/media.mjs";
-import { karma, rank } from "../client/rank.mjs";
+import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { memberVotes, seedsOf } from "../client/standing.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
@@ -248,19 +248,13 @@ try {
   assert.deepEqual(first.media, [volume.cid]);
   assert.ok(second.time >= first.time, "the text post was written after the link post");
   assert.deepEqual(rank(listed, "new").map((p) => p.id), [textPost.id, linkPost.id]);
-  assert.equal(rank(listed, "controversial")[0].id, textPost.id);
   console.log("reader: posts ranked by votes and post time");
 
   const tree = await read.thread(community, linkPost.author, linkPost.id);
   assert.deepEqual(tree.replies.map((c) => c.id), [c1.id]);
   assert.deepEqual(tree.replies[0].replies.map((c) => c.id), [c2.id]);
   assert.equal(tree.replies[0].replies[0].link, "https://example.com/s6");
-  const bobsItems = (await read.itemsBy(community, bob.address)).map((item) => {
-    const [ups, downs] = counted(votes, item);
-    return { ups, downs };
-  });
-  assert.equal(karma(bobsItems), 1);
-  console.log("reader: the thread as a tree; Bob's karma is 1");
+  console.log("reader: the thread as a tree");
 
   // The picture, from peers through the reader's own node.
   const readersNode = readers.operator(reader.rpc);

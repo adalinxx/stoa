@@ -88,8 +88,6 @@ export function ordered(node) {
  * to see it (`shown`).
  */
 export const collapsed = (item, shown = false) => item.downs > item.ups && !item.mine && !shown;
-/** Media an author tagged NSFW or a spoiler is blurred until tapped. */
-export const blurs = (tags = []) => tags.includes("nsfw") || tags.includes("spoiler");
 const COLLAPSED = "Collapsed: more members downvoted it than upvoted it";
 const linkTag = (link, text) =>
   `<a class="link" href="${esc(link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(text)} ↗</a>`;
@@ -134,15 +132,15 @@ export function postRow(p, names, { now = Date.now(), inCommunity = false } = {}
     <div>
       <h2><a href="${href}">${esc(p.title)}</a></h2>
       ${link ? linkTag(link, new URL(link).host) : ""}
-      <div class="meta">${inCommunity ? "" : `<a href="#/s/${encodeURIComponent(p.community)}">s/${esc(p.community)}</a>`}${byline(p.author, names)}${p.pending ? pendingNote(p.pending) : when(p.time, now)}<a href="${href}">${plural(p.comments, "comment")}</a>${p.tags.map((t) => `<span class="tag">${esc(t.toUpperCase())}</span>`).join("")}</div>
-      ${p.media.map((cid) => mediaSlot(cid, p.community, blurs(p.tags))).join("")}
+      <div class="meta">${inCommunity ? "" : `<a href="#/s/${encodeURIComponent(p.community)}">s/${esc(p.community)}</a>`}${byline(p.author, names)}${p.pending ? pendingNote(p.pending) : when(p.time, now)}<a href="${href}">${plural(p.comments, "comment")}</a></div>
+      ${p.media.map((cid) => mediaSlot(cid, p.community)).join("")}
       ${p.error ? `<p class="inline-error">${esc(p.error)}</p>` : ""}
     </div></article>`;
 }
 
 /** A place for a media file, filled once some node serves it. */
-export const mediaSlot = (cid, community, blur) =>
-  `<div class="media missing" data-media="${esc(cid)}" data-chain="${esc(community)}" data-blur="${blur ? 1 : 0}">loading…</div>`;
+export const mediaSlot = (cid, community) =>
+  `<div class="media missing" data-media="${esc(cid)}" data-chain="${esc(community)}">loading…</div>`;
 
 /** A comment and its replies; one members downvoted is folded shut, with Show (`c.expanded`: shown). */
 export function commentNode(c, community, names, now = Date.now()) {

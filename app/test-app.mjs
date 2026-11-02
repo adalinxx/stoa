@@ -6,7 +6,7 @@ import { ago, commentNode, nameOf, ordered, parseRoute, pathHTML, plural, postRo
 const NOW = 1_800_000_000_000;
 const names = new Map([["bafy-alice-address", "Alice"]]);
 const post = (over = {}) => ({
-  community: "bitcoin", author: "bafy-alice-address", id: "p1", title: "Hello", link: undefined, tags: [], media: [],
+  community: "bitcoin", author: "bafy-alice-address", id: "p1", title: "Hello", link: undefined, media: [],
   ups: 3, downs: 1, mine: 0, comments: 2, time: NOW - 5 * 60000, ...over,
 });
 
@@ -47,7 +47,7 @@ test("what people write is escaped, and a bad link is not linked", () => {
 });
 
 test("a post shows its score, comments, age, author name and link host", () => {
-  const html = postRow(post({ link: "https://bitcoin.org/bitcoin.pdf", tags: ["oc"] }), names, { now: NOW });
+  const html = postRow(post({ link: "https://bitcoin.org/bitcoin.pdf" }), names, { now: NOW });
   assert.match(html, /<span class="score" aria-label="Score 2">2<\/span>/, "score is ups minus downs");
   assert.match(html, /2 comments/);
   assert.match(html, /5m ago/);
@@ -56,7 +56,6 @@ test("a post shows its score, comments, age, author name and link host", () => {
   assert.match(postRow(post({ comments: 1 }), names, { now: NOW }), />1 comment</);
   assert.match(html, /Alice/);
   assert.match(html, />bitcoin\.org ↗</);
-  assert.match(html, /OC/);
 });
 
 test("what members downvoted more than upvoted is collapsed, with Show; the reader's own vote or choice shows it", () => {
@@ -76,13 +75,6 @@ test("what members downvoted more than upvoted is collapsed, with Show; the read
   assert.match(html, /<div class="body" hidden>buy my coin<\/div>/);
   assert.ok(!commentNode({ ...reply, expanded: true }, "bitcoin", names).includes("Collapsed"));
   assert.ok(!html.includes("Label"), "no labels");
-});
-
-test("an author's NSFW or spoiler tag blurs their media", () => {
-  const media = ["bafy-image"];
-  assert.match(postRow(post({ media, tags: ["nsfw"] }), names, { now: NOW }), /data-blur="1"/);
-  assert.match(postRow(post({ media, tags: ["spoiler"] }), names, { now: NOW }), /data-blur="1"/);
-  assert.match(postRow(post({ media }), names, { now: NOW }), /data-blur="0"/);
 });
 
 test("the reader's vote shows as pressed, and a vote waiting for its block as pending", () => {

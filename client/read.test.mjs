@@ -24,10 +24,10 @@ function memory() {
 
 const post = { author: "alice", id: "p1" };
 
-test("a post carries its link, tags and media in order", async () => {
+test("a post carries its link and media in order", async () => {
   const state = memory();
   await state.apply(
-    write.post("alice", "p1", { title: "Hi", body: "text", link: "https://example.com", tags: ["oc"], time: 1234 }, ["c0", "c1"]),
+    write.post("alice", "p1", { title: "Hi", body: "text", link: "https://example.com", time: 1234 }, ["c0", "c1"]),
   );
   await state.apply(write.media("alice", "p1", 10, "c10"));
   assert.deepEqual(await read.item(state, "alice", "p1"), {
@@ -37,7 +37,6 @@ test("a post carries its link, tags and media in order", async () => {
     title: "Hi",
     body: "text",
     link: "https://example.com",
-    tags: ["oc"],
     media: ["c0", "c1", "c10"],
   });
   assert.equal((await read.posts(state)).length, 1);
@@ -152,18 +151,16 @@ test("deleting a post removes it and its listing", async () => {
   assert.equal(state.raw.size, 0);
 });
 
-test("home chain: joins, communities", async () => {
+test("home chain: joins", async () => {
   const state = memory();
   await state.apply(write.join("alice", "bitcoin"));
   await state.apply(write.join("alice", "bitcoin/lightning"));
   await state.apply(write.join("alice", "rust"));
   await state.apply(write.join("alice", "rust", false));
-  await state.apply(write.advertise("bob", "bitcoin/lightning", { about: "LN" }));
   assert.deepEqual(await read.joined(state, "alice"), ["bitcoin", "bitcoin/lightning"]);
-  assert.deepEqual(await read.communities(state), new Map([["bitcoin/lightning", new Map([["bob", { about: "LN" }]])]]));
 });
 
-test("an account's items, for karma", async () => {
+test("an account's items", async () => {
   const state = memory();
   await state.apply(write.post("alice", "p1", { title: "Root" }, ["m"]));
   await state.apply(write.comment("alice", "c1", { author: "bob", id: "p" }, { body: "hi" }));

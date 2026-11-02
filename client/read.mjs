@@ -24,7 +24,7 @@ async function collect(entries) {
 
 /**
  * `author`'s post or comment `id`, or undefined: `{ author, id, time, title?,
- * body?, link?, tags, on?, parent?, media }`. `on` and `parent` are
+ * body?, link?, on?, parent?, media }`. `on` and `parent` are
  * `{ author, id }`; `time` is when it says it was written (milliseconds; the
  * chain's policy holds it to its block), or 0 when it says none.
  */
@@ -46,7 +46,6 @@ export async function item(state, author, id) {
     ...(text("title") !== undefined && { title: text("title") }),
     ...(text("body") !== undefined && { body: text("body") }),
     ...(text("link") !== undefined && { link: text("link") }),
-    tags: Array.isArray(record.tags) ? record.tags.filter((tag) => typeof tag === "string") : [],
     ...(on && { on }),
     ...(parent && { parent }),
     media: media
@@ -165,8 +164,6 @@ export async function itemsBy(state, a) {
   return (await Promise.all(ids.map((id) => item(state, a, id)))).filter(Boolean);
 }
 
-/** `a`'s flair in the community, or undefined. */
-export const flair = (state, a) => state.get(`user/${a}/flair`);
 
 // Home chain.
 
@@ -198,15 +195,3 @@ export async function joined(state, a) {
   return (await collect(state.list(prefix))).map(([key]) => key.slice(prefix.length));
 }
 
-/** Advertised communities: name → the accounts advertising it, with each `{ about }`. */
-export async function communities(state) {
-  const found = new Map();
-  for await (const [key, value] of state.list("index/community/")) {
-    const segments = key.split("/");
-    const name = segments.slice(2, -1).join("/");
-    if (!name) continue;
-    if (!found.has(name)) found.set(name, new Map());
-    found.get(name).set(segments.at(-1), parse(value));
-  }
-  return found;
-}

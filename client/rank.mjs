@@ -13,30 +13,10 @@ export function hot({ ups, downs, time }) {
   return Math.round((sign * order + seconds / 45000) * 1e7) / 1e7;
 }
 
-/** Reddit's best: the lower bound of the Wilson interval on the up ratio, at 80% confidence. */
-export function best({ ups, downs }) {
-  const n = ups + downs;
-  if (n === 0) return 0;
-  const z = 1.281551565545;
-  const p = ups / n;
-  const left = p + (z * z) / (2 * n);
-  const right = z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n));
-  return (left - right) / (1 + (z * z) / n);
-}
-
-/** Reddit's controversial: many votes, evenly split. */
-export function controversial({ ups, downs }) {
-  if (ups <= 0 || downs <= 0) return 0;
-  const balance = ups > downs ? downs / ups : ups / downs;
-  return (ups + downs) ** balance;
-}
-
 const orders = {
   hot: (a, b) => hot(b) - hot(a),
   new: (a, b) => b.time - a.time,
   top: (a, b) => score(b) - score(a),
-  best: (a, b) => best(b) - best(a),
-  controversial: (a, b) => controversial(b) - controversial(a),
 };
 
 /**
@@ -50,6 +30,3 @@ export function rank(items, by, { since } = {}) {
   const kept = since === undefined ? [...items] : items.filter((item) => item.time >= since);
   return kept.sort((a, b) => order(a, b) || (b.time ?? 0) - (a.time ?? 0));
 }
-
-/** Karma: the summed score of an account's items. */
-export const karma = (items) => items.reduce((total, item) => total + score(item), 0);

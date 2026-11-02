@@ -17,7 +17,7 @@ import { writeRequest } from "./vendor/moniker-sdk/src/records/wallet.mjs";
 import { stepFor } from "./vendor/moniker-sdk/src/picker.mjs";
 import { selfhold } from "./vendor/selfhold.mjs";
 import * as write from "../client/write.mjs";
-import { blurs, byline, collapsed, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, profileHref, safeLink, short, voteBox, when } from "./lib.mjs";
+import { byline, collapsed, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, profileHref, safeLink, short, voteBox, when } from "./lib.mjs";
 
 const $ = (s) => document.querySelector(s);
 
@@ -631,9 +631,8 @@ function forgetName(a) {
 }
 // Posts the reader chose to see though members downvoted them, for this visit.
 const revealed = new Set();
-// Collapsed comments the reader opened, and blurred media they uncovered.
+// Collapsed comments the reader opened.
 const expanded = new Set();
-const unblurred = new Set();
 
 // ------------------------------------------------------------- standing
 
@@ -794,7 +793,8 @@ async function castVote(button) {
 
 let communities = [];
 let route = { view: "home" };
-let sort = store.get("sort", "hot");
+const SORTS = ["hot", "new", "top"];
+let sort = SORTS.includes(store.get("sort")) ? store.get("sort") : "hot";
 // What the current view last read, so a vote or reveal redraws without re-reading.
 let shown = null;
 
@@ -848,7 +848,7 @@ async function loadPosts(community) {
   );
 }
 
-const sortTabs = () => `<div class="tabs" role="group" aria-label="Sort posts">${["hot", "new", "top", "controversial"].map((s) => `<button type="button" class="tab" data-sort="${s}" aria-pressed="${s === sort}">${s[0].toUpperCase() + s.slice(1)}</button>`).join("")}</div>`;
+const sortTabs = () => `<div class="tabs" role="group" aria-label="Sort posts">${SORTS.map((s) => `<button type="button" class="tab" data-sort="${s}" aria-pressed="${s === sort}">${s[0].toUpperCase() + s.slice(1)}</button>`).join("")}</div>`;
 
 function communityActions(c) {
   return `<button class="btn" type="button" id="join" data-join="${esc(c)}">${joinedList().includes(c) ? "Leave" : "Join"}</button>`;
@@ -944,7 +944,7 @@ function drawFeed() {
   const read = new Set(posts.map((q) => keyOf(q.community, q.author, q.id)));
   for (const p of pendingItems.values()) if (p.kind === "post" && read.has(p.key)) pendingItems.delete(p.key);
   const pending = [...pendingItems.values()].filter((p) => p.kind === "post" && list.includes(p.community))
-    .map((p) => ({ ...p.value, tags: p.value.tags ?? [], media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, pending: p.slow ? "slow" : "waiting" }));
+    .map((p) => ({ ...p.value, media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, pending: p.slow ? "slow" : "waiting" }));
   const keyed = (p) => `${p.community}|${p.author}|${p.id}`;
   if (shown.sort !== sort || !shown.order) {
     shown.order = rank(posts, sort).map(keyed);
@@ -1027,7 +1027,7 @@ function drawThread() {
   let tree = shown.tree && ordered(structuredClone(shown.tree));
   if (tree) pendingItems.delete(keyOf(community, author, id));
   const pendingPost = pendingItems.get(keyOf(community, author, id));
-  if (!tree && pendingPost) tree = { ...pendingPost.value, author, id, tags: pendingPost.value.tags ?? [], media: pendingPost.media ?? [], replies: [], ups: 0, downs: 0, mine: 0, pending: pendingPost.slow ? "slow" : "waiting" };
+  if (!tree && pendingPost) tree = { ...pendingPost.value, author, id, media: pendingPost.media ?? [], replies: [], ups: 0, downs: 0, mine: 0, pending: pendingPost.slow ? "slow" : "waiting" };
   if (!tree) {
     $("#thread").innerHTML = `<div class="panel"><h2>This post isn't here</h2><p>${esc(nodeHost())} doesn't have it in s/${esc(community)}. Its author may have deleted it, or it hasn't reached this node yet.</p><div class="row2"><a class="btn" href="#/s/${encodeURIComponent(community)}">Back to s/${esc(community)}</a></div></div>`;
     return;
@@ -1072,10 +1072,10 @@ function drawThread() {
   counting(tree);
   const link = safeLink(tree.link);
   $("#thread").innerHTML = `<article class="op${tree.pending ? " pending" : ""}">
-      <div class="meta"><a href="#/s/${encodeURIComponent(community)}">s/${esc(community)}</a>${byline(author, names)}${tree.pending ? pendingNote(tree.pending) : when(tree.time)}${tree.tags.map((t) => `<span class="tag">${esc(t.toUpperCase())}</span>`).join("")}</div>
+      <div class="meta"><a href="#/s/${encodeURIComponent(community)}">s/${esc(community)}</a>${byline(author, names)}${tree.pending ? pendingNote(tree.pending) : when(tree.time)}</div>
       <h1>${esc(tree.title)}</h1>
       ${link ? `<a class="link" href="${esc(link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(link)} ↗</a>` : ""}
-      ${tree.media.map((cid) => mediaSlot(cid, community, blurs(tree.tags))).join("")}
+      ${tree.media.map((cid) => mediaSlot(cid, community)).join("")}
       ${tree.body ? `<div class="body" style="margin-top:10px">${esc(tree.body)}</div>` : ""}
       ${tree.pending ? "" : `<div class="acts" style="margin-top:10px">${voteBox({ ...tree, community }, { row: true })}<button type="button" data-reply="${esc(author)}/${esc(id)}">Reply</button></div>`}
       ${tree.error ? `<p class="inline-error">${esc(tree.error)}</p>` : ""}
@@ -1088,7 +1088,7 @@ function drawThread() {
 }
 
 // A profile page: how an account appears, what it wrote in each community,
-// and its karma. Read from every community chain (one prefix scan each).
+// Read from every community chain (one prefix scan each).
 let profileTab = "posts";
 
 async function showProfile({ address }, renderId) {
@@ -1133,13 +1133,12 @@ function drawProfile() {
   const pending = mine ? [...pendingItems.values()].filter((p) => p.kind === "post" && p.author === address && !items.some((i) => i.community === p.community && i.id === p.id)) : [];
   const posts = items.filter((i) => i.title !== undefined && !i.on);
   const comments = items.filter((i) => i.on);
-  const karma = items.reduce((total, i) => total + i.ups - i.downs, 0);
   const handleLine = handle
     ? `<a class="handle" href="${esc(`${MONIKER.app}#/@${handle}`)}" target="_blank" rel="noopener" title="This handle points at this account on Moniker">@${esc(handle)}</a>`
     : `<span class="muted">${mine ? "No @handle yet" : "No @handle"}</span>`;
   const link = safeLink(profile.link);
   const list = profileTab === "posts"
-    ? [...pending.map((p) => ({ ...p.value, tags: p.value.tags ?? [], media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, pending: p.slow ? "slow" : "waiting" })),
+    ? [...pending.map((p) => ({ ...p.value, media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, pending: p.slow ? "slow" : "waiting" })),
       ...rank(posts, "new").map((p) => ({ ...withVote(p, p.community), revealed: revealed.has(`${p.author}/${p.id}`) }))].map((p) => postRow(p, names)).join("")
     : rank(comments, "new").map((c) => commentRow(withVote(c, c.community))).join("");
   const empty = profileTab === "posts"
@@ -1156,7 +1155,7 @@ function drawProfile() {
     </section>
     ${profile.bio ? `<p class="bio">${esc(profile.bio)}</p>` : mine && !profile.name ? '<p class="bio muted">Add a name and a few words about yourself, so people know who\'s posting.</p>' : ""}
     ${link ? `<a class="link" href="${esc(link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(link)} ↗</a>` : ""}
-    <dl class="stats"><div><dt>Karma</dt><dd>${karma}</dd></div><div><dt>Posts</dt><dd>${posts.length}</dd></div><div><dt>Comments</dt><dd>${comments.length}</dd></div></dl>
+    <dl class="stats"><div><dt>Posts</dt><dd>${posts.length}</dd></div><div><dt>Comments</dt><dd>${comments.length}</dd></div></dl>
     ${failures.length ? `<div class="panel bad"><p style="margin:0">${failures.map((f) => esc(readFailure(f.error, f.c))).join(" ")} What they wrote there is missing below.</p></div>` : ""}
     <div class="tabs" role="group" aria-label="Show"><button type="button" class="tab" data-profile-tab="posts" aria-pressed="${profileTab === "posts"}">Posts</button><button type="button" class="tab" data-profile-tab="comments" aria-pressed="${profileTab === "comments"}">Comments</button></div>
     <div id="profile-items">${list || empty}</div>`;
@@ -1234,9 +1233,8 @@ function mediaFile(cid, community) {
   }
   return media.get(cid);
 }
-const mediaTag = ({ kind, url }, cid, blur) => {
-  const blurred = blur && !unblurred.has(cid);
-  const attrs = `class="media${blurred ? " blur" : ""}" data-cid="${esc(cid)}" src="${url}"${blurred ? ' title="Tap to show" data-unblur tabindex="0" role="button" aria-label="Blurred: show it"' : ""}`;
+const mediaTag = ({ kind, url }, cid) => {
+  const attrs = `class="media" data-cid="${esc(cid)}" src="${url}"`;
   return kind === "video" ? `<video ${attrs} controls></video>` : `<img ${attrs} alt="">`;
 };
 const settled = new Map(); // cid → { kind, url } once read, for drawing without a wait
@@ -1251,7 +1249,7 @@ async function loadMedia() {
   // Already read: in place before the next paint.
   for (const slot of slots) {
     const file = settled.get(slot.dataset.media);
-    if (file) slot.outerHTML = mediaTag(file, slot.dataset.media, slot.dataset.blur === "1");
+    if (file) slot.outerHTML = mediaTag(file, slot.dataset.media);
     else if (unserved.has(slot.dataset.media)) notServed(slot);
   }
   // The rest are read side by side, each filled as it arrives.
@@ -1264,7 +1262,7 @@ async function loadMedia() {
       slot.removeAttribute("data-media");
     } else if (file) {
       settled.set(cid, file);
-      slot.outerHTML = mediaTag(file, cid, slot.dataset.blur === "1");
+      slot.outerHTML = mediaTag(file, cid);
     } else {
       notServed(slot);
     }
@@ -1356,10 +1354,6 @@ document.addEventListener("click", async (event) => {
     expanded.add(el.dataset.expand);
     el.closest("p").nextElementSibling.hidden = false;
     el.closest("p").remove();
-  } else if (el.hasAttribute("data-unblur")) {
-    unblurred.add(el.dataset.cid);
-    el.classList.remove("blur");
-    for (const attr of ["data-unblur", "role", "aria-label", "title"]) el.removeAttribute(attr);
   } else if (el.dataset.vote) {
     castVote(el);
   } else if (el.dataset.reply) {
@@ -1636,8 +1630,7 @@ $("#new-form").addEventListener("submit", async (event) => {
     $("#np-l").focus();
     return (status.textContent = "The link must start with https:// or http://");
   }
-  const tags = [...document.querySelectorAll("#new-form .checks input:checked")].map((i) => i.value);
-  const value = { title, ...(link && { link }), ...($("#np-b").value.trim() && { body: $("#np-b").value.trim() }), ...(tags.length && { tags }) };
+  const value = { title, ...(link && { link }), ...($("#np-b").value.trim() && { body: $("#np-b").value.trim() }) };
   let made;
   const media = attachment ? [attachment.cid] : [];
   await sendFromDialog({
@@ -2164,13 +2157,6 @@ function likelyShown() {
   return joinedList().filter((c) => communities.includes(c));
 }
 let navigated = false;
-// Blurred media is a button to the keyboard too.
-document.addEventListener("keydown", (event) => {
-  if ((event.key === "Enter" || event.key === " ") && event.target.hasAttribute?.("data-unblur")) {
-    event.preventDefault();
-    event.target.click();
-  }
-});
 window.addEventListener("hashchange", () => {
   for (const [key, error] of itemErrors) if (error.untilNavigation) itemErrors.delete(key);
   navigated = true;

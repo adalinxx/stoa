@@ -114,7 +114,6 @@ h1 { font: 600 26px/1.2 var(--display); margin: 12px 0 0; text-wrap: balance; ov
 .tag { font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); line-height: 18px; }
 .media { margin-top: 8px; max-width: min(420px, 100%); border-radius: 8px; display: block; }
 .media.missing { aspect-ratio: 16 / 9; display: grid; place-items: center; font-size: 12px; color: var(--muted); background: repeating-linear-gradient(45deg, var(--surface), var(--surface) 8px, var(--bg) 8px, var(--bg) 16px); border: 1px dashed var(--line); }
-.blur { filter: blur(18px); cursor: pointer; }
 .hidden-row { padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
 .linkish { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font-size: inherit; }
 .linkish:hover { text-decoration: underline; }
@@ -164,9 +163,6 @@ textarea { min-height: 96px; resize: vertical; }
 .cost.bad { color: var(--down); }
 .status { font-size: 12.5px; color: var(--muted); margin-right: auto; }
 .status.bad { color: var(--down); }
-.checks { display: flex; gap: 8px; flex-wrap: wrap; }
-.checks label { display: inline-flex; gap: 6px; align-items: center; margin: 0; color: var(--ink); font-size: 13.5px; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; cursor: pointer; }
-.checks label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 .hint { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; }
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 td, th { padding: 8px 6px; }
@@ -285,8 +281,6 @@ td:last-child { text-align: right; }
     <input type="url" id="np-l" placeholder="https://" autocomplete="off">
     <label for="np-b">Text <span class="muted">(optional)</span></label>
     <textarea id="np-b"></textarea>
-    <label id="np-tags-label">Tags <span class="muted">(optional)</span></label>
-    <div class="checks" role="group" aria-labelledby="np-tags-label"><label><input type="checkbox" value="oc"> OC</label><label><input type="checkbox" value="nsfw"> NSFW</label><label><input type="checkbox" value="spoiler"> Spoiler</label></div>
     <div id="np-file-wrap" hidden>
       <label for="np-file">Image or video <span class="muted">(optional, up to 1 MB)</span></label>
       <span class="btn file-btn" id="np-file-btn"><input type="file" id="np-file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,video/mp4,video/webm"><span aria-hidden="true">＋</span> Add an image or video</span>
