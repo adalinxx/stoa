@@ -297,10 +297,29 @@ async function stateOf(chain, { ahead = false } = {}) {
   const early = ahead && readsAhead.get(chain.join("/"));
   if (early && Date.now() - early.at < AHEAD_FOR) return early.state;
   return nodes.read(chain, async (node) => {
-    const http = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${node.url}/volumes`, { chainPath: chain }));
-    const { hash, generalStateCID, volumes } = await tip(sdk, node.url, chain, http);
+    const volumes = volumesOn(node.url, chain);
+    const { hash, generalStateCID } = await tip(sdk, node.url, chain, volumes);
     return { chain, hash, volumes, ...view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID) };
   });
+}
+
+// Volumes are read through a cache kept across visits (a Volume never
+// changes once verified, so only what a new block changed is read again),
+// and reads made together, as a walk reads a node's children, go as one
+// request.
+// One client per node and chain, so a node found without the many-Volumes
+// route is read one Volume at a time from then on. Media is not kept across
+// visits: large files would push out the state every visit reads, and a
+// visit keeps what it showed.
+const volumeCache = new sdk.IndexedDBVolumeCache();
+const volumeClients = new Map(); // "url chain media?" → VolumeClient
+function volumesOn(url, chain, { media = false } = {}) {
+  const key = `${url} ${chain.join("/")}${media ? " media" : ""}`;
+  if (!volumeClients.has(key)) {
+    const http = new sdk.HTTPVolumeTransport(`${url}/volumes`, { chainPath: chain });
+    volumeClients.set(key, new sdk.VolumeClient(new sdk.BatchingVolumeTransport(http), undefined, media ? {} : { cache: volumeCache }));
+  }
+  return volumeClients.get(key);
 }
 
 // States read at boot, beside the page's other first reads, for the render
@@ -1125,8 +1144,7 @@ const MEDIA_TYPES = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|ogg))$/;
 function mediaFile(cid, community) {
   if (!media.has(cid)) {
     media.set(cid, (async () => {
-      const volume = await nodes.read(chainOf(community), (node) =>
-        new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${node.url}/volumes`, { chainPath: chainOf(community) })).get(cid));
+      const volume = await nodes.read(chainOf(community), (node) => volumesOn(node.url, chainOf(community), { media: true }).get(cid));
       const file = sdk.decodeDagCbor(volume.bytes(cid));
       if (typeof file?.type !== "string" || !MEDIA_TYPES.test(file.type) || !(file.bytes instanceof Uint8Array) || file.bytes.length > 8 << 20) return { unsupported: true };
       return { kind: file.type.startsWith("video/") ? "video" : "img", url: URL.createObjectURL(new Blob([file.bytes], { type: file.type })) };
