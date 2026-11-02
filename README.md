@@ -14,7 +14,9 @@ decides what to show.
 - There are no moderators: votes count from a community's members, and what
   members downvote more than they upvote is collapsed, with Show. Nothing is
   deleted.
-- Ranking and feeds are computed by the client.
+- Ranking and feeds are computed by the client. Besides each community and
+  the communities you joined, Following shows the posts of the people you
+  follow, from every community.
 
 ## Web app
 
@@ -93,7 +95,8 @@ PageRank (`client/standing.mjs`). Its seeds are the authors of its first
 five posts. A fresh account's vote is kept and counts once members upvote
 what it writes or follow it, so a crowd of new accounts moves nothing.
 Replying vouches for nothing. Downvotes rank items and never cost an
-author standing. The design and its simulations are in
+author standing. The page follows on Follows from a person's profile, and
+tells a reader whether their votes count in a community yet. The design and its simulations are in
 `docs/standing.md`.
 
 `client/rank.mjs` has Reddit's orderings from its open-source code: hot

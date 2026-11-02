@@ -176,3 +176,13 @@ export const profile = (a, value) => {
   const kept = Object.fromEntries(Object.entries(value ?? {}).filter(([, v]) => typeof v === "string" && v.trim()).map(([k, v]) => [k, v.trim()]));
   return [[`user/${a}/profile`, Object.keys(kept).length ? json(kept) : undefined]];
 };
+
+// Follows (https://github.com/adalinxx/follows), the follow graph every app
+// shares: `a` following `t` (an account, or `@<handle>`) is two keys, always
+// written together, the `followers/` twin directly after its `follows/` key.
+
+/** `a` follows `t`, or stops with `on` false. */
+export const follow = (a, t, on = true) => [
+  [`follows/${a}/${t}`, flag(on)],
+  [`followers/${t}/${a}`, flag(on)],
+];

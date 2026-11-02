@@ -1,13 +1,13 @@
 import { edgeSets, edgesOf, tally } from "./read.mjs";
 
-// Standing: how much a community's view vouches for each account and post,
-// by personalized PageRank from the view's seeds (Andersen, Chung and Lang's
-// local push). A walker starts at a seed, follows a weighted edge, and with
+// Standing: how much a community vouches for each account and post, by
+// personalized PageRank from its seeds (Andersen, Chung and Lang's
+// local push). A walker starts at a seed, follows an edge, and with
 // probability `restart` starts again at a seed; an account's or post's
 // standing is the share of time the walker spends there. Accounts nobody
 // with standing engages with have none, however many of them there are and
 // however they engage with each other: a ring of fresh accounts gains only
-// what the view's own edges lead into it.
+// what the community's own edges lead into it.
 //
 // The graph: an account points at the posts it upvoted and the accounts it
 // follows, each edge alike; a post points at its author. So a post's standing
@@ -117,10 +117,9 @@ export function members(standing, { delta = 0.02 } = {}) {
 }
 
 /**
- * A community's default seeds, until it publishes a view: the authors of its
- * first `count` posts, by the time they say they were written. Nobody can
- * claim to have come earlier later on, since the chain holds a post's time
- * to the block that writes it.
+ * A community's seeds: the authors of its first `count` posts, by the time
+ * they say they were written. Nobody can claim to have come earlier later
+ * on, since the chain holds a post's time to the block that writes it.
  */
 export function seedsOf(posts, count = 5) {
   const seeds = [];

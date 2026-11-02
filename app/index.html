@@ -205,7 +205,7 @@ td:last-child { text-align: right; }
   </header>
   <nav class="rail" aria-label="Communities">
     <div class="rail-list">
-      <ul class="tree"><li><a href="#/" data-nav="home">Home</a></li></ul>
+      <ul class="tree"><li><a href="#/" data-nav="home">Home</a></li><li><a href="#/following" data-nav="following">Following</a></li></ul>
       <div id="communities"><p class="muted" style="padding:5px 8px;margin:0">Loading…</p></div>
     </div>
   </nav>
@@ -322,6 +322,8 @@ td:last-child { text-align: right; }
       <input type="text" id="st-home" autocomplete="off">
       <label for="st-moniker">Moniker chain <span class="muted">(where @handles come from)</span></label>
       <input type="text" id="st-moniker" autocomplete="off">
+      <label for="st-follows">Follows chain <span class="muted">(whom people follow, shared by every app)</span></label>
+      <input type="text" id="st-follows" autocomplete="off">
       <label for="st-sponsor">Sponsor <span class="muted">(pays each fee and keeps images and video, for this device's work; empty to pay fees in coins and add no files)</span></label>
       <input type="url" id="st-sponsor" placeholder="Fees paid in coins, no files" autocomplete="off" spellcheck="false" autocapitalize="none">
     </details>

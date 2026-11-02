@@ -87,6 +87,8 @@ const sponsorAddress = (url) => {
     return "";
   }
 };
+// Follows, the follow graph every app shares.
+const DEFAULT_FOLLOWS = "Nexus/testnet/follows-ade46a";
 const savedMoniker = store.get("monikerChain", null);
 const savedSponsor = store.get("sponsor", null);
 const settings = {
@@ -97,6 +99,8 @@ const settings = {
   // Kept only when the reader chose a chain other than the SDK's, so a
   // reader on the default follows it when an SDK release moves Moniker.
   moniker: savedMoniker && !RETIRED_MONIKER.test(savedMoniker) ? savedMoniker : MONIKER.chain.join("/"),
+  // Kept only when the reader chose another, as the moniker chain is.
+  follows: store.get("followsChain", null) ?? DEFAULT_FOLLOWS,
   // Kept only when the reader chose another (or none, ""), as the moniker chain is.
   // The sponsor pays fees and keeps files, each for this device's work.
   sponsor: typeof savedSponsor === "string" ? savedSponsor : DEFAULT_SPONSOR,
@@ -105,6 +109,7 @@ const settings = {
   walletPage: walletPageOf(store.get("walletPage", DEFAULT_WALLET_PAGE)),
 };
 const homePath = () => settings.home.split("/");
+const followsPath = () => settings.follows.split("/");
 // s/all: every community's posts at once. It is no chain of its own.
 const ALL = "all";
 const chainOf = (community) => (community === ALL ? homePath() : [...homePath(), ...community.split("/")]);
@@ -159,6 +164,7 @@ function setConnected(address) {
     pendingVotes.clear();
     pendingItems.clear();
     itemErrors.clear();
+    followChoices.clear();
   }
   connected = address;
 }
@@ -277,8 +283,7 @@ async function apiOn(base, path, chain) {
 }
 
 /** Why a chain could not be read, for a person. */
-function readFailure(error, community) {
-  const where = community ? `s/${community}` : "Stoa";
+function readFailure(error, community, where = community ? `s/${community}` : "Stoa") {
   if (error instanceof sdk.ChainOfflineError) return `No node serves ${where} right now.`;
   if (error?.status === 404 || /HTTP 404/.test(error?.message ?? "")) return `${nodeHost()} doesn't serve ${where}.`;
   if (error instanceof TypeError) return `Couldn't reach ${nodeHost()}.`;
@@ -379,7 +384,7 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
     try {
       state = await stateOf(chain);
     } catch (error) {
-      throw new Said(readFailure(error, community));
+      throw new Said(readFailure(error, community, chain.join("/") === settings.follows ? "Follows" : undefined));
     }
     const built = ordered ? await records(state) : records;
     // A key already holding its new value is no change: nothing to sign for it.
@@ -486,7 +491,7 @@ function notice(message, { bad = false, action } = {}) {
 
 // The reader's choices: on their home chain once written there, in this
 // browser until then (or when writing them fails).
-let mine = { joined: [] };
+let mine = { joined: [], follows: new Set() };
 const joinedList = () => {
   const local = store.get("joined", null);
   const left = store.get("left", []);
@@ -497,21 +502,29 @@ const joinedList = () => {
 /** Read the reader's joins from the home chain. */
 async function loadMine(home) {
   const reader = signer();
-  if (!reader) return (mine = { joined: [] });
-  mine = { joined: await read.joined(home, reader.address) };
+  if (!reader) return (mine = { joined: [], follows: new Set() });
+  const [joined, follows] = await Promise.all([read.joined(home, reader.address), followsReader()(reader.address)]);
+  mine = { joined, follows: new Set(follows) };
 }
 
+// Follows and unfollows sent this visit, shown at once: account → true or false.
+const followChoices = new Map();
+const following = (address) => followChoices.get(address) ?? mine.follows.has(address);
+/** The accounts the reader follows. */
+const followed = () => new Set([...mine.follows, ...followChoices.keys()].filter(following));
+
 /**
- * A reader choice: kept in the browser and shown at once, then written to the
- * home chain (it lands a block later). The notice says where it stands; if the
- * write fails the choice stays in this browser and the notice says why.
+ * A reader choice: kept in the browser and shown at once, then written to
+ * `chain`, the home chain unless said (it lands a block later). The notice
+ * says where it stands; if the write fails the choice stays in this browser
+ * and the notice says why, or, with `undo`, it is taken back.
  */
 // Home-chain keys with a save in flight. A write is made against the state it
 // read, so a second change to the same key waits for the first to land.
 const savingKeys = new Set();
 const saving = (records) => records.some(([key]) => savingKeys.has(key));
 
-function saveChoice(records, keepLocally, what, { about = what } = {}) {
+function saveChoice(records, keepLocally, what, { about = what, chain = homePath(), undo } = {}) {
   if (signer() && saving(records)) {
     const message = `Your last change to ${about} is still landing. Try again once it has.`;
     // A notice behind an open dialog would go unseen: say it in the dialog.
@@ -530,13 +543,17 @@ function saveChoice(records, keepLocally, what, { about = what } = {}) {
   const keys = records.map(([key]) => key);
   keys.forEach((key) => savingKeys.add(key));
   const shown = notice(`Saving ${what}: approve it in ${walletName()}.`);
-  send(homePath(), records)
+  send(chain, records)
     .then((land) => {
       shown.update(`Saving ${what}: waiting for a block…`);
       return land(() => shown.update(`Saving ${what}: sent, not in a block yet. It may still land.`));
     })
     .then((landed) => (landed ? shown.close() : shown.update(`${Whats} was sent but hasn't landed yet. It may still land.`)))
-    .catch((error) => shown.update(`${Whats} is kept in this browser only. ${said(error)}`, { bad: true }))
+    .catch((error) => {
+      if (!undo) return shown.update(`${Whats} is kept in this browser only. ${said(error)}`, { bad: true });
+      undo();
+      shown.update(`${Whats} wasn't saved. ${said(error)}`, { bad: true });
+    })
     .finally(() => keys.forEach((key) => savingKeys.delete(key)));
   return true;
 }
@@ -635,11 +652,9 @@ const expanded = new Set();
 // ------------------------------------------------------------- standing
 
 // Votes count from a community's members: the accounts its seeds' standing
-// reaches, through upvotes, replies and follows (docs/standing.md). Until a
-// community publishes a view, its seeds are the authors of its first posts,
-// which nobody can claim later: a post's time is held to its block.
-// Follows, the follow graph every app shares.
-const FOLLOWS = ["Nexus", "testnet", "follows-ade46a"];
+// reaches, through upvotes and follows (docs/standing.md). Its seeds are the
+// authors of its first posts, which nobody can claim later: a post's time is
+// held to its block.
 
 // The account showing each followed handle now, as every app reads it; a
 // failed read is tried again next time.
@@ -662,7 +677,7 @@ function accountShowing(handle) {
  * votes still count from posts.
  */
 function followsReader() {
-  const follows = stateOf(FOLLOWS);
+  const follows = stateOf(followsPath());
   follows.catch(() => {});
   return async (a) => {
     try {
@@ -691,6 +706,21 @@ function standingOf(state, posts) {
   return standings.get(key);
 }
 
+// Whether the reader is a member of a community, as its last read found:
+// "<reader> <community>" → true or false.
+const memberIn = new Map();
+
+/** The aside's line on whether the reader's votes count in the community shown. */
+function drawYou() {
+  const line = $("#aside-you");
+  const reader = signer()?.address;
+  const key = `${reader} ${route.community}`;
+  if (!line || !memberIn.has(key)) return;
+  line.textContent = memberIn.get(key)
+    ? "count: you're one of its members."
+    : "are kept, and count once members upvote what you post here or follow you.";
+}
+
 /**
  * Votes on a community's items, as `(author, id) => { ups, downs, mine,
  * counted }`: members' votes, and the reader's own (`mine`), which count
@@ -702,6 +732,7 @@ async function votesFor(state, posts) {
     standingOf(state, posts),
     reader ? read.edgesOf(state, reader).then(read.edgeSets) : null,
   ]);
+  if (reader) memberIn.set(`${reader} ${communityOf(state.chain)}`, counted.has(reader));
   return (author, id) => {
     const target = `${author}/${id}`;
     const v = votes.get(target);
@@ -806,7 +837,7 @@ function renderRail() {
     : `<ul class="tree">${link(ALL)}</ul>` + (mineList.length ? `<h3>Your communities</h3><ul class="tree">${mineList.map(link).join("")}</ul>` : "")
       + (others.length ? `<h3>${mineList.length ? "More communities" : "Communities"}</h3><ul class="tree">${others.map(link).join("")}</ul>` : "");
   document.querySelectorAll(".tree a").forEach((a) => {
-    const on = (route.view === "home" && a.dataset.nav === "home") || a.dataset.c === route.community;
+    const on = a.dataset.nav ? a.dataset.nav === route.view : a.dataset.c === route.community;
     a.classList.toggle("on", on);
     if (on) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
@@ -921,28 +952,29 @@ function paintLastFeed() {
   showLastFeed(title);
 }
 
-async function showFeed(list, { title, community }, id) {
-  setTitle(community ? `s/${community}` : "Home");
+/** The posts of `list`'s communities, or only those by `authors` (a Set) when given. */
+async function showFeed(list, { title, community, authors }, id) {
+  setTitle(title);
   if (frame(`feed|${title}`, feedFrame(title, community))) showLastFeed(title);
   if (community && $("#join")) $("#join").textContent = joinedList().includes(community) ? "Leave" : "Join";
   const results = await Promise.all(list.map((c) => loadPosts(c).then((posts) => ({ c, posts }), (error) => ({ c, error }))));
-  const posts = results.flatMap((r) => r.posts ?? []);
+  const posts = results.flatMap((r) => r.posts ?? []).filter((p) => !authors || authors.has(p.author));
   await loadNames(posts.map((p) => p.author)).catch(() => {});
   if (stale(id)) return;
   // A refresh keeps rows where the reader last saw them (a post never moves
   // under the pointer after a vote); a new sort or view ranks afresh.
   const order = shown?.view === "feed" && shown.title === title && shown.sort === sort ? shown.order : null;
-  shown = { view: "feed", title, list, community, posts, failures: results.filter((r) => r.error), order, sort };
+  shown = { view: "feed", title, list, community, authors, posts, failures: results.filter((r) => r.error), order, sort };
   if (shown.failures.length) announce(shown.failures.map((f) => readFailure(f.error, f.c)).join(" "), { once: true });
   redraw();
 }
 
 function drawFeed() {
   if (!$("#feed")) return;
-  const { list, community, posts, failures } = shown;
+  const { list, community, authors, posts, failures } = shown;
   const read = new Set(posts.map((q) => keyOf(q.community, q.author, q.id)));
   for (const p of pendingItems.values()) if (p.kind === "post" && read.has(p.key)) pendingItems.delete(p.key);
-  const pending = [...pendingItems.values()].filter((p) => p.kind === "post" && list.includes(p.community))
+  const pending = [...pendingItems.values()].filter((p) => p.kind === "post" && list.includes(p.community) && (!authors || authors.has(p.author)))
     .map((p) => ({ ...p.value, media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, pending: p.slow ? "slow" : "waiting" }));
   const keyed = (p) => `${p.community}|${p.author}|${p.id}`;
   if (shown.sort !== sort || !shown.order) {
@@ -966,6 +998,10 @@ function drawFeed() {
     }
     if (rows.length) {
       html += rows.map((p) => postRow(p, names, { inCommunity: Boolean(community) && community !== ALL })).join("");
+    } else if (authors) {
+      html += authors.size
+        ? `<div class="panel"><h2>Nothing yet from the people you follow</h2><p>Their posts in every community show here.</p></div>`
+        : `<div class="panel"><h2>You don't follow anyone yet</h2><p>Open someone's name and press Follow: their posts in every community show here, and your follow counts toward their standing.</p></div>`;
     } else if (!list.length) {
       html += `<div class="panel"><h2>Your home feed is empty</h2><p>Join a community to see its posts here.</p><div class="row2">${communities.slice(0, 6).map((c) => `<a class="btn" href="#/s/${encodeURIComponent(c)}">s/${esc(c)}</a>`).join("")}</div></div>`;
     } else {
@@ -1150,7 +1186,7 @@ function drawProfile() {
         <p class="handle-line">${handleLine}</p>
         <p class="id-line">${name || handle ? `<span class="mono muted" title="${esc(address)}">${esc(short(address))}</span> ` : ""}<button class="linkish" type="button" data-copy-id="${esc(address)}">Copy account ID</button></p>
       </div>
-      ${mine ? '<button class="btn" type="button" data-edit-profile>Edit profile</button>' : ""}
+      ${mine ? '<button class="btn" type="button" data-edit-profile>Edit profile</button>' : followButton(address)}
     </section>
     ${profile.bio ? `<p class="bio">${esc(profile.bio)}</p>` : mine && !profile.name ? '<p class="bio muted">Add a name and a few words about yourself, so people know who\'s posting.</p>' : ""}
     ${link ? `<a class="link" href="${esc(link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(link)} ↗</a>` : ""}
@@ -1160,6 +1196,10 @@ function drawProfile() {
     <div id="profile-items">${list || empty}</div>`;
   loadMedia();
 }
+
+const followButton = (address) => following(address)
+  ? `<button class="btn" type="button" data-follow="${esc(address)}" aria-pressed="true">Following</button>`
+  : `<button class="btn primary" type="button" data-follow="${esc(address)}" aria-pressed="false">Follow</button>`;
 
 /** One of an account's comments, on its profile: where, on what, and what it said. */
 function commentRow(c) {
@@ -1187,7 +1227,7 @@ function focusIn(el) {
   const by = (attr) => `[${attr}="${CSS.escape(el.getAttribute(attr))}"]`;
   if (el.dataset.vote) return `${by("data-vote")}${by("data-target")}`;
   if (el.tagName === "SUMMARY") return "summary";
-  for (const attr of ["data-reply", "data-reveal", "data-sort", "data-join", "data-cid", "data-profile-tab", "data-edit-profile", "data-copy-id"]) {
+  for (const attr of ["data-reply", "data-reveal", "data-sort", "data-join", "data-cid", "data-profile-tab", "data-edit-profile", "data-follow", "data-copy-id"]) {
     if (el.hasAttribute(attr)) return `${el.tagName.toLowerCase()}${by(attr)}`;
   }
   if (el.id) return `#${CSS.escape(el.id)}`;
@@ -1205,6 +1245,7 @@ function redraw(again = focusSelector()) {
   if (shown?.view === "feed") drawFeed();
   else if (shown?.view === "post") drawThread();
   else if (shown?.view === "profile") drawProfile();
+  drawYou();
   refocus(again);
 }
 
@@ -1274,7 +1315,12 @@ const joinCard = () => signer() ? "" : `<div class="card"><h4>Take part</h4><p c
 function showAside() {
   const c = route.community;
   if (route.view === "profile") {
-    $("#aside").innerHTML = `<div class="card"><h4>Profiles</h4><p class="muted">A name and a few words, kept on Stoa's chain and changed only by their owner. The @handle comes from Moniker, which every Lattice app shares: it shows only while the handle points at this account.</p></div>${joinCard()}`;
+    $("#aside").innerHTML = `<div class="card"><h4>Profiles</h4><p class="muted">A name and a few words, kept on Stoa's chain and changed only by their owner. The @handle comes from Moniker, which every Lattice app shares: it shows only while the handle points at this account.</p>
+      <dl class="kv"><dt>Follows</dt><dd>are kept on Follows, which every Lattice app shares. A follow vouches for someone: once members of a community follow an account, its votes there count.</dd></dl></div>${joinCard()}`;
+    return;
+  }
+  if (route.view === "following") {
+    $("#aside").innerHTML = `<div class="card"><h4>Following</h4><p class="muted">Posts by the people you follow, from every community. Your follows are kept on Follows, which every Lattice app shares.</p></div>${joinCard()}`;
     return;
   }
   if (!c) {
@@ -1288,8 +1334,9 @@ function showAside() {
   }
   const about = "A community with a chain of its own. Anyone can post here, and anyone can mine it.";
   $("#aside").innerHTML = `<div class="card"><h4>s/${esc(c)}</h4><p class="muted">${about}</p>
-    <dl class="kv"><dt>Votes</dt><dd>count from its members: the accounts its first posters' upvotes and follows reach. What members downvote more than upvote is collapsed.</dd></dl>
+    <dl class="kv"><dt>Votes</dt><dd>count from its members: the accounts its first posters' upvotes and follows reach. What members downvote more than upvote is collapsed.</dd>${signer() ? '<dt>Your votes</dt><dd id="aside-you">…</dd>' : ""}</dl>
     <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>${joinCard()}`;
+  drawYou();
   // Each read fills only the aside it was made for.
   const height = $("#aside-height"), node = $("#aside-node");
   nodes.list(chainOf(c)).then(([first]) => first && (node.textContent = first.found ? `${hostOf(first.url)}, found for this community: its operator declared it, and what it serves isn't checked` : hostOf(first.url)), () => {});
@@ -1330,6 +1377,7 @@ async function render() {
   refocus(again);
   if (route.view === "post") await showPost(route, id);
   else if (route.view === "profile") await showProfile(route, id);
+  else if (route.view === "following") await showFeed(communities, { title: "Following", authors: followed() }, id);
   else if (route.view === "community") await showFeed(route.community === ALL ? communities : [route.community], { title: `s/${route.community}`, community: route.community }, id);
   else await showFeed(joinedList().filter((c) => communities.includes(c)), { title: "Home" }, id);
   readsAhead.clear();
@@ -1361,6 +1409,8 @@ document.addEventListener("click", async (event) => {
     openReply(el.dataset.reply);
   } else if (el.dataset.join) {
     toggleJoin(el.dataset.join);
+  } else if (el.dataset.follow) {
+    toggleFollow(el.dataset.follow);
   } else if (el.hasAttribute("data-retry")) {
     $("#main").dataset.view = "";
     boot();
@@ -1404,6 +1454,30 @@ function toggleJoin(c) {
   if (reader) saveChoice(write.join(reader.address, c, joining), keep, joining ? `that you joined s/${c}` : `that you left s/${c}`, { about: `joining s/${c}` });
   else keep();
   render();
+}
+
+/**
+ * Follow `address`, or stop, on Follows, which every app reads. A follow
+ * vouches for them: members' follows make an account a member, so its votes
+ * count. Following someone who shows a handle follows the handle, as Follows
+ * does; stopping deletes both.
+ */
+function toggleFollow(address) {
+  const reader = signer();
+  if (!reader) return needAccount("Follows are signed by your account, so every app can read them.");
+  if (reader.address === address) return;
+  const on = !following(address);
+  const handle = handles.get(address);
+  const records = on
+    ? write.follow(reader.address, handle ? `@${handle}` : address)
+    : [...write.follow(reader.address, address, false), ...(handle ? write.follow(reader.address, `@${handle}`, false) : [])];
+  const before = followChoices.get(address);
+  const put = (value) => {
+    if (value === undefined) followChoices.delete(address);
+    else followChoices.set(address, value);
+    redraw();
+  };
+  saveChoice(records, () => put(on), on ? "your follow" : "your unfollow", { about: "this follow", chain: followsPath(), undo: () => put(before) });
 }
 
 // A write from a dialog: the dialog stays until the wallet has sent it, then
@@ -1999,6 +2073,7 @@ function openSettings({ advanced = false } = {}) {
   $("#st-node").value = settings.node;
   $("#st-home").value = settings.home;
   $("#st-moniker").value = settings.moniker;
+  $("#st-follows").value = settings.follows;
   $("#st-sponsor").value = settings.sponsor;
   $("#st-extension-row").hidden = !window.lattice?.isLatticeWallet;
   $("#st-extension").checked = settings.extension;
@@ -2054,15 +2129,17 @@ $("#settings-form").addEventListener("submit", async (event) => {
   }
   settings.sponsor = sponsor && sponsorAddress(sponsor);
   store.set("sponsor", settings.sponsor === DEFAULT_SPONSOR ? null : settings.sponsor);
-  const home = $("#st-home").value.trim(), monikerChain = $("#st-moniker").value.trim();
-  const moved = (node && node !== settings.node) || (home && home !== settings.home) || (monikerChain && monikerChain !== settings.moniker);
+  const home = $("#st-home").value.trim(), monikerChain = $("#st-moniker").value.trim(), followsChain = $("#st-follows").value.trim();
+  const moved = (node && node !== settings.node) || (home && home !== settings.home) || (monikerChain && monikerChain !== settings.moniker) || (followsChain && followsChain !== settings.follows);
   if (!moved) return;
   settings.node = node || settings.node;
   settings.home = home || settings.home;
   settings.moniker = monikerChain || settings.moniker;
+  settings.follows = followsChain || settings.follows;
   store.set("node", settings.node);
   store.set("home", settings.home);
   store.set("monikerChain", settings.moniker === MONIKER.chain.join("/") ? null : settings.moniker);
+  store.set("followsChain", settings.follows === DEFAULT_FOLLOWS ? null : settings.follows);
   // Names are read again, from the node and chains now chosen.
   names.clear();
   profiles.clear();
