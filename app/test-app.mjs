@@ -79,21 +79,19 @@ test("labels the reader follows hide, collapse or blur a post; nothing else does
   assert.match(plain, /data-blur="0"/);
 });
 
-test("a labelled comment is a moderation note; a followed label collapses what it labels", () => {
+test("a label's reason is a note; a label that applies collapses what it labels", () => {
   const reply = { author: "bafy-eve", id: "c2", body: "buy my coin", labels: [], ups: 0, downs: 0, replies: [] };
   const note = { author: "bafy-mod", id: "m1", body: "Shilling.", labels: ["spam"], ups: 0, downs: 0, replies: [reply] };
-  const labelled = new Map([["bafy-mod", new Map([["bafy-eve/c2", ["spam"]]])]]);
-  const html = commentNode(note, "bitcoin", judge(labelled, { spam: "collapse" }), ["bafy-mod"], names);
+  const applied = new Map([["bafy-mod", new Map([["bafy-eve/c2", ["spam"]]])]]);
+  const html = commentNode(note, "bitcoin", judge(applied, { spam: "collapse" }), names);
   assert.match(html, /class="c note"/);
-  assert.match(html, /you follow their labels/);
   assert.match(html, /<span class="tag label">spam<\/span> Shilling\./);
   assert.match(html, /Collapsed: labelled spam by/);
   assert.match(html, /<div class="body" hidden>buy my coin<\/div>/);
+  assert.ok(!html.includes("data-follow"), "labellers aren't followed: members' labels apply");
 
-  const unfollowed = commentNode(note, "bitcoin", judge(new Map(), {}), [], names);
-  assert.ok(!unfollowed.includes("Collapsed"), "a reader who follows no one sees everything");
-  assert.ok(!unfollowed.includes("you follow their labels"));
-  assert.match(unfollowed, /data-follow="bafy-mod">Follow their labels/, "a note offers to follow its author's labels");
+  const none = commentNode(note, "bitcoin", judge(new Map(), {}), names);
+  assert.ok(!none.includes("Collapsed"), "no label that applies, nothing collapsed");
 });
 
 test("the reader's vote shows as pressed, and a vote waiting for its block as pending", () => {
@@ -113,7 +111,7 @@ test("a post or comment waiting for its block says so and can't be voted on yet"
   assert.match(html, /Waiting for a block/);
   assert.match(html, /data-vote="1"[^>]*\sdisabled[\s>]/);
   assert.match(postRow(post({ pending: "slow" }), names, { now: NOW }), /It may still land/);
-  const comment = commentNode({ author: "bafy-alice-address", id: "c9", body: "hi", labels: [], ups: 0, downs: 0, replies: [], pending: "waiting" }, "bitcoin", judge(new Map(), {}), [], names, NOW);
+  const comment = commentNode({ author: "bafy-alice-address", id: "c9", body: "hi", labels: [], ups: 0, downs: 0, replies: [], pending: "waiting" }, "bitcoin", judge(new Map(), {}), names, NOW);
   assert.match(comment, /Waiting for a block/);
   assert.ok(!comment.includes("data-reply"), "no replying to a comment not yet in a block");
 });

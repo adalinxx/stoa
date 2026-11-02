@@ -75,11 +75,6 @@ export const join = (a, community, joined = true) => [[`user/${a}/join/${communi
 /** `a`'s custom feed `name`: a list of communities, or undefined to delete it. */
 export const feed = (a, name, communities) => [[`user/${a}/feed/${name}`, json(communities)]];
 
-/** `a` follows, or with `following` false stops following, a moderator's marks in a community. */
-export const followModerator = (a, community, mod, following = true) => [
-  [`user/${a}/follow-mod/${community}/${mod}`, flag(following)],
-];
-
 /** `a` advertises a community `{ about }`, so clients can list communities. */
 export const advertise = (a, community, value) => [[`index/community/${community}/${a}`, json(value)]];
 
@@ -121,43 +116,47 @@ export const comment = (a, id, on, value, { parent, mediaCIDs = [] } = {}) => [
 /** The `n`th media CID of `a`'s post or comment `id`; undefined deletes it. */
 export const media = (a, id, n, cid) => [[`user/${a}/post/${id}/media/${n}`, cid]];
 
-// An account's votes and replies, kept together so that everything it
-// vouched for is one or two records to read: `user/<a>/edges/<n>` holds
-// `{ up, down, reply }`, lists of `<author>/<id>`, at most EDGES_PER_RECORD
-// entries in all. `edges` below is an account's records as
-// `read.edgesOf` returns them, a Map from n to `{ up, down, reply }`.
+// An account's votes, replies and labels, kept together so that everything
+// it vouched for is one or two records to read: `user/<a>/edges/<n>` holds
+// `{ up, down, reply, label }`, lists of `<author>/<id>` (a label's entry is
+// `<author>/<id> <label>`), at most EDGES_PER_RECORD entries in all. `edges`
+// below is an account's records as `read.edgesOf` returns them, a Map from n
+// to `{ up, down, reply, label }`.
 
 /** Most entries one edges record holds; past it, a new record is started. */
 export const EDGES_PER_RECORD = 64;
 
-const KINDS = ["up", "down", "reply"];
+const KINDS = ["up", "down", "reply", "label"];
 
 /**
- * The writes that take `target` out of the lists `from` in `a`'s edges and,
- * if `to` is given, put it in that list: in the record it was in, else the
- * last with room, else a new one. Only records that change are written; an
- * emptied one is deleted.
+ * The writes that make each of `moves` (`{ target, from, to }`, in order) in
+ * `a`'s edges: take `target` out of the lists `from` and, if `to` is given,
+ * put it in that list: in the record it was in, else the last with room,
+ * else a new one. Only records that change are written; an emptied one is
+ * deleted.
  */
-function moveEdge(a, edges, target, from, to) {
+function moveEdges(a, edges, moves) {
   const records = new Map([...edges].map(([n, record]) => [n, Object.fromEntries(KINDS.map((kind) => [kind, [...(record[kind] ?? [])]]))]));
   const changed = new Set();
-  let home;
-  for (const [n, record] of records) {
-    for (const kind of from) {
-      if (!record[kind].includes(target)) continue;
-      record[kind] = record[kind].filter((entry) => entry !== target);
-      changed.add(n);
-      home ??= n;
+  for (const { target, from, to } of moves) {
+    let home;
+    for (const [n, record] of records) {
+      for (const kind of from) {
+        if (!record[kind].includes(target)) continue;
+        record[kind] = record[kind].filter((entry) => entry !== target);
+        changed.add(n);
+        home ??= n;
+      }
     }
-  }
-  if (to !== undefined && ![...records.values()].some((record) => record[to].includes(target))) {
-    const size = (record) => KINDS.reduce((total, kind) => total + record[kind].length, 0);
-    const numbers = [...records.keys()];
-    const last = numbers.length ? Math.max(...numbers) : undefined;
-    const n = home ?? (last !== undefined && size(records.get(last)) < EDGES_PER_RECORD ? last : (last ?? -1) + 1);
-    if (!records.has(n)) records.set(n, { up: [], down: [], reply: [] });
-    records.get(n)[to].push(target);
-    changed.add(n);
+    if (to !== undefined && ![...records.values()].some((record) => record[to].includes(target))) {
+      const size = (record) => KINDS.reduce((total, kind) => total + record[kind].length, 0);
+      const numbers = [...records.keys()];
+      const last = numbers.length ? Math.max(...numbers) : undefined;
+      const n = home ?? (last !== undefined && size(records.get(last)) < EDGES_PER_RECORD ? last : (last ?? -1) + 1);
+      if (!records.has(n)) records.set(n, Object.fromEntries(KINDS.map((kind) => [kind, []])));
+      records.get(n)[to].push(target);
+      changed.add(n);
+    }
   }
   return [...changed].map((n) => {
     const record = records.get(n);
@@ -172,7 +171,7 @@ function moveEdge(a, edges, target, from, to) {
  * returns them).
  */
 export const vote = (a, edges, author, id, direction) =>
-  moveEdge(a, edges, `${author}/${id}`, ["up", "down"], direction > 0 ? "up" : direction < 0 ? "down" : undefined);
+  moveEdges(a, edges, [{ target: `${author}/${id}`, from: ["up", "down"], to: direction > 0 ? "up" : direction < 0 ? "down" : undefined }]);
 
 /**
  * That `a` replied to `author`'s post or comment `id`, or with `replied`
@@ -180,15 +179,32 @@ export const vote = (a, edges, author, id, direction) =>
  * with a label, which vouches for nothing.
  */
 export const replied = (a, edges, author, id, replied = true) =>
-  moveEdge(a, edges, `${author}/${id}`, ["reply"], replied ? "reply" : undefined);
+  moveEdges(a, edges, [{ target: `${author}/${id}`, from: ["reply"], to: replied ? "reply" : undefined }]);
+
+/** Most characters in a label. */
+export const LABEL_LENGTH = 40;
 
 /**
- * A labelled comment: `a` labels the post `on` (`{ author, id }`) or, when
- * `target` is given, that comment in its thread, e.g. `["spam"]`, with an
- * optional reason. Moderation is this and nothing more: a reader whose client
- * follows `a` applies the labels; everyone else sees a comment. A report is
- * the same, from an account no reader follows as a moderator. Delete or edit
- * the comment to take it back.
+ * `a`'s labels on `author`'s post or comment `id`, e.g. `["spam"]`: exactly
+ * these, replacing any `a` gave it before (none takes them all back), as a
+ * change to `a`'s edges records. A label says what an item is; each reader
+ * chooses what it does, and only members' labels apply (client/moderation.mjs).
+ */
+export function labelled(a, edges, author, id, labels) {
+  const item = `${author}/${id}`;
+  const wanted = new Set(labels.map((label) => label.trim()).filter((label) => label && label.length <= LABEL_LENGTH));
+  const given = [...edges.values()].flatMap((record) => record.label ?? []).filter((entry) => entry.startsWith(`${item} `));
+  return moveEdges(a, edges, [
+    ...given.filter((entry) => !wanted.has(entry.slice(item.length + 1))).map((target) => ({ target, from: ["label"] })),
+    ...[...wanted].map((label) => ({ target: `${item} ${label}`, from: [], to: "label" })),
+  ]);
+}
+
+/**
+ * A labelled comment: the reason `a` gives for labelling the post `on`
+ * (`{ author, id }`) or, when `target` is given, that comment in its thread,
+ * shown in the thread as a note. The labels themselves are `labelled`, in
+ * `a`'s edges: this comment applies nothing.
  */
 export const label = (a, id, on, labels, { target, body = "" } = {}) =>
   comment(a, id, on, { body, labels }, target ? { parent: target } : {});

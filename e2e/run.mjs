@@ -15,7 +15,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { mediaVolume, operator, readMedia } from "../client/media.mjs";
-import { judge } from "../client/moderation.mjs";
+import { judge, memberLabels } from "../client/moderation.mjs";
 import { karma, rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { memberVotes, seedsOf } from "../client/standing.mjs";
@@ -189,11 +189,15 @@ try {
   await writes("vote", BITCOIN, mod, vote(mod, textPost, -1));
   await writes("a vote changed", BITCOIN, carol, vote(carol, textPost, 1));
 
-  // Moderation is a labelled comment; a report is one from an account no
-  // reader follows as a moderator.
-  await writes("moderator's labelled comment", BITCOIN, mod,
-    write.label(mod.address, write.newId(), textPost, ["spam"], { body: "Shilling." }));
-  await writes("report", BITCOIN, carol, write.label(carol.address, write.newId(), textPost, ["report: spam"]));
+  // Labels are kept with the labeller; a reason given with one is a note in
+  // the thread.
+  const labelled = (a, target, labels) => async (now) => write.labelled(a.address, await read.edgesOf(now, a.address), target.author, target.id, labels);
+  await writes("a label with its reason", BITCOIN, mod, async (now) => [
+    ...write.label(mod.address, write.newId(), textPost, ["spam"], { body: "Shilling." }),
+    ...(await labelled(mod, textPost, ["spam"])(now)),
+  ]);
+  await writes("a label", BITCOIN, alice, labelled(alice, textPost, ["spam"]));
+  await writes("a report", BITCOIN, carol, labelled(carol, textPost, ["report: spam"]));
 
   // Bob writes into Alice's records: the policy refuses it.
   const { response: forged } = await submit(BITCOIN, bob, [[`user/${alice.address}/post/${linkPost.id}`, '{"title":"forged"}']]);
@@ -211,7 +215,7 @@ try {
   readers.lattice("up");
   const community = await until("the reader's node has the community", async () => {
     const now = await state(BITCOIN, readerNode);
-    return (await read.labelsBy(now, carol.address)).size === 1 && now;
+    return read.edgeSets(await read.edgesOf(now, carol.address)).label.size === 1 && now;
   });
   const home = await state(HOME, readerNode);
   assert.deepEqual(await read.joined(home, alice.address), ["bitcoin"]);
@@ -268,15 +272,22 @@ try {
   assert.equal(karma(bobsItems), 1);
   console.log("reader: the thread as a tree; Bob's karma is 1");
 
-  // Moderation as a reader chooses it.
-  const followingMod = judge(new Map([[mod.address, await read.labelsBy(community, mod.address)]]), { spam: "hide" });
-  const followingNoOne = judge(new Map(), { spam: "hide" });
-  assert.equal(followingMod(textPost).treatment, "hide");
-  assert.equal(followingMod(linkPost).treatment, "show");
-  assert.equal(followingNoOne(textPost).treatment, "show");
-  const reports = (await read.thread(community, textPost.author, textPost.id)).replies.filter((c) => c.labels.length > 0);
-  assert.deepEqual(reports.map((c) => c.labels).sort(), [["report: spam"], ["spam"]]);
-  console.log("reader: the moderator's labelled comment hides the post for a reader who follows them, and only for them");
+  // Labels apply once more members gave them than upvoted the item: the
+  // text post has one member's upvote (Carol's) and two members' spam
+  // labels; Carol's report is one label against that one upvote, so it
+  // applies for Carol alone.
+  const standing = await memberVotes(later, seeds);
+  const judged = (who) => judge(
+    memberLabels(standing.read, (a) => standing.members.has(a), standing.votes, who && { reader: who.address, own: standing.read.get(who.address)?.label }),
+    { spam: "hide", "report: spam": "collapse" },
+  );
+  assert.equal(judged()(textPost).treatment, "hide");
+  assert.deepEqual(judged()(textPost).labels.map((l) => l.label), ["spam", "spam"]);
+  assert.equal(judged()(linkPost).treatment, "show");
+  assert.deepEqual(judged(carol)(textPost).labels.map((l) => l.label).sort(), ["report: spam", "spam", "spam"]);
+  const notes = (await read.thread(later, textPost.author, textPost.id)).replies.filter((c) => c.labels.length > 0);
+  assert.deepEqual(notes.map((c) => c.labels), [["spam"]]);
+  console.log("reader: members' labels hide the text post; a reader's own report applies for them");
 
   // The picture, from peers through the reader's own node.
   const readersNode = readers.operator(reader.rpc);

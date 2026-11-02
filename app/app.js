@@ -4,7 +4,7 @@
 // this device's work for each fee, and a storage sponsor for each file kept,
 // so taking part needs no coins. No server of its own.
 import * as sdk from "./vendor/lattice-sdk.js";
-import { judge, treatments } from "../client/moderation.mjs";
+import { judge, memberLabels, treatments } from "../client/moderation.mjs";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { memberVotes, seedsOf } from "../client/standing.mjs";
@@ -119,7 +119,6 @@ const hostOf = (url) => {
   }
 };
 const nodeHost = () => hostOf(settings.node);
-const ADDRESS = /^b[a-z2-7]{40,}$/;
 
 // ---------------------------------------------------------------- wallet
 
@@ -490,12 +489,7 @@ function notice(message, { bad = false, action } = {}) {
 
 // The reader's choices: on their home chain once written there, in this
 // browser until then (or when writing them fails).
-let mine = { joined: [], follows: new Map() };
-// What the reader undid wins over the chain until the chain catches up.
-const follows = (community) => {
-  const off = store.get(`follows-off:${community}`, []);
-  return [...new Set([...(mine.follows.get(community) ?? []), ...store.get(`follows:${community}`, [])])].filter((a) => !off.includes(a));
-};
+let mine = { joined: [] };
 const joinedList = () => {
   const local = store.get("joined", null);
   const left = store.get("left", []);
@@ -503,13 +497,11 @@ const joinedList = () => {
   return list.filter((c) => !left.includes(c));
 };
 
-/** Read the reader's joins and followed labels from the home chain. */
+/** Read the reader's joins from the home chain. */
 async function loadMine(home) {
   const reader = signer();
-  if (!reader) return (mine = { joined: [], follows: new Map() });
-  const joined = await read.joined(home, reader.address);
-  const followed = await Promise.all(communities.map(async (c) => [c, await read.followedModerators(home, reader.address, c)]));
-  mine = { joined, follows: new Map(followed) };
+  if (!reader) return (mine = { joined: [] });
+  mine = { joined: await read.joined(home, reader.address) };
 }
 
 /**
@@ -646,23 +638,26 @@ const revealed = new Set();
 const expanded = new Set();
 const unblurred = new Set();
 
-async function judgeFor(state, community) {
-  if (showAll) return () => ({ treatment: "show", labels: [] });
-  const sets = new Map(await Promise.all(follows(community).map(async (a) => [a, await read.labelsBy(state, a)])));
-  const verdict = judge(sets, labelActions());
-  return (item) => (revealed.has(`${item.author}/${item.id}`) ? { treatment: "show", labels: verdict(item).labels } : verdict(item));
-}
+// Labels the reader sent that are not in a block yet: they apply for them at once.
+const pendingLabels = new Map(); // "<community> <author>/<id>" → labels
 
-function follow(community, address, following) {
-  const keep = () => {
-    const on = store.get(`follows:${community}`, []), off = store.get(`follows-off:${community}`, []);
-    store.set(`follows:${community}`, following ? [...new Set([...on, address])] : on.filter((x) => x !== address));
-    store.set(`follows-off:${community}`, following ? off.filter((x) => x !== address) : [...new Set([...off, address])]);
-  };
-  const reader = signer();
-  if (reader) return saveChoice(write.followModerator(reader.address, community, address, following), keep, "who you follow");
-  keep();
-  return true;
+/**
+ * How the reader sees a community's items: the labels its members gave,
+ * and the reader's own, through what the reader chose each label does.
+ */
+async function judgeFor(state, community, posts) {
+  if (showAll) return () => ({ treatment: "show", labels: [] });
+  const reader = signer()?.address;
+  const [{ members: counted, votes, read: setsBy }, own] = await Promise.all([
+    standingOf(state, posts),
+    reader ? read.edgesOf(state, reader).then((edges) => read.edgeSets(edges).label) : new Map(),
+  ]);
+  for (const [key, labels] of pendingLabels) {
+    const [c, item] = key.split(" ");
+    if (c === community) own.set(item, new Set([...(own.get(item) ?? []), ...labels]));
+  }
+  const verdict = judge(memberLabels(setsBy, (a) => counted.has(a), votes, { reader, own }), labelActions());
+  return (item) => (revealed.has(`${item.author}/${item.id}`) ? { treatment: "show", labels: verdict(item).labels } : verdict(item));
 }
 
 // ------------------------------------------------------------- standing
@@ -867,8 +862,8 @@ function setTitle(text) {
 /** One community's posts with their votes and comment counts. */
 async function loadPosts(community) {
   const state = await stateOf(chainOf(community), { ahead: true });
-  const [posts, judgeItem] = await Promise.all([read.posts(state), judgeFor(state, community)]);
-  const votesOf = await votesFor(state, posts);
+  const posts = await read.posts(state);
+  const [judgeItem, votesOf] = await Promise.all([judgeFor(state, community, posts), votesFor(state, posts)]);
   return Promise.all(
     posts.map(async (post) => {
       let comments = 0;
@@ -958,7 +953,7 @@ async function showFeed(list, { title, community }, id) {
   if (community && $("#join")) $("#join").textContent = joinedList().includes(community) ? "Leave" : "Join";
   const results = await Promise.all(list.map((c) => loadPosts(c).then((posts) => ({ c, posts }), (error) => ({ c, error }))));
   const posts = results.flatMap((r) => r.posts ?? []);
-  const labellers = list.flatMap((c) => follows(c));
+  const labellers = posts.flatMap((p) => p.verdict.labels.map((l) => l.by));
   await loadNames([...posts.map((p) => p.author), ...labellers]).catch(() => {});
   if (stale(id)) return;
   // A refresh keeps rows where the reader last saw them (a post never moves
@@ -1026,15 +1021,20 @@ async function showPost({ community, author, id }, renderId) {
     [tree, judgeItem] = await Promise.all([read.thread(state, author, id), judgeFor(state, community)]);
     if (tree) {
       const votesOf = await votesFor(state);
+      const labellers = [];
       const withVotes = (node) => {
         Object.assign(node, votesOf(node.author, node.id));
         node.replies.forEach(withVotes);
       };
       withVotes(tree);
       const authors = [];
-      const collect = (node) => { authors.push(node.author); node.replies.forEach(collect); };
+      const collect = (node) => {
+        authors.push(node.author);
+        labellers.push(...judgeItem(node).labels.map((l) => l.by));
+        node.replies.forEach(collect);
+      };
       collect(tree);
-      await loadNames([...authors, ...follows(community)]).catch(() => {});
+      await loadNames([...authors, ...labellers]).catch(() => {});
     }
   } catch (error) {
     if (stale(renderId)) return;
@@ -1112,7 +1112,7 @@ function drawThread() {
       ${tree.error ? `<p class="inline-error">${esc(tree.error)}</p>` : ""}
     </article>
     <section class="comments" aria-label="Comments">
-      ${count ? `<p class="comments-head">${plural(count, "comment")}</p>${tree.replies.map((c) => commentNode(c, community, judgeItem, follows(community), names)).join("")}`
+      ${count ? `<p class="comments-head">${plural(count, "comment")}</p>${tree.replies.map((c) => commentNode(c, community, judgeItem, names)).join("")}`
         : tree.pending ? "" : `<p class="empty">No comments yet. <button class="linkish" type="button" data-reply="${esc(author)}/${esc(id)}">Write the first one</button></p>`}
     </section>`;
   loadMedia();
@@ -1222,7 +1222,7 @@ function focusIn(el) {
   const by = (attr) => `[${attr}="${CSS.escape(el.getAttribute(attr))}"]`;
   if (el.dataset.vote) return `${by("data-vote")}${by("data-target")}`;
   if (el.tagName === "SUMMARY") return "summary";
-  for (const attr of ["data-reply", "data-label", "data-reveal", "data-follow", "data-sort", "data-mods", "data-join", "data-cid", "data-profile-tab", "data-edit-profile", "data-copy-id"]) {
+  for (const attr of ["data-reply", "data-label", "data-reveal", "data-sort", "data-mods", "data-join", "data-cid", "data-profile-tab", "data-edit-profile", "data-copy-id"]) {
     if (el.hasAttribute(attr)) return `${el.tagName.toLowerCase()}${by(attr)}`;
   }
   if (el.id) return `#${CSS.escape(el.id)}`;
@@ -1317,13 +1317,12 @@ function showAside() {
     $("#aside").innerHTML = `<div class="card"><h4>Home</h4><p class="muted">Posts from the communities you joined, ranked on this page from votes and post times.</p><dl class="kv"><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></div>${joinCard()}`;
     return;
   }
-  const n = follows(c).length;
   const detailsOpen = $("#aside details")?.open ? " open" : "";
   const about = c === ALL
     ? "Every community's posts, with posts of its own on the Stoa chain. Anyone can post here, and anyone can mine it."
     : "A community with a chain of its own. Anyone can post here, and anyone can mine it.";
   $("#aside").innerHTML = `<div class="card"><h4>s/${esc(c)}</h4><p class="muted">${about}</p>
-    <dl class="kv"><dt>Labels</dt><dd>${n ? `you follow ${plural(n, "account")}` : "you follow no one"} · <button class="linkish" type="button" data-mods="${esc(c)}">Manage</button></dd></dl>
+    <dl class="kv"><dt>Labels</dt><dd>from members · <button class="linkish" type="button" data-mods="${esc(c)}">What they do</button></dd></dl>
     <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>${joinCard()}`;
   // Each read fills only the aside it was made for.
   const height = $("#aside-height"), node = $("#aside-node");
@@ -1398,9 +1397,6 @@ document.addEventListener("click", async (event) => {
     castVote(el);
   } else if (el.dataset.reply || el.dataset.label) {
     openReply(el.dataset.reply ?? el.dataset.label, Boolean(el.dataset.label));
-  } else if (el.dataset.follow) {
-    follow(route.community, el.dataset.follow, true);
-    refresh();
   } else if (el.dataset.mods) {
     openMods(el.dataset.mods);
   } else if (el.dataset.join) {
@@ -1458,7 +1454,7 @@ function toggleJoin(c) {
  * makes the write once the reader's address is known. A failure is said in
  * the dialog, or in a notice if it was closed anyway.
  */
-async function sendFromDialog({ status, button, build, sent = () => {}, forget = () => {}, done, landed: afterLanding = () => {} }) {
+async function sendFromDialog({ status, button, build, sent = () => {}, forget = () => {}, done, landed: afterLanding = () => {}, madeFor = () => {} }) {
   const dialog = button.closest("dialog");
   // This opening of the dialog: a later one (after Cancel) is not touched.
   const opening = dialog.dataset.opening;
@@ -1486,14 +1482,14 @@ async function sendFromDialog({ status, button, build, sent = () => {}, forget =
   };
   busy(true);
   status.classList.remove("bad");
-  let land, pending;
+  let land, pending, made;
   try {
     // An account first, in this click, if there is none here yet.
     const reader = await me().catch((error) => {
       if (error instanceof JustConnected) throw error;
       throw new Said(walletMessage(error));
     });
-    const made = build(reader.address);
+    made = build(reader.address);
     pending = made.pending;
     land = await send(made.chain, made.records, (s) => same() && (status.textContent = s), () => {
       if (!same()) return false;
@@ -1522,14 +1518,16 @@ async function sendFromDialog({ status, button, build, sent = () => {}, forget =
   const owner = connected;
   const ours = same();
   release();
-  if (owner !== pending.author) return;
+  if (pending && owner !== pending.author) return;
   // Sent: its draft is spent whether or not the dialog is still showing.
   sent();
+  madeFor(made);
   if (ours) status.textContent = "";
-  pendingItems.set(pending.key, pending);
+  if (pending) pendingItems.set(pending.key, pending);
   if (ours) done();
   else redraw();
   const landed = await land(() => {
+    if (!pending) return;
     pending.slow = true;
     redraw();
   });
@@ -1537,7 +1535,7 @@ async function sendFromDialog({ status, button, build, sent = () => {}, forget =
   // Kept until a read contains it (the draws drop it then), so it never
   // vanishes between landing and the re-read.
   if (landed) {
-    pending.landed = true;
+    if (pending) pending.landed = true;
     afterLanding(owner);
   }
   refresh();
@@ -1586,30 +1584,43 @@ $("#reply-form").addEventListener("submit", async (event) => {
   const { author: postAuthor, id: postId } = on;
   const target = replyTarget.author === postAuthor && replyTarget.id === postId ? undefined : { author: replyTarget.author, id: replyTarget.id };
   const typed = $("#rp-labels").value.split(",").map((l) => l.trim().toLowerCase()).filter(Boolean);
-  const labels = replyTarget.labelling ? [...new Set([...[...document.querySelectorAll("#rp-chips input:checked")].map((i) => i.value), ...typed])] : [];
+  const labels = replyTarget.labelling ? [...new Set([...[...document.querySelectorAll("#rp-chips input:checked")].map((i) => i.value), ...typed])].filter((l) => l.length <= write.LABEL_LENGTH) : [];
   const body = $("#rp-b").value.trim();
   if (replyTarget.labelling && labels.length === 0) return ($("#rp-status").textContent = "Choose at least one label.");
   if (!replyTarget.labelling && !body) return ($("#rp-status").textContent = "Write something first.");
   const labelling = replyTarget.labelling;
   const value = labelling ? { body, labels } : { body };
+  const item = target ?? on;
+  const labelKey = `${community} ${item.author}/${item.id}`;
   await sendFromDialog({
     status, button: $("#rp-send"),
     build: (author) => {
       const newId = draftId(draftKey);
+      // A label is kept among the author's edges, beside what they gave the
+      // item before; a reason given with it is a note in the thread.
+      const labelWrites = async (state) => {
+        const edges = await read.edgesOf(state, author);
+        const before = read.edgeSets(edges).label.get(`${item.author}/${item.id}`) ?? [];
+        return write.labelled(author, edges, item.author, item.id, [...new Set([...before, ...labels])]);
+      };
+      const note = labelling && body !== "";
       return {
         chain: chainOf(community),
         // A reply is listed among the author's edges (it vouches for what it
         // answers); a label vouches for nothing.
         records: labelling
-          ? write.label(author, newId, on, labels, { target, body })
+          ? async (state) => [...(note ? write.label(author, newId, on, labels, { target, body }) : []), ...(await labelWrites(state))]
           : async (state) => [
               ...write.comment(author, newId, on, { body }, target ? { parent: target } : {}),
-              ...write.replied(author, await read.edgesOf(state, author), (target ?? on).author, (target ?? on).id),
+              ...write.replied(author, await read.edgesOf(state, author), item.author, item.id),
             ],
-        fresh: `user/${author}/post/${newId}`,
-        pending: { key: keyOf(community, author, newId), kind: "comment", community, author, id: newId, value, on, parent: target },
+        fresh: labelling && !note ? undefined : `user/${author}/post/${newId}`,
+        pending: labelling && !note ? undefined : { key: keyOf(community, author, newId), kind: "comment", community, author, id: newId, value, on, parent: target },
+        labels: labelling ? labels : undefined,
       };
     },
+    madeFor: (made) => made.labels && pendingLabels.set(labelKey, made.labels),
+    landed: () => pendingLabels.delete(labelKey),
     sent: () => {
       drafts.delete(draftKey);
       draftIds.delete(draftKey);
@@ -1717,12 +1728,6 @@ function openMods(community) {
   const c = community ?? route.community ?? communities[0];
   if (!c) return;
   $("#mods-c").textContent = `s/${c}`;
-  // Opening clears the status; a redraw of the open dialog keeps what it says.
-  if (!$("#mods").open) $("#mods-status").textContent = "";
-  const list = follows(c);
-  $("#mods-list").innerHTML = list.length
-    ? list.map((a) => `<tr><td>${names.has(a) ? `<strong>${esc(names.get(a))}</strong> ` : ""}<span class="mono muted" title="${esc(a)}">${esc(short(a))}</span></td><td><button class="btn small" type="button" data-unfollow="${esc(a)}">Unfollow</button></td></tr>`).join("")
-    : '<tr><td class="muted" colspan="2" style="text-align:left;white-space:normal">You follow no one here, so you see everything.</td></tr>';
   const actions = labelActions();
   $("#label-actions").innerHTML = Object.entries(actions).map(([label, chosen]) => `<tr><td>${esc(label)}</td><td><div class="seg" role="group" aria-label="What ${esc(label)} does" data-label-action="${esc(label)}">${treatments.map((t) => `<button type="button" aria-pressed="${t === chosen}">${t}</button>`).join("")}</div></td></tr>`).join("");
   $("#mods").dataset.community = c;
@@ -1731,31 +1736,10 @@ function openMods(community) {
 }
 $("#mods").addEventListener("click", (event) => {
   const c = $("#mods").dataset.community;
-  const unfollow = event.target.closest("[data-unfollow]");
-  if (unfollow) {
-    follow(c, unfollow.dataset.unfollow, false);
-    openMods(c);
-  }
   const seg = event.target.closest("[data-label-action]");
   if (seg && event.target.tagName === "BUTTON") {
     store.set("labelActions", { ...labelActions(), [seg.dataset.labelAction]: event.target.textContent });
     openMods(c);
-  }
-});
-$("#mods-add-btn").onclick = () => {
-  const c = $("#mods").dataset.community;
-  const address = $("#mods-add").value.trim();
-  if (!address) return $("#mods-add").focus();
-  if (!ADDRESS.test(address)) return ($("#mods-status").textContent = "That isn't an account address. It starts with “b” and is about 60 characters.");
-  $("#mods-status").textContent = "";
-  // Kept in the box when the change has to wait, so it can be sent again.
-  if (follow(c, address, true)) $("#mods-add").value = "";
-  openMods(c);
-};
-$("#mods-add").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    $("#mods-add-btn").click();
   }
 });
 const addLabel = () => {

@@ -12,9 +12,10 @@ decides what to show.
   can post on it, and its page shows its own posts with every community's.
   The name `all` is therefore reserved: a child chain named `all` is not shown.
 - Every record belongs to its author. Only the author can edit or delete it.
-- Moderation is comments: a moderator labels a post by replying to it with
-  labels. Nothing is deleted. Each reader chooses whose labels to follow and
-  what each label does.
+- Moderation is labels from the community's members: anyone can label a
+  post or comment, and a label applies once more members gave it than
+  upvoted the item. Nothing is deleted. Each reader chooses what each label
+  does.
 - Ranking, feeds, karma and filters are computed by the client.
 
 ## Web app
@@ -57,7 +58,6 @@ Home chain `Nexus/stoa`:
 | `user/<a>/profile` | `{ name?, bio?, link? }`: how `<a>` appears on Stoa (name ≤ 50, bio ≤ 500, an http(s) link ≤ 300) |
 | `user/<a>/join/<community>` | `"1"`: `<a>` reads this community |
 | `user/<a>/feed/<name>` | `["bitcoin", "rust"]`: a custom feed |
-| `user/<a>/follow-mod/<community>/<mod>` | `"1"`: `<a>` follows an account's labels in a community |
 | `index/community/<community>/<a>` | `{ about }`: `<a>` lists a community so clients can find it |
 
 A community chain (and the home chain, as `s/all`):
@@ -68,7 +68,7 @@ A community chain (and the home chain, as `s/all`):
 | `user/<a>/post/<id>/media/<n>` | the CID of its `<n>`th image or video |
 | `index/post/<id>/<a>` | `"1"`: lists the post in the community |
 | `index/comment/<author>/<id>/<commentId>/<a>` | `"1"`: lists a comment under the post it belongs to |
-| `user/<a>/edges/<n>` | `{ up?, down?, reply? }`: lists of `<author>/<id>`, `<a>`'s votes and what it replied to, at most 64 entries a record; a vote is in one list at most, and taking it back removes it |
+| `user/<a>/edges/<n>` | `{ up?, down?, reply?, label? }`: lists of `<author>/<id>`, `<a>`'s votes, what it replied to and its labels (`<author>/<id> <label>`, a label ≤ 40 characters), at most 64 entries a record; a vote is in one list at most, and taking it back removes it |
 | `user/<a>/flair` | text |
 
 A comment is a post without a title that names its post (`on`) and, when it
@@ -108,18 +108,20 @@ summed score of an account's items. A client may use others.
 
 ## Moderation
 
-Moderation is a comment with labels: `{ body, labels: ["spam"], on, parent? }`.
-It labels the comment it answers, or the post when it answers the post, and a
-reason can go in its body. Nothing is removed: everyone else just sees a
-comment, and the author of the label takes it back by deleting or editing it.
-A report is the same thing from an account nobody follows as a moderator.
+A label says what an item is (`spam`, `nsfw`, …) and is kept with the
+labeller, in their edges records beside their votes (`write.labelled`), so
+the reads that find a community's members find their labels too. A reason
+given with a label is a comment `{ body, labels, on, parent? }` in the
+thread; it applies nothing itself. Nothing is removed from the chain.
 
-`read.labelsBy(state, account)` gathers one account's labels in a community
-(one prefix scan of its items). `client/moderation.mjs` judges each item for
-one reader: from the labels of the accounts they follow and the treatment
-they chose per label (show, badge, blur, collapse, hide), it returns the
-strongest treatment those labels ask for. A reader who follows no one sees
-everything.
+A label applies once more members gave it than upvoted the item
+(`memberLabels` in `client/moderation.mjs`): one member can label what no
+member stands behind, and an item members like takes as many to label it.
+There are no moderators: a community's members are its moderators, and a
+non-member's label (a report) applies for no one but its author, whose own
+labels always apply for them. `judge` then gives each item, for one reader,
+the strongest treatment its labels ask for (show, badge, blur, collapse,
+hide), as the reader chose per label.
 
 ## Media
 
@@ -192,7 +194,7 @@ chain and a community, people post, comment, vote, label and report through
 the public submit route, and a forged write is refused. The reader's node
 joins from the author's node alone and reads the community back: posts ranked
 by post time and votes, a thread as a tree, a picture fetched from peers,
-and a moderator's labelled comment hiding a post for the reader who follows them.
+and members' labels hiding a post, a report applying for its author alone.
 
 ```sh
 LATTICE=<lattice-node>/.build/debug/lattice \

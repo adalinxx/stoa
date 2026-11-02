@@ -37,15 +37,15 @@ community has engaged with, as each reader's own client computes it.
   post and reply, since a view decides only what counts, never what exists.
   Seeds cannot delete anything; the only power a view has is being chosen.
 - Moderators are gone as a role: `follow-mod` records are dropped. A view's
-  seeds are regular accounts; their labels count because they have
-  standing, like anyone's.
+  seeds are regular accounts; their labels count because they are members,
+  like anyone's.
 
 ## Records
 
 | Key | Value | Change |
 |---|---|---|
-| `user/<a>/edges/<n>` | `{ up: ["<author>/<id>"], down: [...], reply: [...] }`: the account's votes and replies, a bucket of at most 64 entries; taking a vote back removes it | replaces `index/vote/<author>/<id>/<a>` |
-| `user/<a>/post/<id>` | a post or reply, as now | a reply with `labels` is a label, not a vouch |
+| `user/<a>/edges/<n>` | `{ up: ["<author>/<id>"], down: [...], reply: [...], label: ["<author>/<id> <label>"] }`: the account's votes, replies and labels, a bucket of at most 64 entries; taking a vote back removes it | replaces `index/vote/<author>/<id>/<a>` and labelled comments as labels |
+| `user/<a>/post/<id>` | a post or reply, as now | a reply with `labels` is a label's reason, not a vouch |
 | `user/<a>/view/<name>` | a view | new |
 
 `follow-mod` and `index/vote/` go. These changes are in the policy, which a
@@ -108,8 +108,14 @@ upvote or reply from a member lifts them like any other post; their upvotes
 count once members engage with what they post. Speaking is free; influence
 is earned in the community.
 
-Labels: an item's labels apply when members gave them, each reader choosing
-what each label does, as now.
+Labels: a label is kept in the labeller's edges records (`label`: entries
+`<author>/<id> <label>`), so reading the members reads their labels at no
+extra cost. A label applies once more members gave it than upvoted the item:
+one member can label what no member stands behind, and an item the members
+like takes as many to label it, so no single member can bury what the
+community upvotes. A non-member's label (a report) applies only for its
+author, whose own labels always apply for them; each reader chooses what
+each label does.
 
 ## Simulation
 

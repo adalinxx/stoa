@@ -139,11 +139,12 @@ export function seedsOf(posts, count = 5) {
 /**
  * A community's members and their votes, from `seeds`, reading accounts'
  * edges from `state` and whom they follow with `followsOf`: `{ members,
- * votes, standing }`, `votes` as `read.tally` makes it.
+ * votes, standing, read }`, `votes` as `read.tally` makes it and `read` each
+ * account's edges as read (`read.edgeSets`), for its labels.
  */
 export async function memberVotes(state, seeds, { followsOf = async () => [], epsilon = 1e-4 } = {}) {
   const graph = graphOf({ edgesOf: async (a) => edgeSets(await edgesOf(state, a)), followsOf });
   const { standing: shares } = await standing(seeds, graph.edges, { epsilon });
   const counted = members(shares);
-  return { members: counted, votes: tally(graph.read, (a) => counted.has(a)), standing: shares };
+  return { members: counted, votes: tally(graph.read, (a) => counted.has(a)), standing: shares, read: graph.read };
 }

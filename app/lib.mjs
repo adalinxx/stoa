@@ -136,29 +136,20 @@ export function postRow(p, names, { now = Date.now(), inCommunity = false } = {}
 export const mediaSlot = (cid, community, blur) =>
   `<div class="media missing" data-media="${esc(cid)}" data-chain="${esc(community)}" data-blur="${blur ? 1 : 0}">loading…</div>`;
 
-/**
- * A comment and its replies; a labelled comment is a moderation note, with a
- * way to follow (or stop following) its author's labels.
- */
-export function commentNode(c, community, judgeItem, followed, names, now = Date.now()) {
+/** A comment and its replies; a labelled comment is the note a label's reason makes. */
+export function commentNode(c, community, judgeItem, names, now = Date.now()) {
   const verdict = judgeItem(c);
   const note = c.labels.length > 0;
   const link = safeLink(c.link);
-  const following = followed.includes(c.author);
   const folded = (verdict.treatment === "hide" || verdict.treatment === "collapse") && !c.expanded;
   const body = folded
     ? `<p class="muted" style="margin:2px 0">Collapsed: labelled ${labelText(verdict.labels, names)} · <button class="linkish" data-expand="${esc(c.author)}/${esc(c.id)}">Show</button></p><div class="body" hidden>${esc(c.body)}</div>`
     : `<div class="body">${note ? c.labels.map((l) => `<span class="tag label">${esc(l)}</span> `).join("") : ""}${esc(c.body)}</div>`;
-  const follow = note
-    ? following
-      ? `<span class="tag">you follow their labels</span>`
-      : `<button class="linkish" type="button" data-follow="${esc(c.author)}">Follow their labels</button>`
-    : "";
   return `<div class="c${note ? " note" : ""}${c.pending ? " pending" : ""}">
-    <div class="by"><strong>${byline(c.author, names)}</strong>${c.pending ? pendingNote(c.pending) : when(c.time, now)}${follow}</div>
+    <div class="by"><strong>${byline(c.author, names)}</strong>${c.pending ? pendingNote(c.pending) : when(c.time, now)}</div>
     ${body}${link ? linkTag(link, link) : ""}
     <div class="acts">${c.pending ? "" : `${voteBox({ ...c, community }, { row: true })}<button type="button" data-reply="${esc(c.author)}/${esc(c.id)}">Reply</button><button type="button" data-label="${esc(c.author)}/${esc(c.id)}">Label…</button>`}</div>
     ${c.error ? `<p class="inline-error">${esc(c.error)}</p>` : ""}
-    ${c.replies.map((r) => commentNode(r, community, judgeItem, followed, names, now)).join("")}
+    ${c.replies.map((r) => commentNode(r, community, judgeItem, names, now)).join("")}
   </div>`;
 }

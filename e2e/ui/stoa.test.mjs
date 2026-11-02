@@ -297,34 +297,29 @@ test("s/all is the Stoa chain's own community, and its page shows every communit
   await expect(page.locator(".post", { hasText: "Hello from the top" })).toHaveCount(0);
 });
 
-test("labels hide a post only for a reader who follows the labeller, at once, and Show reveals it", async ({ page }) => {
+test("a member's label hides a post for every reader, at once, and Show reveals it; a stranger's applies for no one else", async ({ page }) => {
   await fund(labeller.address);
-  const id = write.newId();
+  const id = write.newId(), other = write.newId();
   await writeAs(poster, chainPath, write.post(poster.address, id, { title: "Labelled post" }));
-  await writeAs(labeller, chainPath, write.label(labeller.address, write.newId(), { author: poster.address, id }, ["spam"], { body: "Testing labels." }));
+  await writeAs(poster, chainPath, write.post(poster.address, other, { title: "Labelled by a stranger" }));
+  // The poster wrote among the community's first posts: a member, whose label
+  // applies to what no member upvoted.
+  await writeAs(poster, chainPath, async (state) => write.labelled(poster.address, await read.edgesOf(state, poster.address), poster.address, id, ["spam"]));
+  // A fresh account nobody has engaged with: its label applies for nobody else.
+  await writeAs(labeller, chainPath, async (state) => write.labelled(labeller.address, await read.edgesOf(state, labeller.address), poster.address, other, ["spam"]));
   await openApp(page, feed);
-  await expect(page.locator(".post", { hasText: "Labelled post" })).toBeVisible();
-  await page.getByRole("button", { name: "Moderation" }).first().click();
-  await page.locator("#mods-add").fill(labeller.address);
-  await page.locator("#mods-add-btn").click();
-  await page.locator("#mods button[value=ok]").click();
   const hidden = page.locator(".hidden-row", { hasText: "labelled spam" });
   await expect(hidden).toBeVisible({ timeout: 30_000 });
   await expect(page.locator(".post", { hasText: "Labelled post" })).toHaveCount(0);
+  await expect(page.locator(".post", { hasText: "Labelled by a stranger" })).toBeVisible();
   await hidden.getByRole("button", { name: "Show" }).click();
   await expect(page.locator(".post", { hasText: "Labelled post" })).toBeVisible();
 
-  // A reader who follows no one sees it.
-  const reader = await browser.newContext();
-  const other = await reader.newPage();
-  await openApp(other, feed);
-  await expect(other.locator(".post", { hasText: "Labelled post" })).toBeVisible();
-  await reader.close();
-
-  // Unfollowing brings it back, also at once.
+  // The reader decides what a label does: spam shown, at once.
   await page.goto(stack.app + feed);
+  await expect(hidden).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: "Moderation" }).first().click();
-  await page.locator(`[data-unfollow="${labeller.address}"]`).click();
+  await page.locator('[data-label-action="spam"] button', { hasText: /^show$/ }).click();
   await page.locator("#mods button[value=ok]").click();
   await expect(page.locator(".post", { hasText: "Labelled post" })).toBeVisible({ timeout: 30_000 });
 });
@@ -357,10 +352,12 @@ test("Top orders by members' score and New by post time; a stranger's vote count
 });
 
 test("an earlier render that finishes last does not write over a newer one", async ({ page }) => {
-  // Force the race: hold the community reads the first render makes after it
-  // has read the chain's tip (so it has already judged with no follows), let
-  // the follow's render finish, then release the first. Without the guard
-  // the first render writes the post back, unhidden.
+  // Force the race: the reader starts with spam shown; hold the community
+  // reads the first render makes after it has read the chain's tip (so it
+  // has already judged spam as shown), let the render after choosing to hide
+  // spam finish, then release the first. Without the guard the first render
+  // writes the labelled post back, unhidden.
+  await page.addInitScript(() => localStorage.setItem("stoa:labelActions", JSON.stringify({ spam: "show" })));
   let communityReads = 0;
   let followed = false;
   let release;
@@ -374,8 +371,7 @@ test("an earlier render that finishes last does not write over a newer one", asy
   await expect.poll(() => communityReads, { timeout: 60_000 }).toBeGreaterThan(2);
   followed = true;
   await page.getByRole("button", { name: "Moderation" }).first().click();
-  await page.locator("#mods-add").fill(labeller.address);
-  await page.locator("#mods-add-btn").click();
+  await page.locator('[data-label-action="spam"] button', { hasText: /^hide$/ }).click();
   await page.locator("#mods button[value=ok]").click();
   const hidden = page.locator(".hidden-row", { hasText: "labelled spam" });
   await expect(hidden).toBeVisible({ timeout: 60_000 });
