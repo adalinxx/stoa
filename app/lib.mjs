@@ -82,7 +82,13 @@ export function ordered(node) {
   return { ...node, replies };
 }
 
-const labelText = (labels, names) => labels.map((l) => `${esc(l.label)} by ${esc(nameOf(l.by, names))}`).join(", ");
+/**
+ * Collapsed for the reader: more members downvoted it than upvoted it, and
+ * the reader hasn't voted on it themselves (they know what it is) or chosen
+ * to see it (`shown`).
+ */
+export const collapsed = (item, shown = false) => item.downs > item.ups && !item.mine && !shown;
+const COLLAPSED = "Collapsed: more members downvoted it than upvoted it";
 const linkTag = (link, text) =>
   `<a class="link" href="${esc(link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(text)} ↗</a>`;
 // Each part encoded: an id (free text, written by anyone) cannot add a "|".
@@ -111,13 +117,13 @@ export const pendingNote = (pending) =>
     : `<span class="pending-note">Waiting for a block…</span>`;
 
 /**
- * One post in a feed, as the reader's labels and treatments have it.
- * `inCommunity`: the feed is that community's, so its name is not repeated.
+ * One post in a feed: one line with Show, if collapsed (`p.revealed`: the
+ * reader chose to see it). `inCommunity`: the feed is that community's, so
+ * its name is not repeated.
  */
 export function postRow(p, names, { now = Date.now(), inCommunity = false } = {}) {
-  const { treatment, labels } = p.verdict;
-  if (treatment === "hide") {
-    return `<div class="hidden-row">Hidden: labelled ${labelText(labels, names)} · <button class="linkish" data-reveal="${esc(p.author)}/${esc(p.id)}">Show</button></div>`;
+  if (collapsed(p, p.revealed)) {
+    return `<div class="hidden-row">${COLLAPSED} · <button class="linkish" data-reveal="${esc(p.author)}/${esc(p.id)}">Show</button></div>`;
   }
   const link = safeLink(p.link);
   const href = postHref(p.community, p.author, p.id);
@@ -126,39 +132,27 @@ export function postRow(p, names, { now = Date.now(), inCommunity = false } = {}
     <div>
       <h2><a href="${href}">${esc(p.title)}</a></h2>
       ${link ? linkTag(link, new URL(link).host) : ""}
-      <div class="meta">${inCommunity ? "" : `<a href="#/s/${encodeURIComponent(p.community)}">s/${esc(p.community)}</a>`}${byline(p.author, names)}${p.pending ? pendingNote(p.pending) : when(p.time, now)}<a href="${href}">${plural(p.comments, "comment")}</a>${p.tags.map((t) => `<span class="tag">${esc(t.toUpperCase())}</span>`).join("")}${labels.length ? `<span class="tag label">${labelText(labels, names)}</span>` : ""}</div>
-      ${treatment === "collapse" ? "" : p.media.map((cid) => mediaSlot(cid, p.community, treatment === "blur" || p.tags.includes("nsfw"))).join("")}
+      <div class="meta">${inCommunity ? "" : `<a href="#/s/${encodeURIComponent(p.community)}">s/${esc(p.community)}</a>`}${byline(p.author, names)}${p.pending ? pendingNote(p.pending) : when(p.time, now)}<a href="${href}">${plural(p.comments, "comment")}</a></div>
+      ${p.media.map((cid) => mediaSlot(cid, p.community)).join("")}
       ${p.error ? `<p class="inline-error">${esc(p.error)}</p>` : ""}
     </div></article>`;
 }
 
 /** A place for a media file, filled once some node serves it. */
-export const mediaSlot = (cid, community, blur) =>
-  `<div class="media missing" data-media="${esc(cid)}" data-chain="${esc(community)}" data-blur="${blur ? 1 : 0}">loading…</div>`;
+export const mediaSlot = (cid, community) =>
+  `<div class="media missing" data-media="${esc(cid)}" data-chain="${esc(community)}">loading…</div>`;
 
-/**
- * A comment and its replies; a labelled comment is a moderation note, with a
- * way to follow (or stop following) its author's labels.
- */
-export function commentNode(c, community, judgeItem, followed, names, now = Date.now()) {
-  const verdict = judgeItem(c);
-  const note = c.labels.length > 0;
+/** A comment and its replies; one members downvoted is folded shut, with Show (`c.expanded`: shown). */
+export function commentNode(c, community, names, now = Date.now()) {
   const link = safeLink(c.link);
-  const following = followed.includes(c.author);
-  const folded = (verdict.treatment === "hide" || verdict.treatment === "collapse") && !c.expanded;
-  const body = folded
-    ? `<p class="muted" style="margin:2px 0">Collapsed: labelled ${labelText(verdict.labels, names)} · <button class="linkish" data-expand="${esc(c.author)}/${esc(c.id)}">Show</button></p><div class="body" hidden>${esc(c.body)}</div>`
-    : `<div class="body">${note ? c.labels.map((l) => `<span class="tag label">${esc(l)}</span> `).join("") : ""}${esc(c.body)}</div>`;
-  const follow = note
-    ? following
-      ? `<span class="tag">you follow their labels</span>`
-      : `<button class="linkish" type="button" data-follow="${esc(c.author)}">Follow their labels</button>`
-    : "";
-  return `<div class="c${note ? " note" : ""}${c.pending ? " pending" : ""}">
-    <div class="by"><strong>${byline(c.author, names)}</strong>${c.pending ? pendingNote(c.pending) : when(c.time, now)}${follow}</div>
-    ${body}${link ? linkTag(link, link) : ""}
-    <div class="acts">${c.pending ? "" : `${voteBox({ ...c, community }, { row: true })}<button type="button" data-reply="${esc(c.author)}/${esc(c.id)}">Reply</button><button type="button" data-label="${esc(c.author)}/${esc(c.id)}">Label…</button>`}</div>
+  const body = collapsed(c, c.expanded)
+    ? `<p class="muted" style="margin:2px 0">${COLLAPSED} · <button class="linkish" data-expand="${esc(c.author)}/${esc(c.id)}">Show</button></p><div class="body" hidden>${esc(c.body)}</div>`
+    : `<div class="body">${esc(c.body)}</div>`;
+  return `<div class="c${c.pending ? " pending" : ""}">
+    <div class="by"><strong>${byline(c.author, names)}</strong>${c.pending ? pendingNote(c.pending) : when(c.time, now)}</div>
+    ${body}${link && !collapsed(c, c.expanded) ? linkTag(link, link) : ""}
+    <div class="acts">${c.pending ? "" : `${voteBox({ ...c, community }, { row: true })}<button type="button" data-reply="${esc(c.author)}/${esc(c.id)}">Reply</button>`}</div>
     ${c.error ? `<p class="inline-error">${esc(c.error)}</p>` : ""}
-    ${c.replies.map((r) => commentNode(r, community, judgeItem, followed, names, now)).join("")}
+    ${c.replies.map((r) => commentNode(r, community, names, now)).join("")}
   </div>`;
 }

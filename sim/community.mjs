@@ -1,6 +1,6 @@
 // The simulated community the standing simulations share: honest accounts
 // joining over time, the first few the view's seeds, posts with a quality in
-// [0, 1] that honest accounts upvote and reply to with odds rising with it,
+// [0, 1] that honest accounts upvote with odds rising with it,
 // newcomers with one good post and a few upvotes, lurkers who only upvote, and a farm of fresh
 // accounts upvoting its spam and each other, with a few careless honest
 // upvotes into it (the farm's only edges in).
@@ -8,7 +8,6 @@ import { accountEdges } from "../client/standing.mjs";
 
 export const SEEDS = 5;
 const UPVOTES_EACH = 40;
-const REPLIES_EACH = 8;
 const SPAM_POSTS = 5;
 export const TOP = 25;
 
@@ -36,8 +35,8 @@ export function community({ honest = 500, sybils = 0, careless = 0, seed = 1, ne
   const POSTS = honest * 4;
   const next = random(seed);
   const posts = new Map(); // id → { author, quality, spam, newcomer }
-  const acts = new Map(); // account → { upvotes, replies }
-  const actsOf = (account) => acts.get(account) ?? acts.set(account, { upvotes: [], replies: [] }).get(account);
+  const acts = new Map(); // account → { upvotes }
+  const actsOf = (account) => acts.get(account) ?? acts.set(account, { upvotes: [] }).get(account);
   const established = Array.from({ length: HONEST - NEWCOMERS }, (_, i) => `h${i}`);
 
   for (let i = 0; i < POSTS; i++) {
@@ -46,7 +45,6 @@ export function community({ honest = 500, sybils = 0, careless = 0, seed = 1, ne
   const honestPosts = [...posts.keys()];
   for (const account of established) {
     for (let v = 0; v < UPVOTES_EACH; v++) actsOf(account).upvotes.push(pick(next, honestPosts, (p) => posts.get(p).quality ** 3));
-    for (let r = 0; r < REPLIES_EACH; r++) actsOf(account).replies.push(pick(next, honestPosts, (p) => posts.get(p).quality ** 3));
   }
   // Newcomers: one good post each, upvoted by three established accounts.
   for (let i = 0; i < NEWCOMERS; i++) {

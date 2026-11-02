@@ -72,23 +72,14 @@ const flag = (on) => (on ? "1" : undefined);
 /** `a` joins a community, or leaves it with `joined` false. */
 export const join = (a, community, joined = true) => [[`user/${a}/join/${community}`, flag(joined)]];
 
-/** `a`'s custom feed `name`: a list of communities, or undefined to delete it. */
-export const feed = (a, name, communities) => [[`user/${a}/feed/${name}`, json(communities)]];
 
-/** `a` follows, or with `following` false stops following, a moderator's marks in a community. */
-export const followModerator = (a, community, mod, following = true) => [
-  [`user/${a}/follow-mod/${community}/${mod}`, flag(following)],
-];
-
-/** `a` advertises a community `{ about }`, so clients can list communities. */
-export const advertise = (a, community, value) => [[`index/community/${community}/${a}`, json(value)]];
 
 // Community chains.
 
 const mediaWrites = (a, id, cids) => cids.map((cid, n) => [`user/${a}/post/${id}/media/${n}`, cid]);
 
 /**
- * A post `{ title, body?, link?, tags? }` with the CIDs of its media, listed
+ * A post `{ title, body?, link? }` with the CIDs of its media, listed
  * in the community. Undefined deletes the post and its listing (delete media
  * with `media`).
  */
@@ -121,16 +112,16 @@ export const comment = (a, id, on, value, { parent, mediaCIDs = [] } = {}) => [
 /** The `n`th media CID of `a`'s post or comment `id`; undefined deletes it. */
 export const media = (a, id, n, cid) => [[`user/${a}/post/${id}/media/${n}`, cid]];
 
-// An account's votes and replies, kept together so that everything it
-// vouched for is one or two records to read: `user/<a>/edges/<n>` holds
-// `{ up, down, reply }`, lists of `<author>/<id>`, at most EDGES_PER_RECORD
-// entries in all. `edges` below is an account's records as
-// `read.edgesOf` returns them, a Map from n to `{ up, down, reply }`.
+// An account's votes, kept together so that everything it vouched for is
+// one or two records to read: `user/<a>/edges/<n>` holds `{ up, down }`,
+// lists of `<author>/<id>`, at most EDGES_PER_RECORD entries in all. `edges`
+// below is an account's records as `read.edgesOf` returns them, a Map from n
+// to `{ up, down }`.
 
 /** Most entries one edges record holds; past it, a new record is started. */
 export const EDGES_PER_RECORD = 64;
 
-const KINDS = ["up", "down", "reply"];
+const KINDS = ["up", "down"];
 
 /**
  * The writes that take `target` out of the lists `from` in `a`'s edges and,
@@ -155,7 +146,7 @@ function moveEdge(a, edges, target, from, to) {
     const numbers = [...records.keys()];
     const last = numbers.length ? Math.max(...numbers) : undefined;
     const n = home ?? (last !== undefined && size(records.get(last)) < EDGES_PER_RECORD ? last : (last ?? -1) + 1);
-    if (!records.has(n)) records.set(n, { up: [], down: [], reply: [] });
+    if (!records.has(n)) records.set(n, { up: [], down: [] });
     records.get(n)[to].push(target);
     changed.add(n);
   }
@@ -174,27 +165,6 @@ function moveEdge(a, edges, target, from, to) {
 export const vote = (a, edges, author, id, direction) =>
   moveEdge(a, edges, `${author}/${id}`, ["up", "down"], direction > 0 ? "up" : direction < 0 ? "down" : undefined);
 
-/**
- * That `a` replied to `author`'s post or comment `id`, or with `replied`
- * false no longer has: sent with the comment itself (`comment`), and not
- * with a label, which vouches for nothing.
- */
-export const replied = (a, edges, author, id, replied = true) =>
-  moveEdge(a, edges, `${author}/${id}`, ["reply"], replied ? "reply" : undefined);
-
-/**
- * A labelled comment: `a` labels the post `on` (`{ author, id }`) or, when
- * `target` is given, that comment in its thread, e.g. `["spam"]`, with an
- * optional reason. Moderation is this and nothing more: a reader whose client
- * follows `a` applies the labels; everyone else sees a comment. A report is
- * the same, from an account no reader follows as a moderator. Delete or edit
- * the comment to take it back.
- */
-export const label = (a, id, on, labels, { target, body = "" } = {}) =>
-  comment(a, id, on, { body, labels }, target ? { parent: target } : {});
-
-/** `a`'s flair in the community. */
-export const flair = (a, text) => [[`user/${a}/flair`, text]];
 
 // Home chain: the profile.
 

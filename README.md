@@ -1,30 +1,29 @@
 # Stoa
 
 A forum no one can censor: communities, posts with links and media, threaded
-comments, votes and moderation. Stoa keeps its data on Lattice chains and has
+comments and votes. Stoa keeps its data on Lattice chains and has
 no server of its own. Each reader's client reads the data, checks it, and
 decides what to show.
 
 - A community is a chain: `Nexus/stoa/<name>`, a child of the home chain
   `Nexus/stoa`. Anyone can create one, and communities can nest
   (`Nexus/stoa/bitcoin/lightning`).
-- The home chain is a community too, `s/all`, like Reddit's r/all: anyone
-  can post on it, and its page shows its own posts with every community's.
-  The name `all` is therefore reserved: a child chain named `all` is not shown.
+- `s/all`, like Reddit's r/all, shows every community's posts at once. It is
+  not a chain: nobody posts to it, and a child chain named `all` is not shown.
 - Every record belongs to its author. Only the author can edit or delete it.
-- Moderation is comments: a moderator labels a post by replying to it with
-  labels. Nothing is deleted. Each reader chooses whose labels to follow and
-  what each label does.
-- Ranking, feeds, karma and filters are computed by the client.
+- There are no moderators: votes count from a community's members, and what
+  members downvote more than they upvote is collapsed, with Show. Nothing is
+  deleted.
+- Ranking and feeds are computed by the client.
 
 ## Web app
 
 `app/` is Stoa in the browser: a static page that reads every record by CID
 from a node, ranks and filters in the page, and asks
 [Selfhold](https://github.com/adalinxx/selfhold-wallet) to sign each write: a
-window a passkey opens, nothing to install. Nobody needs coins: a fee sponsor
-takes a moment of the reader's device's work for each fee, and a storage
-sponsor keeps a post's media for good, for work too.
+window a passkey opens, nothing to install. Nobody needs coins: a sponsor
+takes a moment of the reader's device's work for each fee, and keeps a
+post's media for good, for work too.
 It is published at https://adalinxx.github.io/stoa/app/ and reads the Stoa
 trial chains (`Nexus/testnet/stoa-41d5ab`) by default; see `app/README.md`.
 
@@ -56,24 +55,20 @@ Home chain `Nexus/stoa`:
 |---|---|
 | `user/<a>/profile` | `{ name?, bio?, link? }`: how `<a>` appears on Stoa (name ≤ 50, bio ≤ 500, an http(s) link ≤ 300) |
 | `user/<a>/join/<community>` | `"1"`: `<a>` reads this community |
-| `user/<a>/feed/<name>` | `["bitcoin", "rust"]`: a custom feed |
-| `user/<a>/follow-mod/<community>/<mod>` | `"1"`: `<a>` follows an account's labels in a community |
-| `index/community/<community>/<a>` | `{ about }`: `<a>` lists a community so clients can find it |
 
-A community chain (and the home chain, as `s/all`):
+A community chain:
 
 | Key | Value |
 |---|---|
-| `user/<a>/post/<id>` | a post `{ title, body?, link?, tags?, time }`, or a comment `{ body, link?, labels?, on, parent?, time }` |
+| `user/<a>/post/<id>` | a post `{ title, body?, link?, time }`, or a comment `{ body, link?, on, parent?, time }` |
 | `user/<a>/post/<id>/media/<n>` | the CID of its `<n>`th image or video |
 | `index/post/<id>/<a>` | `"1"`: lists the post in the community |
 | `index/comment/<author>/<id>/<commentId>/<a>` | `"1"`: lists a comment under the post it belongs to |
-| `user/<a>/edges/<n>` | `{ up?, down?, reply? }`: lists of `<author>/<id>`, `<a>`'s votes and what it replied to, at most 64 entries a record; a vote is in one list at most, and taking it back removes it |
-| `user/<a>/flair` | text |
+| `user/<a>/edges/<n>` | `{ up?, down? }`: lists of `<author>/<id>`, `<a>`'s votes, at most 64 entries a record; a vote is in one list at most, and taking it back removes it |
 
 A comment is a post without a title that names its post (`on`) and, when it
 answers a comment, that comment (`parent`), both as `<author>/<id>`. Votes,
-labels, media and edits work the same on posts and comments. Ids are random
+media and edits work the same on posts and comments. Ids are random
 and carry no meaning.
 
 A listing is a claim by whoever wrote it, so a reader checks it against the
@@ -92,34 +87,25 @@ record, as the chain admitted it.
 ## Ranking
 
 Votes count from a community's **members**: the accounts that together hold
-98% of the standing its seeds' upvotes, replies and follows (on
+98% of the standing its seeds' upvotes and follows (on
 [Follows](https://github.com/adalinxx/follows)) pass on, by personalized
-PageRank (`client/standing.mjs`). Until a community publishes a view, its
-seeds are the authors of its first five posts. A fresh account's vote is
-kept and counts once members engage with what it writes or follow it, so a
-crowd of new accounts moves nothing. Downvotes rank items and never cost an
+PageRank (`client/standing.mjs`). Its seeds are the authors of its first
+five posts. A fresh account's vote is kept and counts once members upvote
+what it writes or follow it, so a crowd of new accounts moves nothing.
+Replying vouches for nothing. Downvotes rank items and never cost an
 author standing. The design and its simulations are in
 `docs/standing.md`.
 
 `client/rank.mjs` has Reddit's orderings from its open-source code: hot
-(score magnitude plus age, a tenfold score per 12.5 hours), new, top, best
-(the Wilson lower bound, for comments) and controversial; and karma, the
-summed score of an account's items. A client may use others.
+(score magnitude plus age, a tenfold score per 12.5 hours), new and top.
+Comments are ordered by score. A client may use others.
 
-## Moderation
+## Collapsing
 
-Moderation is a comment with labels: `{ body, labels: ["spam"], on, parent? }`.
-It labels the comment it answers, or the post when it answers the post, and a
-reason can go in its body. Nothing is removed: everyone else just sees a
-comment, and the author of the label takes it back by deleting or editing it.
-A report is the same thing from an account nobody follows as a moderator.
-
-`read.labelsBy(state, account)` gathers one account's labels in a community
-(one prefix scan of its items). `client/moderation.mjs` judges each item for
-one reader: from the labels of the accounts they follow and the treatment
-they chose per label (show, badge, blur, collapse, hide), it returns the
-strongest treatment those labels ask for. A reader who follows no one sees
-everything.
+There are no moderators and no labels. What a community's members downvoted
+more than they upvoted is collapsed, for every reader, to one line with
+Show; a reader who voted on it sees it as is. Nothing is removed from the
+chain.
 
 ## Media
 
@@ -135,7 +121,7 @@ writes at each start:
   and size the client takes. A file it keeps it pins, and its node serves it
   too.
 
-Without a node of one's own, a storage sponsor (lattice-sponsor run with
+Without a node of one's own, the sponsor (lattice-sponsor run with
 `--sell-storage`) keeps it: `client/storage.mjs` uploads the Volume
 (`POST /store`), grinds the shares of work the sponsor asks for on the
 device's GPU, else its CPU cores (`client/work/`, from Selfhold), until the
@@ -151,7 +137,7 @@ each node checked against its CID. `view(load, root)` is the
 `{ get, list }` interface the reads in `client/read.mjs` take.
 
 `client/write.mjs` gives the `[key, value]` writes for each act (`post`,
-`comment`, `vote`, `label`, …). `changes(state, writes)` turns them into
+`comment`, `vote`, …). `changes(state, writes)` turns them into
 actions against the state they were read from, and `transaction(...)` is the
 body to sign and send to `POST /transactions`.
 
@@ -188,11 +174,11 @@ prints the module CID.
 see `e2e/ui/README.md`.
 
 `e2e/run.mjs` runs Stoa on two real nodes: the author's host mines the home
-chain and a community, people post, comment, vote, label and report through
+chain and a community, people post, comment and vote through
 the public submit route, and a forged write is refused. The reader's node
 joins from the author's node alone and reads the community back: posts ranked
 by post time and votes, a thread as a tree, a picture fetched from peers,
-and a moderator's labelled comment hiding a post for the reader who follows them.
+and votes counted from members only.
 
 ```sh
 LATTICE=<lattice-node>/.build/debug/lattice \

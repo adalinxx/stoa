@@ -10,8 +10,6 @@ const parse = (value) => {
   }
 };
 const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-const labelList = (labels) =>
-  Array.isArray(labels) ? labels.filter((label) => typeof label === "string") : [];
 const ref = (text) => {
   const [author, id, ...rest] = typeof text === "string" ? text.split("/") : [];
   return author && id && rest.length === 0 ? { author, id } : undefined;
@@ -26,7 +24,7 @@ async function collect(entries) {
 
 /**
  * `author`'s post or comment `id`, or undefined: `{ author, id, time, title?,
- * body?, link?, tags, on?, parent?, media }`. `on` and `parent` are
+ * body?, link?, on?, parent?, media }`. `on` and `parent` are
  * `{ author, id }`; `time` is when it says it was written (milliseconds; the
  * chain's policy holds it to its block), or 0 when it says none.
  */
@@ -48,8 +46,6 @@ export async function item(state, author, id) {
     ...(text("title") !== undefined && { title: text("title") }),
     ...(text("body") !== undefined && { body: text("body") }),
     ...(text("link") !== undefined && { link: text("link") }),
-    tags: Array.isArray(record.tags) ? record.tags.filter((tag) => typeof tag === "string") : [],
-    labels: labelList(record.labels),
     ...(on && { on }),
     ...(parent && { parent }),
     media: media
@@ -79,7 +75,7 @@ const RECORD = /^(0|[1-9]\d*)$/;
 export const EDGES_READ = { records: 64, entries: 64 };
 
 /**
- * `a`'s edges records (see write.mjs): a Map from n to `{ up, down, reply }`,
+ * `a`'s edges records (see write.mjs): a Map from n to `{ up, down }`,
  * each a list of `<author>/<id>`. A record that doesn't parse, and any entry
  * that isn't `<author>/<id>`, is skipped; an item voted both ways counts as
  * neither.
@@ -102,15 +98,15 @@ export async function edgesOf(state, a) {
     if (typeof record !== "object" || record === null || Array.isArray(record)) continue;
     const list = (kind) =>
       Array.isArray(record[kind]) ? record[kind].slice(0, EDGES_READ.entries).filter((entry) => typeof entry === "string" && EDGE.test(entry)) : [];
-    records.set(n, { up: list("up"), down: list("down"), reply: list("reply") });
+    records.set(n, { up: list("up"), down: list("down") });
   }
   return records;
 }
 
-/** `edges` (as `edgesOf` returns them) as sets: `{ up, down, reply }`. */
+/** `edges` (as `edgesOf` returns them) as sets: `{ up, down }`. */
 export function edgeSets(edges) {
-  const sets = { up: new Set(), down: new Set(), reply: new Set() };
-  for (const record of edges.values()) for (const kind of ["up", "down", "reply"]) for (const entry of record[kind]) sets[kind].add(entry);
+  const sets = { up: new Set(), down: new Set() };
+  for (const record of edges.values()) for (const kind of ["up", "down"]) for (const entry of record[kind]) sets[kind].add(entry);
   for (const entry of sets.up) if (sets.down.has(entry)) (sets.up.delete(entry), sets.down.delete(entry));
   return sets;
 }
@@ -168,24 +164,6 @@ export async function itemsBy(state, a) {
   return (await Promise.all(ids.map((id) => item(state, a, id)))).filter(Boolean);
 }
 
-/**
- * The labels `a`'s labelled comments put on items: `"<author>/<id>"` → labels.
- * A labelled comment labels the comment it answers, or the post when it
- * answers the post. One prefix scan of `a`'s items.
- */
-export async function labelsBy(state, a) {
-  const labelled = new Map();
-  for (const comment of await itemsBy(state, a)) {
-    if (!comment.on || comment.labels.length === 0) continue;
-    const target = comment.parent ?? comment.on;
-    const key = `${target.author}/${target.id}`;
-    labelled.set(key, [...(labelled.get(key) ?? []), ...comment.labels]);
-  }
-  return labelled;
-}
-
-/** `a`'s flair in the community, or undefined. */
-export const flair = (state, a) => state.get(`user/${a}/flair`);
 
 // Home chain.
 
@@ -217,21 +195,3 @@ export async function joined(state, a) {
   return (await collect(state.list(prefix))).map(([key]) => key.slice(prefix.length));
 }
 
-/** The moderators `a` follows in `community`. */
-export async function followedModerators(state, a, community) {
-  const prefix = `user/${a}/follow-mod/${community}/`;
-  return (await collect(state.list(prefix))).map(([key]) => key.slice(prefix.length));
-}
-
-/** Advertised communities: name → the accounts advertising it, with each `{ about }`. */
-export async function communities(state) {
-  const found = new Map();
-  for await (const [key, value] of state.list("index/community/")) {
-    const segments = key.split("/");
-    const name = segments.slice(2, -1).join("/");
-    if (!name) continue;
-    if (!found.has(name)) found.set(name, new Map());
-    found.get(name).set(segments.at(-1), parse(value));
-  }
-  return found;
-}

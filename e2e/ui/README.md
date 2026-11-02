@@ -21,9 +21,9 @@ write (the draft kept, sent on the next press) and from a vote; posting,
 nested comments, voting and taking a vote back, all coinless; a profile
 (name, bio) on Stoa and an @handle claimed on Moniker, refused when it is
 someone else's, on bylines and the profile page; an image kept for good by
-the storage sponsor for this device's work, and shown; a write declined in
-Selfhold's window not sent; s/all; labels hiding a post only for a reader who
-follows the labeller, at once, with Show and unfollow; media nobody serves;
+the sponsor for this device's work, and shown; a write declined in
+Selfhold's window not sent; s/all; what members downvoted collapsed for every
+reader, with Show; media nobody serves;
 Top and New ordering; an earlier render finishing after a newer one without
 writing over it; and a community the node does not serve shown as such.
 

@@ -5,8 +5,8 @@
 //   node sim/standing.mjs
 //
 // Honest accounts join over time; the first few are the community view's
-// seeds. Each honest post has a quality in [0, 1]; honest accounts upvote and
-// reply to posts with odds rising with quality. The last accounts to join
+// seeds. Each honest post has a quality in [0, 1]; honest accounts upvote
+// posts with odds rising with quality. The last accounts to join
 // are newcomers with one good post and a few upvotes. A farm of fresh
 // accounts upvotes its own spam posts and each other's; a few careless
 // honest accounts upvote a spam post too (the farm's only edges in).

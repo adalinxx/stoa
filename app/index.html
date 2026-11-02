@@ -111,11 +111,8 @@ h1 { font: 600 26px/1.2 var(--display); margin: 12px 0 0; text-wrap: balance; ov
 .meta a { text-decoration: none; } .meta a:hover { color: var(--accent); text-decoration: underline; }
 .link { font-size: 12.5px; color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
 .link:hover { text-decoration: underline; }
-.tag { font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); line-height: 18px; }
-.tag.label { border-color: var(--warn); color: var(--warn); background: var(--warn-soft); }
 .media { margin-top: 8px; max-width: min(420px, 100%); border-radius: 8px; display: block; }
 .media.missing { aspect-ratio: 16 / 9; display: grid; place-items: center; font-size: 12px; color: var(--muted); background: repeating-linear-gradient(45deg, var(--surface), var(--surface) 8px, var(--bg) 8px, var(--bg) 16px); border: 1px dashed var(--line); }
-.blur { filter: blur(18px); cursor: pointer; }
 .hidden-row { padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
 .linkish { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font-size: inherit; }
 .linkish:hover { text-decoration: underline; }
@@ -133,7 +130,6 @@ details.more[open] summary { margin-bottom: 6px; }
 .comments { margin-top: 18px; }
 .comments-head { font: 600 13px var(--body); color: var(--muted); margin: 0 0 4px; }
 .c { padding: 8px 0 2px 12px; border-left: 2px solid var(--line); margin-top: 8px; }
-.c.note { border-left-color: var(--warn); }
 .c .by { color: var(--muted); font-size: 12.5px; display: flex; gap: 4px 8px; flex-wrap: wrap; align-items: center; }
 .c .by strong { color: var(--ink); font-weight: 600; }
 .acts { font-size: 12.5px; color: var(--muted); display: flex; gap: 4px 14px; margin-top: 2px; flex-wrap: wrap; align-items: center; }
@@ -166,9 +162,6 @@ textarea { min-height: 96px; resize: vertical; }
 .cost.bad { color: var(--down); }
 .status { font-size: 12.5px; color: var(--muted); margin-right: auto; }
 .status.bad { color: var(--down); }
-.checks { display: flex; gap: 8px; flex-wrap: wrap; }
-.checks label { display: inline-flex; gap: 6px; align-items: center; margin: 0; color: var(--ink); font-size: 13.5px; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; cursor: pointer; }
-.checks label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 .hint { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; }
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 td, th { padding: 8px 6px; }
@@ -287,8 +280,6 @@ td:last-child { text-align: right; }
     <input type="url" id="np-l" placeholder="https://" autocomplete="off">
     <label for="np-b">Text <span class="muted">(optional)</span></label>
     <textarea id="np-b"></textarea>
-    <label id="np-tags-label">Tags <span class="muted">(optional)</span></label>
-    <div class="checks" role="group" aria-labelledby="np-tags-label"><label><input type="checkbox" value="oc"> OC</label><label><input type="checkbox" value="nsfw"> NSFW</label><label><input type="checkbox" value="spoiler"> Spoiler</label></div>
     <div id="np-file-wrap" hidden>
       <label for="np-file">Image or video <span class="muted">(optional, up to 1 MB)</span></label>
       <span class="btn file-btn" id="np-file-btn"><input type="file" id="np-file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,video/mp4,video/webm"><span aria-hidden="true">＋</span> Add an image or video</span>
@@ -308,35 +299,10 @@ td:last-child { text-align: right; }
   <form method="dialog" id="reply-form">
     <h3 id="reply-title">Reply</h3>
     <div class="quote" id="rp-quote"></div>
-    <div id="rp-labels-wrap" hidden>
-      <p class="lede">A label is a public comment. Readers who follow your labels see it applied; everyone else sees a comment.</p>
-      <label id="rp-labels-label">Labels</label>
-      <div class="checks" id="rp-chips" role="group" aria-labelledby="rp-labels-label"></div>
-      <label for="rp-labels">Other labels <span class="muted">(comma-separated)</span></label>
-      <input type="text" id="rp-labels" autocomplete="off">
-    </div>
     <label for="rp-b" id="rp-b-label">Your reply</label>
     <textarea id="rp-b"></textarea>
     <p class="cost" id="rp-cost" aria-live="polite"></p>
     <div class="row2"><span class="status" id="rp-status" role="status"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" id="rp-send" value="send">Reply</button></div>
-  </form>
-</dialog>
-
-<dialog id="mods" aria-labelledby="mods-title">
-  <form method="dialog">
-    <h3 id="mods-title">Moderation in <span id="mods-c"></span></h3>
-    <p class="lede">Anyone can label posts and comments. You choose whose labels this page follows, and what each label does to what you see. Nothing is deleted from the chain.</p>
-    <p class="section">Whose labels you follow</p>
-    <table><tbody id="mods-list"></tbody></table>
-    <label for="mods-add">Follow another account's labels</label>
-    <div class="inline"><input type="text" id="mods-add" placeholder="Account address (bafy…)" autocomplete="off"><button class="btn" type="button" id="mods-add-btn">Follow</button></div>
-    <p class="status bad" id="mods-status" role="status"></p>
-    <p class="section">What each label does</p>
-    <p class="hint">Badge shows the label. Blur hides images until tapped. Collapse folds it shut. Hide leaves a one-line note with Show.</p>
-    <table><tbody id="label-actions"></tbody></table>
-    <label for="new-label">Another label</label>
-    <div class="inline"><input type="text" id="new-label" placeholder="e.g. low-effort" autocomplete="off"><button class="btn" type="button" id="new-label-btn">Add</button></div>
-    <div class="row2"><label style="margin:0 auto 0 0;display:inline-flex;gap:6px;align-items:center;color:var(--ink);font-size:13.5px"><input type="checkbox" id="showall"> Show everything, ignore labels</label><button class="btn primary" value="ok">Done</button></div>
   </form>
 </dialog>
 
@@ -356,10 +322,8 @@ td:last-child { text-align: right; }
       <input type="text" id="st-home" autocomplete="off">
       <label for="st-moniker">Moniker chain <span class="muted">(where @handles come from)</span></label>
       <input type="text" id="st-moniker" autocomplete="off">
-      <label for="st-sponsor">Fee sponsor <span class="muted">(pays each fee for this device's work; empty to pay fees in coins)</span></label>
-      <input type="url" id="st-sponsor" placeholder="Fees paid in coins" autocomplete="off" spellcheck="false" autocapitalize="none">
-      <label for="st-storage">Storage sponsor <span class="muted">(keeps images and video for this device's work; empty for none)</span></label>
-      <input type="url" id="st-storage" placeholder="No images or video" autocomplete="off" spellcheck="false" autocapitalize="none">
+      <label for="st-sponsor">Sponsor <span class="muted">(pays each fee and keeps images and video, for this device's work; empty to pay fees in coins and add no files)</span></label>
+      <input type="url" id="st-sponsor" placeholder="Fees paid in coins, no files" autocomplete="off" spellcheck="false" autocapitalize="none">
     </details>
     <div class="row2"><span class="status" id="st-status" role="status"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" value="save">Save</button></div>
   </form>

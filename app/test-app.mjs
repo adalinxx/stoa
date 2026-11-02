@@ -1,14 +1,13 @@
 //   node --test app/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { judge } from "../client/moderation.mjs";
 import { ago, commentNode, nameOf, ordered, parseRoute, pathHTML, plural, postRow, safeLink } from "./lib.mjs";
 
 const NOW = 1_800_000_000_000;
 const names = new Map([["bafy-alice-address", "Alice"]]);
 const post = (over = {}) => ({
-  community: "bitcoin", author: "bafy-alice-address", id: "p1", title: "Hello", link: undefined, tags: [], media: [],
-  ups: 3, downs: 1, mine: 0, comments: 2, time: NOW - 5 * 60000, verdict: { treatment: "show", labels: [] }, ...over,
+  community: "bitcoin", author: "bafy-alice-address", id: "p1", title: "Hello", link: undefined, media: [],
+  ups: 3, downs: 1, mine: 0, comments: 2, time: NOW - 5 * 60000, ...over,
 });
 
 test("only http(s) links become links", () => {
@@ -48,7 +47,7 @@ test("what people write is escaped, and a bad link is not linked", () => {
 });
 
 test("a post shows its score, comments, age, author name and link host", () => {
-  const html = postRow(post({ link: "https://bitcoin.org/bitcoin.pdf", tags: ["oc"] }), names, { now: NOW });
+  const html = postRow(post({ link: "https://bitcoin.org/bitcoin.pdf" }), names, { now: NOW });
   assert.match(html, /<span class="score" aria-label="Score 2">2<\/span>/, "score is ups minus downs");
   assert.match(html, /2 comments/);
   assert.match(html, /5m ago/);
@@ -57,43 +56,25 @@ test("a post shows its score, comments, age, author name and link host", () => {
   assert.match(postRow(post({ comments: 1 }), names, { now: NOW }), />1 comment</);
   assert.match(html, /Alice/);
   assert.match(html, />bitcoin\.org ↗</);
-  assert.match(html, /OC/);
 });
 
-test("labels the reader follows hide, collapse or blur a post; nothing else does", () => {
-  const labels = [{ by: "bafy-mod", label: "spam" }];
-  const hidden = postRow(post({ verdict: { treatment: "hide", labels } }), names, { now: NOW });
-  assert.match(hidden, /Hidden: labelled spam by/);
-  assert.match(hidden, /data-reveal/);
-  assert.ok(!hidden.includes("<h2>"), "the post itself is not drawn");
+test("what members downvoted more than upvoted is collapsed, with Show; the reader's own vote or choice shows it", () => {
+  const buried = postRow(post({ ups: 1, downs: 2 }), names, { now: NOW });
+  assert.match(buried, /Collapsed: more members downvoted it than upvoted it/);
+  assert.match(buried, /data-reveal/);
+  assert.ok(!buried.includes("<h2>"), "the post itself is not drawn");
+  assert.match(postRow(post({ ups: 1, downs: 2, revealed: true }), names, { now: NOW }), /<h2>/, "Show draws it");
+  assert.match(postRow(post({ ups: 1, downs: 2, mine: -1 }), names, { now: NOW }), /<h2>/, "the reader's own vote keeps it in view");
+  assert.match(postRow(post({ ups: 2, downs: 2 }), names, { now: NOW }), /<h2>/, "a tie is not collapsed");
 
-  const media = ["bafy-image"];
-  const collapsed = postRow(post({ media, verdict: { treatment: "collapse", labels } }), names, { now: NOW });
-  assert.ok(collapsed.includes("<h2>") && !collapsed.includes("data-media"), "collapsed: title, no media");
-
-  const blurred = postRow(post({ media, verdict: { treatment: "blur", labels } }), names, { now: NOW });
-  assert.match(blurred, /data-blur="1"/);
-  const nsfw = postRow(post({ media, tags: ["nsfw"] }), names, { now: NOW });
-  assert.match(nsfw, /data-blur="1"/, "an author's own NSFW tag blurs too");
-  const plain = postRow(post({ media }), names, { now: NOW });
-  assert.match(plain, /data-blur="0"/);
-});
-
-test("a labelled comment is a moderation note; a followed label collapses what it labels", () => {
-  const reply = { author: "bafy-eve", id: "c2", body: "buy my coin", labels: [], ups: 0, downs: 0, replies: [] };
-  const note = { author: "bafy-mod", id: "m1", body: "Shilling.", labels: ["spam"], ups: 0, downs: 0, replies: [reply] };
-  const labelled = new Map([["bafy-mod", new Map([["bafy-eve/c2", ["spam"]]])]]);
-  const html = commentNode(note, "bitcoin", judge(labelled, { spam: "collapse" }), ["bafy-mod"], names);
-  assert.match(html, /class="c note"/);
-  assert.match(html, /you follow their labels/);
-  assert.match(html, /<span class="tag label">spam<\/span> Shilling\./);
-  assert.match(html, /Collapsed: labelled spam by/);
+  const reply = { author: "bafy-eve", id: "c2", body: "buy my coin", ups: 0, downs: 3, replies: [] };
+  const parent = { author: "bafy-bob", id: "c1", body: "Section 11.", ups: 2, downs: 0, replies: [reply] };
+  const html = commentNode(parent, "bitcoin", names);
+  assert.match(html, /<div class="body">Section 11\.<\/div>/);
+  assert.match(html, /Collapsed: more members downvoted it than upvoted it · <button class="linkish" data-expand="bafy-eve\/c2">Show<\/button>/);
   assert.match(html, /<div class="body" hidden>buy my coin<\/div>/);
-
-  const unfollowed = commentNode(note, "bitcoin", judge(new Map(), {}), [], names);
-  assert.ok(!unfollowed.includes("Collapsed"), "a reader who follows no one sees everything");
-  assert.ok(!unfollowed.includes("you follow their labels"));
-  assert.match(unfollowed, /data-follow="bafy-mod">Follow their labels/, "a note offers to follow its author's labels");
+  assert.ok(!commentNode({ ...reply, expanded: true }, "bitcoin", names).includes("Collapsed"));
+  assert.ok(!html.includes("Label"), "no labels");
 });
 
 test("the reader's vote shows as pressed, and a vote waiting for its block as pending", () => {
@@ -113,7 +94,7 @@ test("a post or comment waiting for its block says so and can't be voted on yet"
   assert.match(html, /Waiting for a block/);
   assert.match(html, /data-vote="1"[^>]*\sdisabled[\s>]/);
   assert.match(postRow(post({ pending: "slow" }), names, { now: NOW }), /It may still land/);
-  const comment = commentNode({ author: "bafy-alice-address", id: "c9", body: "hi", labels: [], ups: 0, downs: 0, replies: [], pending: "waiting" }, "bitcoin", judge(new Map(), {}), [], names, NOW);
+  const comment = commentNode({ author: "bafy-alice-address", id: "c9", body: "hi", ups: 0, downs: 0, replies: [], pending: "waiting" }, "bitcoin", names, NOW);
   assert.match(comment, /Waiting for a block/);
   assert.ok(!comment.includes("data-reply"), "no replying to a comment not yet in a block");
 });
