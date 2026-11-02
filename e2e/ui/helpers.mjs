@@ -80,7 +80,10 @@ export async function writeAs(who, chain, records) {
     const { generalStateCID } = await tip(sdk, stack.node, chain, volumes);
     return view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID);
   };
-  const actions = await write.changes(await state(), records);
+  // Records may be built from the state they are written against (votes and
+  // replies rewrite the writer's edges records).
+  const now = await state();
+  const actions = await write.changes(now, typeof records === "function" ? await records(now) : records);
   const nonce = BigInt((await api(`/api/state/account/${who.address}`, chain))?.nonce ?? 0);
   await sign(who, write.transaction({ owner: who.address, actions, fee: 1n, nonce, chainPath: chain }));
   await until("records land", async () => {

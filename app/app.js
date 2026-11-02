@@ -7,6 +7,7 @@ import * as sdk from "./vendor/lattice-sdk.js";
 import { judge, treatments } from "../client/moderation.mjs";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
+import { memberVotes, seedsOf } from "../client/standing.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
 import { mediaVolume } from "../client/media.mjs";
 import { StorageRefused, StorageStopped, store as storeFile, storageChain } from "../client/storage.mjs";
@@ -350,6 +351,12 @@ const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(h
  * `fresh`: the key of a draft's record, which this write may create (or
  * rewrite identically) but never change: if it holds something else, an
  * earlier send landed, and Landed is thrown rather than editing it.
+ *
+ * `records` may be a function of the state it is written against: then the
+ * write rewrites the reader's own records (their votes and replies), and it
+ * is built only once the reader's last such write on this chain has landed
+ * (waiting while the window says it is preparing), so no write undoes
+ * another.
  */
 async function send(chain, records, status = () => {}, beforeWallet = () => true, fresh) {
   const address = connected;
@@ -359,15 +366,28 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
   // Our own refusal while building, said as is (the window closes, nothing sent).
   let refused = null;
   let sentActions = [];
+  const ordered = typeof records === "function";
+  // The last such write's landing, waited for a minute at most: one that
+  // never lands must not hold every later one (the chain refuses a write
+  // built on a state that has since changed, so none is lost unseen).
+  const before = ordered ? Promise.race([ownWrites.get(chain.join("/")), new Promise((resolve) => setTimeout(resolve, 60_000))]) : undefined;
+  let landingNow;
+  const own = new Promise((resolve) => (landingNow = resolve));
+  // The next waits for this one and for the one before it, so a write
+  // withdrawn early never lets the next build on a state the one before
+  // it is still changing.
+  if (ordered) ownWrites.set(chain.join("/"), Promise.all([before, own]));
   const request = (async () => {
+    await before;
     let state;
     try {
       state = await stateOf(chain);
     } catch (error) {
       throw new Said(readFailure(error, community));
     }
+    const built = ordered ? await records(state) : records;
     // A key already holding its new value is no change: nothing to sign for it.
-    const actions = (await write.changes(state, records)).filter((a) => a.oldValue !== a.newValue);
+    const actions = (await write.changes(state, built)).filter((a) => a.oldValue !== a.newValue);
     const record = fresh && actions.find((a) => a.key === fresh);
     if (record && record.oldValue !== undefined) throw new Landed();
     // Already so on the chain: nothing to sign, nothing to pay.
@@ -383,6 +403,8 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
   try {
     sent = await wallet().writeRecords(request, { account: address, progress: (text) => status(`${text}…`.replace(/[.…]+…$/, "…")) });
   } catch (error) {
+    // Not sent: the next write need not wait for it.
+    landingNow();
     if (refused) throw refused;
     if (error?.code === "AccountChanged" || error?.code === "NotConnected") {
       setConnected(await wallet().address().catch(() => null));
@@ -392,10 +414,20 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
     // landing poll decides. Calling it a failure would invite a second copy.
     if (!/may still land/i.test(String(error?.message ?? error))) throw new Said(walletMessage(error));
   }
-  if (sent === null) return () => Promise.resolve(true);
+  if (sent === null) {
+    landingNow();
+    return () => Promise.resolve(true);
+  }
   const landed = sentActions.map((a) => [a.key, a.newValue]);
-  return (onSlow = () => {}) => landing(chain, landed, onSlow);
+  let slow = () => {};
+  const done = landing(chain, landed, () => slow());
+  // The next write waits for this one to land, or to stop waiting for it.
+  done.then(landingNow, landingNow);
+  return (onSlow = () => {}) => ((slow = onSlow), done);
 }
+
+// The landing of the reader's last write of their own records, by chain.
+const ownWrites = new Map(); // "A/B" → promise
 
 async function landing(chain, records, onSlow) {
   const started = Date.now();
@@ -633,6 +665,84 @@ function follow(community, address, following) {
   return true;
 }
 
+// ------------------------------------------------------------- standing
+
+// Votes count from a community's members: the accounts its seeds' standing
+// reaches, through upvotes, replies and follows (docs/standing.md). Until a
+// community publishes a view, its seeds are the authors of its first posts,
+// which nobody can claim later: a post's time is held to its block.
+// Follows, the follow graph every app shares.
+const FOLLOWS = ["Nexus", "testnet", "follows-ade46a"];
+
+// The account showing each followed handle now, as every app reads it; a
+// failed read is tried again next time.
+const shownBy = new Map(); // handle → promise of an account or undefined
+function accountShowing(handle) {
+  if (!shownBy.has(handle)) {
+    const found = (async () => {
+      const account = await moniker.pointer(handle);
+      return account && (await moniker.handleOf(account)) === handle ? account : undefined;
+    })();
+    shownBy.set(handle, found);
+    found.catch(() => shownBy.delete(handle));
+  }
+  return shownBy.get(handle).catch(() => undefined);
+}
+
+/**
+ * Whom accounts follow, from one read of Follows (for one standing
+ * computation). A Follows the page can't read is no follows, not a failure:
+ * votes still count from posts.
+ */
+function followsReader() {
+  const follows = stateOf(FOLLOWS);
+  follows.catch(() => {});
+  return async (a) => {
+    try {
+      const state = await follows;
+      const prefix = `follows/${a}/`;
+      const targets = [];
+      for await (const [key] of state.list(prefix)) targets.push(key.slice(prefix.length));
+      const accounts = await Promise.all(targets.map((target) => (target.startsWith("@") ? accountShowing(target.slice(1)) : target)));
+      return accounts.filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+}
+
+// A community's members and their votes, once per state read.
+const standings = new Map(); // "A/B hash" → promise of { members, votes }
+function standingOf(state, posts) {
+  const key = `${state.chain.join("/")} ${state.hash}`;
+  if (!standings.has(key)) {
+    // One state's at a time is plenty: the last few are kept for a quick back and forth.
+    if (standings.size > 8) standings.delete(standings.keys().next().value);
+    standings.set(key, (async () => memberVotes(state, seedsOf(posts ?? (await read.posts(state))), { followsOf: followsReader() }))());
+    standings.get(key).catch(() => standings.delete(key));
+  }
+  return standings.get(key);
+}
+
+/**
+ * Votes on a community's items, as `(author, id) => { ups, downs, mine,
+ * counted }`: members' votes, and the reader's own (`mine`), which count
+ * (`counted`) once they are a member.
+ */
+async function votesFor(state, posts) {
+  const reader = signer()?.address;
+  const [{ members: counted, votes }, own] = await Promise.all([
+    standingOf(state, posts),
+    reader ? read.edgesOf(state, reader).then(read.edgeSets) : null,
+  ]);
+  return (author, id) => {
+    const target = `${author}/${id}`;
+    const v = votes.get(target);
+    const mine = own?.up.has(target) ? 1 : own?.down.has(target) ? -1 : 0;
+    return { ups: v?.ups ?? 0, downs: v?.downs ?? 0, mine, counted: reader !== undefined && counted.has(reader) };
+  };
+}
+
 // ------------------------------------------------- the reader's own writes
 
 // Writes sent but not yet read back from a block, drawn in place as pending.
@@ -656,9 +766,11 @@ function withVote(item, community) {
   const error = itemErrors.get(key)?.message;
   if (!vote) return error ? { ...item, error } : item;
   const was = item.mine ?? 0, now = vote.direction;
+  // A vote moves the counts only when it counts: the reader is a member.
+  const counts = item.counted ? 1 : 0;
   return {
     ...item, mine: now, error,
-    ups: item.ups - (was === 1) + (now === 1), downs: item.downs - (was === -1) + (now === -1),
+    ups: item.ups + counts * (-(was === 1) + (now === 1)), downs: item.downs + counts * (-(was === -1) + (now === -1)),
     votePending: !vote.landed,
   };
 }
@@ -681,7 +793,8 @@ async function castVote(button) {
     if (!signer()) return needAccount("Votes are signed by your account, so others can count them.");
     pendingVotes.set(key, { direction });
     redraw();
-    land = await send(chainOf(community), write.vote(signer().address, author, id, direction));
+    const voter = signer().address;
+    land = await send(chainOf(community), async (state) => write.vote(voter, await read.edgesOf(state, voter), author, id, direction));
   } catch (error) {
     if (error instanceof Withdrawn || !mine()) return;
     pendingVotes.delete(key);
@@ -755,16 +868,12 @@ function setTitle(text) {
 async function loadPosts(community) {
   const state = await stateOf(chainOf(community), { ahead: true });
   const [posts, judgeItem] = await Promise.all([read.posts(state), judgeFor(state, community)]);
-  const reader = signer()?.address;
+  const votesOf = await votesFor(state, posts);
   return Promise.all(
     posts.map(async (post) => {
-      const votes = await read.votes(state, post.author, post.id);
       let comments = 0;
       for await (const _ of state.list(`index/comment/${post.author}/${post.id}/`)) comments++;
-      return {
-        ...post, community, ups: votes.ups, downs: votes.downs, mine: reader ? votes.voters.get(reader) ?? 0 : 0,
-        comments, verdict: judgeItem(post),
-      };
+      return { ...post, community, ...votesOf(post.author, post.id), comments, verdict: judgeItem(post) };
     }),
   );
 }
@@ -915,14 +1024,13 @@ async function showPost({ community, author, id }, renderId) {
   try {
     const state = await stateOf(chainOf(community), { ahead: true });
     [tree, judgeItem] = await Promise.all([read.thread(state, author, id), judgeFor(state, community)]);
-    const reader = signer()?.address;
     if (tree) {
-      const withVotes = async (node) => {
-        const v = await read.votes(state, node.author, node.id);
-        Object.assign(node, { ups: v.ups, downs: v.downs, mine: reader ? v.voters.get(reader) ?? 0 : 0 });
-        await Promise.all(node.replies.map(withVotes));
+      const votesOf = await votesFor(state);
+      const withVotes = (node) => {
+        Object.assign(node, votesOf(node.author, node.id));
+        node.replies.forEach(withVotes);
       };
-      await withVotes(tree);
+      withVotes(tree);
       const authors = [];
       const collect = (node) => { authors.push(node.author); node.replies.forEach(collect); };
       collect(tree);
@@ -1023,15 +1131,14 @@ async function showProfile({ address }, renderId) {
     Promise.all(communities.map(async (c) => {
       try {
         const state = await stateOf(chainOf(c));
-        const [items, judgeItem] = await Promise.all([read.itemsBy(state, address), judgeFor(state, c)]);
+        const [items, judgeItem, votesOf] = await Promise.all([read.itemsBy(state, address), judgeFor(state, c), votesFor(state)]);
         return {
           c,
           items: await Promise.all(items.map(async (item) => {
-            const votes = await read.votes(state, item.author, item.id);
             let comments = 0, on;
             if (item.on) on = await read.item(state, item.on.author, item.on.id);
             else for await (const _ of state.list(`index/comment/${item.author}/${item.id}/`)) comments++;
-            return { ...item, community: c, ups: votes.ups, downs: votes.downs, mine: reader ? votes.voters.get(reader) ?? 0 : 0, comments, verdict: judgeItem(item), onTitle: on?.title };
+            return { ...item, community: c, ...votesOf(item.author, item.id), comments, verdict: judgeItem(item), onTitle: on?.title };
           })),
         };
       } catch (error) {
@@ -1491,7 +1598,14 @@ $("#reply-form").addEventListener("submit", async (event) => {
       const newId = draftId(draftKey);
       return {
         chain: chainOf(community),
-        records: labelling ? write.label(author, newId, on, labels, { target, body }) : write.comment(author, newId, on, { body }, target ? { parent: target } : {}),
+        // A reply is listed among the author's edges (it vouches for what it
+        // answers); a label vouches for nothing.
+        records: labelling
+          ? write.label(author, newId, on, labels, { target, body })
+          : async (state) => [
+              ...write.comment(author, newId, on, { body }, target ? { parent: target } : {}),
+              ...write.replied(author, await read.edgesOf(state, author), (target ?? on).author, (target ?? on).id),
+            ],
         fresh: `user/${author}/post/${newId}`,
         pending: { key: keyOf(community, author, newId), kind: "comment", community, author, id: newId, value, on, parent: target },
       };

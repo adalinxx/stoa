@@ -68,7 +68,7 @@ A community chain (and the home chain, as `s/all`):
 | `user/<a>/post/<id>/media/<n>` | the CID of its `<n>`th image or video |
 | `index/post/<id>/<a>` | `"1"`: lists the post in the community |
 | `index/comment/<author>/<id>/<commentId>/<a>` | `"1"`: lists a comment under the post it belongs to |
-| `index/vote/<author>/<id>/<a>` | `"1"` or `"-1"`: one vote per voter; deleting it takes it back |
+| `user/<a>/edges/<n>` | `{ up?, down?, reply? }`: lists of `<author>/<id>`, `<a>`'s votes and what it replied to, at most 64 entries a record; a vote is in one list at most, and taking it back removes it |
 | `user/<a>/flair` | text |
 
 A comment is a post without a title that names its post (`on`) and, when it
@@ -90,6 +90,16 @@ record keeps the time it was created with. A reader takes `time` from the
 record, as the chain admitted it.
 
 ## Ranking
+
+Votes count from a community's **members**: the accounts that together hold
+98% of the standing its seeds' upvotes, replies and follows (on
+[Follows](https://github.com/adalinxx/follows)) pass on, by personalized
+PageRank (`client/standing.mjs`). Until a community publishes a view, its
+seeds are the authors of its first five posts. A fresh account's vote is
+kept and counts once members engage with what it writes or follow it, so a
+crowd of new accounts moves nothing. Downvotes rank items and never cost an
+author standing. The design and its simulations are in
+`docs/standing.md`.
 
 `client/rank.mjs` has Reddit's orderings from its open-source code: hot
 (score magnitude plus age, a tenfold score per 12.5 hours), new, top, best

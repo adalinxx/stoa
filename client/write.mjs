@@ -121,10 +121,66 @@ export const comment = (a, id, on, value, { parent, mediaCIDs = [] } = {}) => [
 /** The `n`th media CID of `a`'s post or comment `id`; undefined deletes it. */
 export const media = (a, id, n, cid) => [[`user/${a}/post/${id}/media/${n}`, cid]];
 
-/** `voter`'s vote on `author`'s post or comment `id`: 1, -1, or 0 to take it back. */
-export const vote = (voter, author, id, direction) => [
-  [`index/vote/${author}/${id}/${voter}`, direction === 0 ? undefined : String(Math.sign(direction))],
-];
+// An account's votes and replies, kept together so that everything it
+// vouched for is one or two records to read: `user/<a>/edges/<n>` holds
+// `{ up, down, reply }`, lists of `<author>/<id>`, at most EDGES_PER_RECORD
+// entries in all. `edges` below is an account's records as
+// `read.edgesOf` returns them, a Map from n to `{ up, down, reply }`.
+
+/** Most entries one edges record holds; past it, a new record is started. */
+export const EDGES_PER_RECORD = 64;
+
+const KINDS = ["up", "down", "reply"];
+
+/**
+ * The writes that take `target` out of the lists `from` in `a`'s edges and,
+ * if `to` is given, put it in that list: in the record it was in, else the
+ * last with room, else a new one. Only records that change are written; an
+ * emptied one is deleted.
+ */
+function moveEdge(a, edges, target, from, to) {
+  const records = new Map([...edges].map(([n, record]) => [n, Object.fromEntries(KINDS.map((kind) => [kind, [...(record[kind] ?? [])]]))]));
+  const changed = new Set();
+  let home;
+  for (const [n, record] of records) {
+    for (const kind of from) {
+      if (!record[kind].includes(target)) continue;
+      record[kind] = record[kind].filter((entry) => entry !== target);
+      changed.add(n);
+      home ??= n;
+    }
+  }
+  if (to !== undefined && ![...records.values()].some((record) => record[to].includes(target))) {
+    const size = (record) => KINDS.reduce((total, kind) => total + record[kind].length, 0);
+    const numbers = [...records.keys()];
+    const last = numbers.length ? Math.max(...numbers) : undefined;
+    const n = home ?? (last !== undefined && size(records.get(last)) < EDGES_PER_RECORD ? last : (last ?? -1) + 1);
+    if (!records.has(n)) records.set(n, { up: [], down: [], reply: [] });
+    records.get(n)[to].push(target);
+    changed.add(n);
+  }
+  return [...changed].map((n) => {
+    const record = records.get(n);
+    const kept = Object.fromEntries(KINDS.filter((kind) => record[kind].length).map((kind) => [kind, record[kind]]));
+    return [`user/${a}/edges/${n}`, Object.keys(kept).length ? json(kept) : undefined];
+  });
+}
+
+/**
+ * `a`'s vote on `author`'s post or comment `id`: 1, -1, or 0 to take it
+ * back, as a change to `a`'s edges records (`edges`, as `read.edgesOf`
+ * returns them).
+ */
+export const vote = (a, edges, author, id, direction) =>
+  moveEdge(a, edges, `${author}/${id}`, ["up", "down"], direction > 0 ? "up" : direction < 0 ? "down" : undefined);
+
+/**
+ * That `a` replied to `author`'s post or comment `id`, or with `replied`
+ * false no longer has: sent with the comment itself (`comment`), and not
+ * with a label, which vouches for nothing.
+ */
+export const replied = (a, edges, author, id, replied = true) =>
+  moveEdge(a, edges, `${author}/${id}`, ["reply"], replied ? "reply" : undefined);
 
 /**
  * A labelled comment: `a` labels the post `on` (`{ author, id }`) or, when
