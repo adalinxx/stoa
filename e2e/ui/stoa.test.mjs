@@ -351,7 +351,8 @@ test("Top orders by members' score and New by post time; a stranger's vote count
   await page.getByRole("button", { name: "Top", exact: true }).click();
   await expect.poll(async () => (await titles()).indexOf("Older, liked") < (await titles()).indexOf("Newer, unliked")).toBe(true);
   await page.getByRole("button", { name: "New", exact: true }).click();
-  await expect.poll(async () => (await titles())[0]).toBe("Newer, unliked");  const unliked = page.locator(".post", { hasText: "Newer, unliked" });
+  await expect.poll(async () => (await titles())[0]).toBe("Newer, unliked");
+  const unliked = page.locator(".post", { hasText: "Newer, unliked" });
   await expect(unliked.locator(".votes .score")).toHaveText("0");
 });
 

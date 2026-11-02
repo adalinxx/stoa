@@ -132,10 +132,14 @@ test("edges: records that don't parse, and entries that aren't items, are skippe
   const state = memory();
   state.raw.set("user/bob/edges/0", "not json");
   state.raw.set("user/bob/edges/x", JSON.stringify({ up: ["alice/p1"] }));
+  state.raw.set("user/bob/edges/01", JSON.stringify({ up: ["alice/p9"] }));
+  state.raw.set("user/bob/edges/3/x", JSON.stringify({ up: ["alice/p9"] }));
+  state.raw.set("user/bob/edges/4", JSON.stringify({ up: Array.from({ length: 1000 }, (_, n) => `alice/q${n}`) }));
   state.raw.set("user/bob/edges/1", JSON.stringify({ up: ["alice/p1", "nope", 7, "a/b/c"], down: "alice/p2" }));
   state.raw.set("user/bob/edges/2", JSON.stringify({ down: ["alice/p1"] }));
   const edges = await read.edgesOf(state, "bob");
-  assert.deepEqual([...edges.keys()], [1, 2]);
+  assert.deepEqual([...edges.keys()], [1, 2, 4]);
+  assert.equal(edges.get(4).up.length, read.EDGES_READ.entries, "past what an honest writer keeps is not read");
   assert.deepEqual(edges.get(1), { up: ["alice/p1"], down: [], reply: [] });
   // Voted both ways: neither.
   const sets = read.edgeSets(edges);

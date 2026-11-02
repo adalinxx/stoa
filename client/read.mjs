@@ -74,6 +74,9 @@ export async function posts(state) {
 }
 
 const EDGE = /^[^/]+\/[^/]+$/;
+const RECORD = /^(0|[1-9]\d*)$/;
+/** Most edges records, and entries in each, read for one account: past what an honest writer keeps, the rest is not read. */
+export const EDGES_READ = { records: 64, entries: 64 };
 
 /**
  * `a`'s edges records (see write.mjs): a Map from n to `{ up, down, reply }`,
@@ -83,9 +86,13 @@ const EDGE = /^[^/]+\/[^/]+$/;
  */
 export async function edgesOf(state, a) {
   const records = new Map();
-  for await (const [key, value] of state.list(`user/${a}/edges/`)) {
-    const n = Number(key.slice(key.lastIndexOf("/") + 1));
-    if (!Number.isSafeInteger(n) || n < 0) continue;
+  const prefix = `user/${a}/edges/`;
+  for await (const [key, value] of state.list(prefix)) {
+    if (records.size >= EDGES_READ.records) break;
+    const name = key.slice(prefix.length);
+    if (!RECORD.test(name)) continue;
+    const n = Number(name);
+    if (!Number.isSafeInteger(n)) continue;
     let record;
     try {
       record = JSON.parse(value);
@@ -93,7 +100,8 @@ export async function edgesOf(state, a) {
       continue;
     }
     if (typeof record !== "object" || record === null || Array.isArray(record)) continue;
-    const list = (kind) => (Array.isArray(record[kind]) ? record[kind].filter((entry) => typeof entry === "string" && EDGE.test(entry)) : []);
+    const list = (kind) =>
+      Array.isArray(record[kind]) ? record[kind].slice(0, EDGES_READ.entries).filter((entry) => typeof entry === "string" && EDGE.test(entry)) : [];
     records.set(n, { up: list("up"), down: list("down"), reply: list("reply") });
   }
   return records;

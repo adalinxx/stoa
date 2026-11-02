@@ -63,12 +63,15 @@ export async function standing(seeds, edges, { restart = 0.15, epsilon = 1e-4 } 
 /**
  * The out-edges of one account's acts: its upvotes, replies and follows, as
  * `{ upvotes: [post], replies: [post], follows: [account] }`. Repeats count
- * once; following oneself counts for nothing.
+ * once. An account vouching for itself (following itself, upvoting or
+ * answering its own items) counts for nothing: that would only feed its
+ * standing back to it.
  */
 export function accountEdges({ upvotes = [], replies = [], follows = [] }, weights = WEIGHTS, self) {
   const out = new Map();
-  for (const post of new Set(upvotes)) out.set(post, weights.upvote);
-  for (const post of new Set(replies)) out.set(post, (out.get(post) ?? 0) + weights.reply);
+  const others = (posts) => [...new Set(posts)].filter((post) => self === undefined || !post.startsWith(`${self}/`));
+  for (const post of others(upvotes)) out.set(post, weights.upvote);
+  for (const post of others(replies)) out.set(post, (out.get(post) ?? 0) + weights.reply);
   for (const account of new Set(follows)) if (account !== self) out.set(account, weights.follow);
   return [...out];
 }

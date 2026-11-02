@@ -182,7 +182,8 @@ community's effective size (c / N_eff, N_eff = 1 / Σ p²).
   same engagement across several posts and replies.
 - **Lurkers never become members through posts** (the simulation has no
   follows). With follows as edges, a lurker becomes a member when members
-  follow them; a farm following itself gains nothing, and a member following
+  follow them; an account upvoting, answering or following itself passes
+  nothing (it would only feed its standing back to it); a farm following itself gains nothing, and a member following
   a farm account is a careless edge like a careless upvote.
 - Without follows, **lurkers never become members.** An account that only upvotes has no
   edges into it, so its votes never count. This is the price of resisting

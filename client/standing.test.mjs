@@ -94,8 +94,8 @@ test("accountEdges: an upvote and a reply to one post add; repeats count once", 
   ]);
 });
 
-test("accountEdges: follows are the heaviest edge, and following oneself is nothing", () => {
-  assert.deepEqual(accountEdges({ upvotes: ["bob/p"], follows: ["bob", "me"] }, undefined, "me"), [
+test("accountEdges: follows are the heaviest edge, and vouching for oneself is nothing", () => {
+  assert.deepEqual(accountEdges({ upvotes: ["bob/p", "me/own"], replies: ["me/own"], follows: ["bob", "me"] }, undefined, "me"), [
     ["bob/p", 1],
     ["bob", 4],
   ]);

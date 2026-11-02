@@ -367,10 +367,16 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
   let refused = null;
   let sentActions = [];
   const ordered = typeof records === "function";
-  const before = ordered ? ownWrites.get(chain.join("/")) : undefined;
+  // The last such write's landing, waited for a minute at most: one that
+  // never lands must not hold every later one (the chain refuses a write
+  // built on a state that has since changed, so none is lost unseen).
+  const before = ordered ? Promise.race([ownWrites.get(chain.join("/")), new Promise((resolve) => setTimeout(resolve, 60_000))]) : undefined;
   let landingNow;
-  const turn = new Promise((resolve) => (landingNow = resolve));
-  if (ordered) ownWrites.set(chain.join("/"), turn);
+  const own = new Promise((resolve) => (landingNow = resolve));
+  // The next waits for this one and for the one before it, so a write
+  // withdrawn early never lets the next build on a state the one before
+  // it is still changing.
+  if (ordered) ownWrites.set(chain.join("/"), Promise.all([before, own]));
   const request = (async () => {
     await before;
     let state;
@@ -668,31 +674,41 @@ function follow(community, address, following) {
 // Follows, the follow graph every app shares.
 const FOLLOWS = ["Nexus", "testnet", "follows-ade46a"];
 
-// Whom each account follows, for this visit: handles followed are the
-// accounts showing them now, as every app reads them. A Follows the page
-// can't read is no follows, not a failure: votes still count from posts.
-const followed = new Map(); // account → promise of accounts
-function followsOf(a) {
-  if (!followed.has(a)) {
-    followed.set(a, (async () => {
-      try {
-        const state = await stateOf(FOLLOWS);
-        const prefix = `follows/${a}/`;
-        const targets = [];
-        for await (const [key] of state.list(prefix)) targets.push(key.slice(prefix.length));
-        const accounts = await Promise.all(targets.map(async (target) => {
-          if (!target.startsWith("@")) return target;
-          const handle = target.slice(1);
-          const account = await moniker.pointer(handle).catch(() => undefined);
-          return account && (await moniker.handleOf(account).catch(() => undefined)) === handle ? account : undefined;
-        }));
-        return accounts.filter(Boolean);
-      } catch {
-        return [];
-      }
-    })());
+// The account showing each followed handle now, as every app reads it; a
+// failed read is tried again next time.
+const shownBy = new Map(); // handle → promise of an account or undefined
+function accountShowing(handle) {
+  if (!shownBy.has(handle)) {
+    const found = (async () => {
+      const account = await moniker.pointer(handle);
+      return account && (await moniker.handleOf(account)) === handle ? account : undefined;
+    })();
+    shownBy.set(handle, found);
+    found.catch(() => shownBy.delete(handle));
   }
-  return followed.get(a);
+  return shownBy.get(handle).catch(() => undefined);
+}
+
+/**
+ * Whom accounts follow, from one read of Follows (for one standing
+ * computation). A Follows the page can't read is no follows, not a failure:
+ * votes still count from posts.
+ */
+function followsReader() {
+  const follows = stateOf(FOLLOWS);
+  follows.catch(() => {});
+  return async (a) => {
+    try {
+      const state = await follows;
+      const prefix = `follows/${a}/`;
+      const targets = [];
+      for await (const [key] of state.list(prefix)) targets.push(key.slice(prefix.length));
+      const accounts = await Promise.all(targets.map((target) => (target.startsWith("@") ? accountShowing(target.slice(1)) : target)));
+      return accounts.filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
 }
 
 // A community's members and their votes, once per state read.
@@ -702,7 +718,7 @@ function standingOf(state, posts) {
   if (!standings.has(key)) {
     // One state's at a time is plenty: the last few are kept for a quick back and forth.
     if (standings.size > 8) standings.delete(standings.keys().next().value);
-    standings.set(key, (async () => memberVotes(state, seedsOf(posts ?? (await read.posts(state))), { followsOf }))());
+    standings.set(key, (async () => memberVotes(state, seedsOf(posts ?? (await read.posts(state))), { followsOf: followsReader() }))());
     standings.get(key).catch(() => standings.delete(key));
   }
   return standings.get(key);
