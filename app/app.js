@@ -165,6 +165,8 @@ function setConnected(address) {
     pendingItems.clear();
     itemErrors.clear();
     followChoices.clear();
+    // Until the next read, the new account has none of the last one's joins or follows.
+    mine = { joined: [], follows: new Set() };
   }
   connected = address;
 }
@@ -517,15 +519,16 @@ const followed = () => new Set([...mine.follows, ...followChoices.keys()].filter
  * A reader choice: kept in the browser and shown at once, then written to
  * `chain`, the home chain unless said (it lands a block later). The notice
  * says where it stands; if the write fails the choice stays in this browser
- * and the notice says why, or, with `undo`, it is taken back.
+ * and the notice says why, or, with `undo`, it is taken back. `records` may
+ * be a function of the chain's state, as `send` takes them; `keys` then names
+ * what a second change must wait for.
  */
 // Home-chain keys with a save in flight. A write is made against the state it
 // read, so a second change to the same key waits for the first to land.
 const savingKeys = new Set();
-const saving = (records) => records.some(([key]) => savingKeys.has(key));
 
-function saveChoice(records, keepLocally, what, { about = what, chain = homePath(), undo } = {}) {
-  if (signer() && saving(records)) {
+function saveChoice(records, keepLocally, what, { about = what, chain = homePath(), undo, keys = records.map(([key]) => key) } = {}) {
+  if (signer() && keys.some((key) => savingKeys.has(key))) {
     const message = `Your last change to ${about} is still landing. Try again once it has.`;
     // A notice behind an open dialog would go unseen: say it in the dialog.
     const inDialog = document.querySelector("dialog[open] .status");
@@ -540,7 +543,6 @@ function saveChoice(records, keepLocally, what, { about = what, chain = homePath
   keepLocally();
   if (!signer()) return true;
   const Whats = what[0].toUpperCase() + what.slice(1);
-  const keys = records.map(([key]) => key);
   keys.forEach((key) => savingKeys.add(key));
   const shown = notice(`Saving ${what}: approve it in ${walletName()}.`);
   send(chain, records)
@@ -1468,16 +1470,28 @@ function toggleFollow(address) {
   if (reader.address === address) return;
   const on = !following(address);
   const handle = handles.get(address);
+  // Stopping deletes every follow that stands for them now: of the account,
+  // and of any handle it shows, read from Follows itself.
   const records = on
     ? write.follow(reader.address, handle ? `@${handle}` : address)
-    : [...write.follow(reader.address, address, false), ...(handle ? write.follow(reader.address, `@${handle}`, false) : [])];
+    : async (state) => {
+      const prefix = `follows/${reader.address}/`;
+      const found = [];
+      for await (const [key] of state.list(prefix)) {
+        const t = key.slice(prefix.length);
+        if (!t.includes("/") && (t.startsWith("@") ? await accountShowing(t.slice(1)) : t) === address) found.push(...write.follow(reader.address, t, false));
+      }
+      return found;
+    };
   const before = followChoices.get(address);
   const put = (value) => {
+    // A choice belongs to the account that made it.
+    if (connected !== reader.address) return;
     if (value === undefined) followChoices.delete(address);
     else followChoices.set(address, value);
     redraw();
   };
-  saveChoice(records, () => put(on), on ? "your follow" : "your unfollow", { about: "this follow", chain: followsPath(), undo: () => put(before) });
+  saveChoice(records, () => put(on), on ? "your follow" : "your unfollow", { about: "this follow", chain: followsPath(), undo: () => put(before), keys: [`follows/${reader.address}/${address}`] });
 }
 
 // A write from a dialog: the dialog stays until the wallet has sent it, then
