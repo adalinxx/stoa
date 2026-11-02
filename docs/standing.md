@@ -36,24 +36,25 @@ community has engaged with, as each reader's own client computes it.
   (`…/app/?view=<a>/<name>`). Readers switch with one click and keep every
   post and reply, since a view decides only what counts, never what exists.
   Seeds cannot delete anything; the only power a view has is being chosen.
-- Moderators are gone as a role: `follow-mod` records are dropped. A view's
-  seeds are regular accounts; their labels count because they have
-  standing, like anyone's.
+- Moderators are gone as a role, and labels with them: `follow-mod` records
+  are dropped. A view's seeds are regular accounts; their votes count
+  because they have standing, like anyone's.
 
 ## Records
 
 | Key | Value | Change |
 |---|---|---|
 | `user/<a>/edges/<n>` | `{ up: ["<author>/<id>"], down: [...], reply: [...] }`: the account's votes and replies, a bucket of at most 64 entries; taking a vote back removes it | replaces `index/vote/<author>/<id>/<a>` |
-| `user/<a>/post/<id>` | a post or reply, as now | a reply with `labels` is a label, not a vouch |
+| `user/<a>/post/<id>` | a post or reply, as now | |
 | `user/<a>/view/<name>` | a view | new |
 
 `follow-mod` and `index/vote/` go. These changes are in the policy, which a
 chain's spec fixes at genesis, so they ship together in one relaunch of the
 home and community chains (see Relaunch).
 
-Downvotes stay: a label says what an item is and changes how it is shown;
-a downvote says it adds little and only moves it down. Votes move under the
+Downvotes stay, and replace labels: a downvote says an item adds little and
+moves it down, and what members downvoted more than upvoted is collapsed,
+for every reader, with Show. Votes move under the
 voter, in a few records rather than one key each, so that "everything this
 account vouched for" is one or two Volumes, which is what the standing
 computation reads (see Read cost); each edge names the author, so a reader
@@ -65,7 +66,7 @@ Personalized PageRank over a graph of accounts and posts, from the view's
 seeds:
 
 - An account points at each post it upvoted (weight 1), each post it
-  replied to without labels (weight 2), and each account it follows on
+  replied to (weight 2), and each account it follows on
   [Follows](https://github.com/adalinxx/follows), the follow graph every app
   shares (`follows/<a>/<t>`, weight 4). A follow is the plainest vouch
   there is, and it is how an account that only reads and upvotes becomes a
@@ -108,8 +109,9 @@ upvote or reply from a member lifts them like any other post; their upvotes
 count once members engage with what they post. Speaking is free; influence
 is earned in the community.
 
-Labels: an item's labels apply when members gave them, each reader choosing
-what each label does, as now.
+Collapsing: what members downvoted more than upvoted is collapsed to one
+line with Show. No labels: authors tag their own posts `nsfw` or `spoiler`
+to blur their media.
 
 ## Simulation
 
@@ -164,7 +166,8 @@ community's effective size (c / N_eff, N_eff = 1 / Σ p²).
   upvoted their posts, as the rule intends.
 - At 2000 honest accounts with 200 of them upvoting spam (40 real member
   votes on each spam post), spam reaches the top 25 under every rule. That
-  is members liking spam, which no vote count can stop; labels are for that.
+  is members liking spam, which no vote count can stop; members' downvotes
+  collapse it once more of them downvote than upvote.
   The farm's own votes count for nothing.
 
 ## Newcomers and lurkers

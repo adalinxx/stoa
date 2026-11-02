@@ -75,11 +75,6 @@ export const join = (a, community, joined = true) => [[`user/${a}/join/${communi
 /** `a`'s custom feed `name`: a list of communities, or undefined to delete it. */
 export const feed = (a, name, communities) => [[`user/${a}/feed/${name}`, json(communities)]];
 
-/** `a` follows, or with `following` false stops following, a moderator's marks in a community. */
-export const followModerator = (a, community, mod, following = true) => [
-  [`user/${a}/follow-mod/${community}/${mod}`, flag(following)],
-];
-
 /** `a` advertises a community `{ about }`, so clients can list communities. */
 export const advertise = (a, community, value) => [[`index/community/${community}/${a}`, json(value)]];
 
@@ -176,22 +171,10 @@ export const vote = (a, edges, author, id, direction) =>
 
 /**
  * That `a` replied to `author`'s post or comment `id`, or with `replied`
- * false no longer has: sent with the comment itself (`comment`), and not
- * with a label, which vouches for nothing.
+ * false no longer has: sent with the comment itself (`comment`).
  */
 export const replied = (a, edges, author, id, replied = true) =>
   moveEdge(a, edges, `${author}/${id}`, ["reply"], replied ? "reply" : undefined);
-
-/**
- * A labelled comment: `a` labels the post `on` (`{ author, id }`) or, when
- * `target` is given, that comment in its thread, e.g. `["spam"]`, with an
- * optional reason. Moderation is this and nothing more: a reader whose client
- * follows `a` applies the labels; everyone else sees a comment. A report is
- * the same, from an account no reader follows as a moderator. Delete or edit
- * the comment to take it back.
- */
-export const label = (a, id, on, labels, { target, body = "" } = {}) =>
-  comment(a, id, on, { body, labels }, target ? { parent: target } : {});
 
 /** `a`'s flair in the community. */
 export const flair = (a, text) => [[`user/${a}/flair`, text]];

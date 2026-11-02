@@ -4,7 +4,6 @@
 // this device's work for each fee, and a storage sponsor for each file kept,
 // so taking part needs no coins. No server of its own.
 import * as sdk from "./vendor/lattice-sdk.js";
-import { judge, treatments } from "../client/moderation.mjs";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { memberVotes, seedsOf } from "../client/standing.mjs";
@@ -18,7 +17,7 @@ import { writeRequest } from "./vendor/moniker-sdk/src/records/wallet.mjs";
 import { stepFor } from "./vendor/moniker-sdk/src/picker.mjs";
 import { selfhold } from "./vendor/selfhold.mjs";
 import * as write from "../client/write.mjs";
-import { byline, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, profileHref, safeLink, short, voteBox, when } from "./lib.mjs";
+import { blurs, byline, collapsed, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, profileHref, safeLink, short, voteBox, when } from "./lib.mjs";
 
 const $ = (s) => document.querySelector(s);
 
@@ -119,7 +118,6 @@ const hostOf = (url) => {
   }
 };
 const nodeHost = () => hostOf(settings.node);
-const ADDRESS = /^b[a-z2-7]{40,}$/;
 
 // ---------------------------------------------------------------- wallet
 
@@ -490,12 +488,7 @@ function notice(message, { bad = false, action } = {}) {
 
 // The reader's choices: on their home chain once written there, in this
 // browser until then (or when writing them fails).
-let mine = { joined: [], follows: new Map() };
-// What the reader undid wins over the chain until the chain catches up.
-const follows = (community) => {
-  const off = store.get(`follows-off:${community}`, []);
-  return [...new Set([...(mine.follows.get(community) ?? []), ...store.get(`follows:${community}`, [])])].filter((a) => !off.includes(a));
-};
+let mine = { joined: [] };
 const joinedList = () => {
   const local = store.get("joined", null);
   const left = store.get("left", []);
@@ -503,13 +496,11 @@ const joinedList = () => {
   return list.filter((c) => !left.includes(c));
 };
 
-/** Read the reader's joins and followed labels from the home chain. */
+/** Read the reader's joins from the home chain. */
 async function loadMine(home) {
   const reader = signer();
-  if (!reader) return (mine = { joined: [], follows: new Map() });
-  const joined = await read.joined(home, reader.address);
-  const followed = await Promise.all(communities.map(async (c) => [c, await read.followedModerators(home, reader.address, c)]));
-  mine = { joined, follows: new Map(followed) };
+  if (!reader) return (mine = { joined: [] });
+  mine = { joined: await read.joined(home, reader.address) };
 }
 
 /**
@@ -638,32 +629,11 @@ async function loadNames(addresses) {
 function forgetName(a) {
   lookups.delete(a);
 }
-const labelActions = () => store.get("labelActions", { spam: "hide", nsfw: "blur", "off-topic": "collapse" });
-let showAll = false;
-// Items the reader chose to see despite a label, for this visit.
+// Posts the reader chose to see though members downvoted them, for this visit.
 const revealed = new Set();
 // Collapsed comments the reader opened, and blurred media they uncovered.
 const expanded = new Set();
 const unblurred = new Set();
-
-async function judgeFor(state, community) {
-  if (showAll) return () => ({ treatment: "show", labels: [] });
-  const sets = new Map(await Promise.all(follows(community).map(async (a) => [a, await read.labelsBy(state, a)])));
-  const verdict = judge(sets, labelActions());
-  return (item) => (revealed.has(`${item.author}/${item.id}`) ? { treatment: "show", labels: verdict(item).labels } : verdict(item));
-}
-
-function follow(community, address, following) {
-  const keep = () => {
-    const on = store.get(`follows:${community}`, []), off = store.get(`follows-off:${community}`, []);
-    store.set(`follows:${community}`, following ? [...new Set([...on, address])] : on.filter((x) => x !== address));
-    store.set(`follows-off:${community}`, following ? off.filter((x) => x !== address) : [...new Set([...off, address])]);
-  };
-  const reader = signer();
-  if (reader) return saveChoice(write.followModerator(reader.address, community, address, following), keep, "who you follow");
-  keep();
-  return true;
-}
 
 // ------------------------------------------------------------- standing
 
@@ -867,13 +837,13 @@ function setTitle(text) {
 /** One community's posts with their votes and comment counts. */
 async function loadPosts(community) {
   const state = await stateOf(chainOf(community), { ahead: true });
-  const [posts, judgeItem] = await Promise.all([read.posts(state), judgeFor(state, community)]);
+  const posts = await read.posts(state);
   const votesOf = await votesFor(state, posts);
   return Promise.all(
     posts.map(async (post) => {
       let comments = 0;
       for await (const _ of state.list(`index/comment/${post.author}/${post.id}/`)) comments++;
-      return { ...post, community, ...votesOf(post.author, post.id), comments, verdict: judgeItem(post) };
+      return { ...post, community, ...votesOf(post.author, post.id), comments };
     }),
   );
 }
@@ -881,7 +851,7 @@ async function loadPosts(community) {
 const sortTabs = () => `<div class="tabs" role="group" aria-label="Sort posts">${["hot", "new", "top", "controversial"].map((s) => `<button type="button" class="tab" data-sort="${s}" aria-pressed="${s === sort}">${s[0].toUpperCase() + s.slice(1)}</button>`).join("")}</div>`;
 
 function communityActions(c) {
-  return `<button class="btn" type="button" id="join" data-join="${esc(c)}">${joinedList().includes(c) ? "Leave" : "Join"}</button><button class="btn" type="button" data-mods="${esc(c)}">Moderation</button>`;
+  return `<button class="btn" type="button" id="join" data-join="${esc(c)}">${joinedList().includes(c) ? "Leave" : "Join"}</button>`;
 }
 
 /**
@@ -958,8 +928,7 @@ async function showFeed(list, { title, community }, id) {
   if (community && $("#join")) $("#join").textContent = joinedList().includes(community) ? "Leave" : "Join";
   const results = await Promise.all(list.map((c) => loadPosts(c).then((posts) => ({ c, posts }), (error) => ({ c, error }))));
   const posts = results.flatMap((r) => r.posts ?? []);
-  const labellers = list.flatMap((c) => follows(c));
-  await loadNames([...posts.map((p) => p.author), ...labellers]).catch(() => {});
+  await loadNames(posts.map((p) => p.author)).catch(() => {});
   if (stale(id)) return;
   // A refresh keeps rows where the reader last saw them (a post never moves
   // under the pointer after a vote); a new sort or view ranks afresh.
@@ -975,7 +944,7 @@ function drawFeed() {
   const read = new Set(posts.map((q) => keyOf(q.community, q.author, q.id)));
   for (const p of pendingItems.values()) if (p.kind === "post" && read.has(p.key)) pendingItems.delete(p.key);
   const pending = [...pendingItems.values()].filter((p) => p.kind === "post" && list.includes(p.community))
-    .map((p) => ({ ...p.value, tags: p.value.tags ?? [], media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, verdict: { treatment: "show", labels: [] }, pending: p.slow ? "slow" : "waiting" }));
+    .map((p) => ({ ...p.value, tags: p.value.tags ?? [], media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, pending: p.slow ? "slow" : "waiting" }));
   const keyed = (p) => `${p.community}|${p.author}|${p.id}`;
   if (shown.sort !== sort || !shown.order) {
     shown.order = rank(posts, sort).map(keyed);
@@ -986,7 +955,7 @@ function drawFeed() {
   const fresh = rank(posts.filter((p) => !at.has(keyed(p))), sort);
   const kept = posts.filter((p) => at.has(keyed(p))).sort((a, b) => at.get(keyed(a)) - at.get(keyed(b)));
   shown.order = [...fresh, ...kept].map(keyed);
-  const rows = [...pending, ...[...fresh, ...kept].map((p) => withVote(p, p.community))];
+  const rows = [...pending, ...[...fresh, ...kept].map((p) => ({ ...withVote(p, p.community), revealed: revealed.has(`${p.author}/${p.id}`) }))];
   const retry = `<button class="btn" type="button" data-retry>Try again</button><button class="btn" type="button" data-choose-node>Choose another node</button>`;
   let html = "";
   if (failures.length && !rows.length) {
@@ -1011,7 +980,7 @@ function drawFeed() {
   feed.classList.remove("earlier");
   document.querySelector("#main .tabs")?.toggleAttribute("hidden", rows.length < 2);
   // Before media fills its slots: their files are read again on the next visit.
-  // Not with this visit's own pending rows or posts shown past moderation.
+  // Not with this visit's own pending rows or posts the reader chose to see.
   const ownOnly = pending.length || rows.some((p) => revealed.has(`${p.author}/${p.id}`));
   if (rows.length && !failures.length && !ownOnly && html.length < 200_000) saveLastFeed(shown.title, html);
   loadMedia();
@@ -1020,10 +989,10 @@ function drawFeed() {
 async function showPost({ community, author, id }, renderId) {
   const fresh = frame(`post|${community}|${author}|${id}`, `<a class="back" href="#/s/${encodeURIComponent(community)}">← s/${esc(community)}</a><div id="thread"><p class="empty">Reading from ${esc(nodeHost())}…</p></div>`);
   if (fresh) setTitle(`s/${community}`);
-  let tree, judgeItem;
+  let tree;
   try {
     const state = await stateOf(chainOf(community), { ahead: true });
-    [tree, judgeItem] = await Promise.all([read.thread(state, author, id), judgeFor(state, community)]);
+    tree = await read.thread(state, author, id);
     if (tree) {
       const votesOf = await votesFor(state);
       const withVotes = (node) => {
@@ -1034,7 +1003,7 @@ async function showPost({ community, author, id }, renderId) {
       const authors = [];
       const collect = (node) => { authors.push(node.author); node.replies.forEach(collect); };
       collect(tree);
-      await loadNames([...authors, ...follows(community)]).catch(() => {});
+      await loadNames(authors).catch(() => {});
     }
   } catch (error) {
     if (stale(renderId)) return;
@@ -1047,18 +1016,18 @@ async function showPost({ community, author, id }, renderId) {
   if (stale(renderId)) return;
   // A refresh of the same post keeps comments where they were.
   const commentRank = shown?.view === "post" ? shown.commentRank : null;
-  shown = { view: "post", community, author, id, tree, judgeItem, commentRank };
+  shown = { view: "post", community, author, id, tree, commentRank };
   redraw();
 }
 
 /** The thread as last read, with the reader's pending comments and votes in place. */
 function drawThread() {
   if (!$("#thread")) return;
-  const { community, author, id, judgeItem } = shown;
+  const { community, author, id } = shown;
   let tree = shown.tree && ordered(structuredClone(shown.tree));
   if (tree) pendingItems.delete(keyOf(community, author, id));
   const pendingPost = pendingItems.get(keyOf(community, author, id));
-  if (!tree && pendingPost) tree = { ...pendingPost.value, author, id, tags: pendingPost.value.tags ?? [], labels: [], media: pendingPost.media ?? [], replies: [], ups: 0, downs: 0, mine: 0, pending: pendingPost.slow ? "slow" : "waiting" };
+  if (!tree && pendingPost) tree = { ...pendingPost.value, author, id, tags: pendingPost.value.tags ?? [], media: pendingPost.media ?? [], replies: [], ups: 0, downs: 0, mine: 0, pending: pendingPost.slow ? "slow" : "waiting" };
   if (!tree) {
     $("#thread").innerHTML = `<div class="panel"><h2>This post isn't here</h2><p>${esc(nodeHost())} doesn't have it in s/${esc(community)}. Its author may have deleted it, or it hasn't reached this node yet.</p><div class="row2"><a class="btn" href="#/s/${encodeURIComponent(community)}">Back to s/${esc(community)}</a></div></div>`;
     return;
@@ -1075,7 +1044,7 @@ function drawThread() {
       continue;
     }
     const parent = (p.parent && byKey.get(`${p.parent.author}/${p.parent.id}`)) || tree;
-    parent.replies.push({ author: p.author, id: p.id, body: p.value.body ?? "", labels: p.value.labels ?? [], replies: [], ups: 0, downs: 0, pending: p.slow ? "slow" : "waiting" });
+    parent.replies.push({ author: p.author, id: p.id, body: p.value.body ?? "", replies: [], ups: 0, downs: 0, pending: p.slow ? "slow" : "waiting" });
   }
   // Comments keep the places they were first drawn in (a vote landing never
   // moves one under the pointer); ones not seen before follow, in order.
@@ -1106,13 +1075,13 @@ function drawThread() {
       <div class="meta"><a href="#/s/${encodeURIComponent(community)}">s/${esc(community)}</a>${byline(author, names)}${tree.pending ? pendingNote(tree.pending) : when(tree.time)}${tree.tags.map((t) => `<span class="tag">${esc(t.toUpperCase())}</span>`).join("")}</div>
       <h1>${esc(tree.title)}</h1>
       ${link ? `<a class="link" href="${esc(link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(link)} ↗</a>` : ""}
-      ${tree.media.map((cid) => mediaSlot(cid, community, tree.tags.includes("nsfw"))).join("")}
+      ${tree.media.map((cid) => mediaSlot(cid, community, blurs(tree.tags))).join("")}
       ${tree.body ? `<div class="body" style="margin-top:10px">${esc(tree.body)}</div>` : ""}
-      ${tree.pending ? "" : `<div class="acts" style="margin-top:10px">${voteBox({ ...tree, community }, { row: true })}<button type="button" data-reply="${esc(author)}/${esc(id)}">Reply</button><button type="button" data-label="${esc(author)}/${esc(id)}">Label…</button></div>`}
+      ${tree.pending ? "" : `<div class="acts" style="margin-top:10px">${voteBox({ ...tree, community }, { row: true })}<button type="button" data-reply="${esc(author)}/${esc(id)}">Reply</button></div>`}
       ${tree.error ? `<p class="inline-error">${esc(tree.error)}</p>` : ""}
     </article>
     <section class="comments" aria-label="Comments">
-      ${count ? `<p class="comments-head">${plural(count, "comment")}</p>${tree.replies.map((c) => commentNode(c, community, judgeItem, follows(community), names)).join("")}`
+      ${count ? `<p class="comments-head">${plural(count, "comment")}</p>${tree.replies.map((c) => commentNode(c, community, names)).join("")}`
         : tree.pending ? "" : `<p class="empty">No comments yet. <button class="linkish" type="button" data-reply="${esc(author)}/${esc(id)}">Write the first one</button></p>`}
     </section>`;
   loadMedia();
@@ -1131,14 +1100,14 @@ async function showProfile({ address }, renderId) {
     Promise.all(communities.map(async (c) => {
       try {
         const state = await stateOf(chainOf(c));
-        const [items, judgeItem, votesOf] = await Promise.all([read.itemsBy(state, address), judgeFor(state, c), votesFor(state)]);
+        const [items, votesOf] = await Promise.all([read.itemsBy(state, address), votesFor(state)]);
         return {
           c,
           items: await Promise.all(items.map(async (item) => {
             let comments = 0, on;
             if (item.on) on = await read.item(state, item.on.author, item.on.id);
             else for await (const _ of state.list(`index/comment/${item.author}/${item.id}/`)) comments++;
-            return { ...item, community: c, ...votesOf(item.author, item.id), comments, verdict: judgeItem(item), onTitle: on?.title };
+            return { ...item, community: c, ...votesOf(item.author, item.id), comments, onTitle: on?.title };
           })),
         };
       } catch (error) {
@@ -1170,8 +1139,8 @@ function drawProfile() {
     : `<span class="muted">${mine ? "No @handle yet" : "No @handle"}</span>`;
   const link = safeLink(profile.link);
   const list = profileTab === "posts"
-    ? [...pending.map((p) => ({ ...p.value, tags: p.value.tags ?? [], media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, verdict: { treatment: "show", labels: [] }, pending: p.slow ? "slow" : "waiting" })),
-      ...rank(posts, "new").map((p) => withVote(p, p.community))].map((p) => postRow(p, names)).join("")
+    ? [...pending.map((p) => ({ ...p.value, tags: p.value.tags ?? [], media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, pending: p.slow ? "slow" : "waiting" })),
+      ...rank(posts, "new").map((p) => ({ ...withVote(p, p.community), revealed: revealed.has(`${p.author}/${p.id}`) }))].map((p) => postRow(p, names)).join("")
     : rank(comments, "new").map((c) => commentRow(withVote(c, c.community))).join("");
   const empty = profileTab === "posts"
     ? `<p class="empty">${mine ? "You haven't posted yet." : "No posts yet."}</p>`
@@ -1197,11 +1166,9 @@ function drawProfile() {
 /** One of an account's comments, on its profile: where, on what, and what it said. */
 function commentRow(c) {
   const href = postHref(c.community, c.on.author, c.on.id);
-  const { treatment, labels } = c.verdict;
-  const folded = treatment === "hide" || treatment === "collapse";
   return `<article class="mini">
-    <div class="meta"><a href="#/s/${encodeURIComponent(c.community)}">s/${esc(c.community)}</a><span>on <a href="${href}">${esc(c.onTitle ?? "a post")}</a></span>${when(c.time)}${c.labels.map((l) => `<span class="tag label">${esc(l)}</span>`).join("")}</div>
-    ${folded ? `<p class="muted" style="margin:2px 0">Labelled ${esc(labels.map((l) => l.label).join(", "))}. <a href="${href}">See it in the thread</a></p>` : `<div class="body">${esc((c.body ?? "").slice(0, 600))}</div>`}
+    <div class="meta"><a href="#/s/${encodeURIComponent(c.community)}">s/${esc(c.community)}</a><span>on <a href="${href}">${esc(c.onTitle ?? "a post")}</a></span>${when(c.time)}</div>
+    ${collapsed(c) ? `<p class="muted" style="margin:2px 0">More members downvoted it than upvoted it. <a href="${href}">See it in the thread</a></p>` : `<div class="body">${esc((c.body ?? "").slice(0, 600))}</div>`}
     <div class="acts">${voteBox({ ...c, community: c.community }, { row: true })}<a href="${href}">Open thread</a></div>
     ${c.error ? `<p class="inline-error">${esc(c.error)}</p>` : ""}
   </article>`;
@@ -1222,7 +1189,7 @@ function focusIn(el) {
   const by = (attr) => `[${attr}="${CSS.escape(el.getAttribute(attr))}"]`;
   if (el.dataset.vote) return `${by("data-vote")}${by("data-target")}`;
   if (el.tagName === "SUMMARY") return "summary";
-  for (const attr of ["data-reply", "data-label", "data-reveal", "data-follow", "data-sort", "data-mods", "data-join", "data-cid", "data-profile-tab", "data-edit-profile", "data-copy-id"]) {
+  for (const attr of ["data-reply", "data-reveal", "data-sort", "data-join", "data-cid", "data-profile-tab", "data-edit-profile", "data-copy-id"]) {
     if (el.hasAttribute(attr)) return `${el.tagName.toLowerCase()}${by(attr)}`;
   }
   if (el.id) return `#${CSS.escape(el.id)}`;
@@ -1317,13 +1284,12 @@ function showAside() {
     $("#aside").innerHTML = `<div class="card"><h4>Home</h4><p class="muted">Posts from the communities you joined, ranked on this page from votes and post times.</p><dl class="kv"><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></div>${joinCard()}`;
     return;
   }
-  const n = follows(c).length;
   const detailsOpen = $("#aside details")?.open ? " open" : "";
   const about = c === ALL
     ? "Every community's posts, with posts of its own on the Stoa chain. Anyone can post here, and anyone can mine it."
     : "A community with a chain of its own. Anyone can post here, and anyone can mine it.";
   $("#aside").innerHTML = `<div class="card"><h4>s/${esc(c)}</h4><p class="muted">${about}</p>
-    <dl class="kv"><dt>Labels</dt><dd>${n ? `you follow ${plural(n, "account")}` : "you follow no one"} · <button class="linkish" type="button" data-mods="${esc(c)}">Manage</button></dd></dl>
+    <dl class="kv"><dt>Votes</dt><dd>count from its members: the accounts its first posters' upvotes, replies and follows reach. What members downvote more than upvote is collapsed.</dd></dl>
     <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>${joinCard()}`;
   // Each read fills only the aside it was made for.
   const height = $("#aside-height"), node = $("#aside-node");
@@ -1396,13 +1362,8 @@ document.addEventListener("click", async (event) => {
     for (const attr of ["data-unblur", "role", "aria-label", "title"]) el.removeAttribute(attr);
   } else if (el.dataset.vote) {
     castVote(el);
-  } else if (el.dataset.reply || el.dataset.label) {
-    openReply(el.dataset.reply ?? el.dataset.label, Boolean(el.dataset.label));
-  } else if (el.dataset.follow) {
-    follow(route.community, el.dataset.follow, true);
-    refresh();
-  } else if (el.dataset.mods) {
-    openMods(el.dataset.mods);
+  } else if (el.dataset.reply) {
+    openReply(el.dataset.reply);
   } else if (el.dataset.join) {
     toggleJoin(el.dataset.join);
   } else if (el.hasAttribute("data-retry")) {
@@ -1553,27 +1514,21 @@ const draftId = (key) => {
   return draftIds.get(key);
 };
 let replyTarget = null;
-const KNOWN_LABELS = ["spam", "off-topic", "nsfw", "low-effort"];
-function openReply(target, labelling) {
+function openReply(target) {
   const [author, id] = target.split("/");
   // What is answered is fixed now, whatever the route does while the dialog is open.
   opened($("#reply"));
-  replyTarget = { author, id, labelling, key: `${labelling ? "label" : "reply"}:${target}`, community: route.community, post: { author: route.author, id: route.id } };
+  replyTarget = { author, id, key: `reply:${target}`, community: route.community, post: { author: route.author, id: route.id } };
   const onPost = route.author === author && route.id === id;
   const findNode = (node) => (node.author === author && node.id === id ? node : node.replies.map(findNode).find(Boolean));
   const node = shown?.tree && findNode(shown.tree);
   const quoted = node ? (onPost ? node.title : node.body) : "";
-  $("#reply-title").textContent = labelling ? `Label this ${onPost ? "post" : "comment"}` : `Reply to ${nameOf(author, names)}`;
+  $("#reply-title").textContent = `Reply to ${nameOf(author, names)}`;
   $("#rp-quote").innerHTML = `<strong>${esc(nameOf(author, names))}</strong>: ${esc((quoted ?? "").slice(0, 400))}`;
-  $("#rp-labels-wrap").hidden = !labelling;
-  $("#rp-chips").innerHTML = [...new Set([...KNOWN_LABELS, ...Object.keys(labelActions())])].map((l) => `<label><input type="checkbox" value="${esc(l)}"> ${esc(l)}</label>`).join("");
-  $("#rp-b-label").innerHTML = labelling ? 'Reason <span class="muted">(optional, public)</span>' : "Your reply";
-  $("#rp-send").textContent = labelling ? "Add label" : "Reply";
   $("#rp-b").value = drafts.get(replyTarget.key) ?? "";
-  $("#rp-labels").value = "";
   $("#rp-status").textContent = "";
   $("#reply").showModal();
-  $(labelling ? "#rp-chips input" : "#rp-b").focus();
+  $("#rp-b").focus();
   $("#rp-cost").textContent = signingNote();
 }
 $("#rp-b").addEventListener("input", () => replyTarget && drafts.set(replyTarget.key, $("#rp-b").value));
@@ -1585,27 +1540,20 @@ $("#reply-form").addEventListener("submit", async (event) => {
   const { community, post: on, key: draftKey } = replyTarget;
   const { author: postAuthor, id: postId } = on;
   const target = replyTarget.author === postAuthor && replyTarget.id === postId ? undefined : { author: replyTarget.author, id: replyTarget.id };
-  const typed = $("#rp-labels").value.split(",").map((l) => l.trim().toLowerCase()).filter(Boolean);
-  const labels = replyTarget.labelling ? [...new Set([...[...document.querySelectorAll("#rp-chips input:checked")].map((i) => i.value), ...typed])] : [];
   const body = $("#rp-b").value.trim();
-  if (replyTarget.labelling && labels.length === 0) return ($("#rp-status").textContent = "Choose at least one label.");
-  if (!replyTarget.labelling && !body) return ($("#rp-status").textContent = "Write something first.");
-  const labelling = replyTarget.labelling;
-  const value = labelling ? { body, labels } : { body };
+  if (!body) return ($("#rp-status").textContent = "Write something first.");
+  const value = { body };
   await sendFromDialog({
     status, button: $("#rp-send"),
     build: (author) => {
       const newId = draftId(draftKey);
       return {
         chain: chainOf(community),
-        // A reply is listed among the author's edges (it vouches for what it
-        // answers); a label vouches for nothing.
-        records: labelling
-          ? write.label(author, newId, on, labels, { target, body })
-          : async (state) => [
-              ...write.comment(author, newId, on, { body }, target ? { parent: target } : {}),
-              ...write.replied(author, await read.edgesOf(state, author), (target ?? on).author, (target ?? on).id),
-            ],
+        // A reply is listed among the author's edges: it vouches for what it answers.
+        records: async (state) => [
+          ...write.comment(author, newId, on, { body }, target ? { parent: target } : {}),
+          ...write.replied(author, await read.edgesOf(state, author), (target ?? on).author, (target ?? on).id),
+        ],
         fresh: `user/${author}/post/${newId}`,
         pending: { key: keyOf(community, author, newId), kind: "comment", community, author, id: newId, value, on, parent: target },
       };
@@ -1711,70 +1659,6 @@ $("#new-form").addEventListener("submit", async (event) => {
       location.hash = postHref(community, made.author, made.id);
     },
   });
-});
-
-function openMods(community) {
-  const c = community ?? route.community ?? communities[0];
-  if (!c) return;
-  $("#mods-c").textContent = `s/${c}`;
-  // Opening clears the status; a redraw of the open dialog keeps what it says.
-  if (!$("#mods").open) $("#mods-status").textContent = "";
-  const list = follows(c);
-  $("#mods-list").innerHTML = list.length
-    ? list.map((a) => `<tr><td>${names.has(a) ? `<strong>${esc(names.get(a))}</strong> ` : ""}<span class="mono muted" title="${esc(a)}">${esc(short(a))}</span></td><td><button class="btn small" type="button" data-unfollow="${esc(a)}">Unfollow</button></td></tr>`).join("")
-    : '<tr><td class="muted" colspan="2" style="text-align:left;white-space:normal">You follow no one here, so you see everything.</td></tr>';
-  const actions = labelActions();
-  $("#label-actions").innerHTML = Object.entries(actions).map(([label, chosen]) => `<tr><td>${esc(label)}</td><td><div class="seg" role="group" aria-label="What ${esc(label)} does" data-label-action="${esc(label)}">${treatments.map((t) => `<button type="button" aria-pressed="${t === chosen}">${t}</button>`).join("")}</div></td></tr>`).join("");
-  $("#mods").dataset.community = c;
-  $("#showall").checked = showAll;
-  if (!$("#mods").open) $("#mods").showModal();
-}
-$("#mods").addEventListener("click", (event) => {
-  const c = $("#mods").dataset.community;
-  const unfollow = event.target.closest("[data-unfollow]");
-  if (unfollow) {
-    follow(c, unfollow.dataset.unfollow, false);
-    openMods(c);
-  }
-  const seg = event.target.closest("[data-label-action]");
-  if (seg && event.target.tagName === "BUTTON") {
-    store.set("labelActions", { ...labelActions(), [seg.dataset.labelAction]: event.target.textContent });
-    openMods(c);
-  }
-});
-$("#mods-add-btn").onclick = () => {
-  const c = $("#mods").dataset.community;
-  const address = $("#mods-add").value.trim();
-  if (!address) return $("#mods-add").focus();
-  if (!ADDRESS.test(address)) return ($("#mods-status").textContent = "That isn't an account address. It starts with “b” and is about 60 characters.");
-  $("#mods-status").textContent = "";
-  // Kept in the box when the change has to wait, so it can be sent again.
-  if (follow(c, address, true)) $("#mods-add").value = "";
-  openMods(c);
-};
-$("#mods-add").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    $("#mods-add-btn").click();
-  }
-});
-const addLabel = () => {
-  const label = $("#new-label").value.trim().toLowerCase();
-  if (!label) return $("#new-label").focus();
-  $("#new-label").value = "";
-  if (!(label in labelActions())) store.set("labelActions", { ...labelActions(), [label]: "badge" });
-  openMods($("#mods").dataset.community);
-};
-$("#new-label-btn").onclick = addLabel;
-$("#new-label").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    addLabel();
-  }
-});
-$("#mods").addEventListener("close", () => {
-  showAll = $("#showall").checked;
-  refresh();
 });
 
 // ---------------------------------------------------------------- profile
@@ -2139,8 +2023,8 @@ $("#open-settings").onclick = () => openSettings();
 function renderAccount() {
   const reader = signer();
   $("#st-account-hint").textContent = reader
-    ? extension() ? "Selfhold for Chrome keeps your key and asks you to approve each post, comment, vote and label."
-      : "Your key is kept by your passkey, in Selfhold's window. It asks you to approve each post, comment, vote and label; Stoa never sees the key."
+    ? extension() ? "Selfhold for Chrome keeps your key and asks you to approve each post, comment and vote."
+      : "Your key is kept by your passkey, in Selfhold's window. It asks you to approve each post, comment and vote; Stoa never sees the key."
     : "Selfhold makes your account with a passkey: your face, fingerprint or screen lock. Nothing to install, and no coins.";
   $("#st-address-row").hidden = !reader;
   $("#st-icon").innerHTML = reader ? accountIcon(reader.address, 20) : "";

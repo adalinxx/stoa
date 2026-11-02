@@ -1,7 +1,7 @@
 # Stoa
 
 A forum no one can censor: communities, posts with links and media, threaded
-comments, votes and moderation. Stoa keeps its data on Lattice chains and has
+comments and votes. Stoa keeps its data on Lattice chains and has
 no server of its own. Each reader's client reads the data, checks it, and
 decides what to show.
 
@@ -12,9 +12,9 @@ decides what to show.
   can post on it, and its page shows its own posts with every community's.
   The name `all` is therefore reserved: a child chain named `all` is not shown.
 - Every record belongs to its author. Only the author can edit or delete it.
-- Moderation is comments: a moderator labels a post by replying to it with
-  labels. Nothing is deleted. Each reader chooses whose labels to follow and
-  what each label does.
+- There are no moderators: votes count from a community's members, and what
+  members downvote more than they upvote is collapsed, with Show. Nothing is
+  deleted.
 - Ranking, feeds, karma and filters are computed by the client.
 
 ## Web app
@@ -57,14 +57,13 @@ Home chain `Nexus/stoa`:
 | `user/<a>/profile` | `{ name?, bio?, link? }`: how `<a>` appears on Stoa (name ≤ 50, bio ≤ 500, an http(s) link ≤ 300) |
 | `user/<a>/join/<community>` | `"1"`: `<a>` reads this community |
 | `user/<a>/feed/<name>` | `["bitcoin", "rust"]`: a custom feed |
-| `user/<a>/follow-mod/<community>/<mod>` | `"1"`: `<a>` follows an account's labels in a community |
 | `index/community/<community>/<a>` | `{ about }`: `<a>` lists a community so clients can find it |
 
 A community chain (and the home chain, as `s/all`):
 
 | Key | Value |
 |---|---|
-| `user/<a>/post/<id>` | a post `{ title, body?, link?, tags?, time }`, or a comment `{ body, link?, labels?, on, parent?, time }` |
+| `user/<a>/post/<id>` | a post `{ title, body?, link?, tags?, time }`, or a comment `{ body, link?, on, parent?, time }` |
 | `user/<a>/post/<id>/media/<n>` | the CID of its `<n>`th image or video |
 | `index/post/<id>/<a>` | `"1"`: lists the post in the community |
 | `index/comment/<author>/<id>/<commentId>/<a>` | `"1"`: lists a comment under the post it belongs to |
@@ -73,7 +72,7 @@ A community chain (and the home chain, as `s/all`):
 
 A comment is a post without a title that names its post (`on`) and, when it
 answers a comment, that comment (`parent`), both as `<author>/<id>`. Votes,
-labels, media and edits work the same on posts and comments. Ids are random
+media and edits work the same on posts and comments. Ids are random
 and carry no meaning.
 
 A listing is a claim by whoever wrote it, so a reader checks it against the
@@ -106,20 +105,13 @@ author standing. The design and its simulations are in
 (the Wilson lower bound, for comments) and controversial; and karma, the
 summed score of an account's items. A client may use others.
 
-## Moderation
+## Collapsing
 
-Moderation is a comment with labels: `{ body, labels: ["spam"], on, parent? }`.
-It labels the comment it answers, or the post when it answers the post, and a
-reason can go in its body. Nothing is removed: everyone else just sees a
-comment, and the author of the label takes it back by deleting or editing it.
-A report is the same thing from an account nobody follows as a moderator.
-
-`read.labelsBy(state, account)` gathers one account's labels in a community
-(one prefix scan of its items). `client/moderation.mjs` judges each item for
-one reader: from the labels of the accounts they follow and the treatment
-they chose per label (show, badge, blur, collapse, hide), it returns the
-strongest treatment those labels ask for. A reader who follows no one sees
-everything.
+There are no moderators and no labels. What a community's members downvoted
+more than they upvoted is collapsed, for every reader, to one line with
+Show; a reader who voted on it sees it as is. An author tags their own post
+`nsfw` or `spoiler` to blur its media until tapped. Nothing is removed from
+the chain.
 
 ## Media
 
@@ -151,7 +143,7 @@ each node checked against its CID. `view(load, root)` is the
 `{ get, list }` interface the reads in `client/read.mjs` take.
 
 `client/write.mjs` gives the `[key, value]` writes for each act (`post`,
-`comment`, `vote`, `label`, …). `changes(state, writes)` turns them into
+`comment`, `vote`, …). `changes(state, writes)` turns them into
 actions against the state they were read from, and `transaction(...)` is the
 body to sign and send to `POST /transactions`.
 
@@ -188,11 +180,11 @@ prints the module CID.
 see `e2e/ui/README.md`.
 
 `e2e/run.mjs` runs Stoa on two real nodes: the author's host mines the home
-chain and a community, people post, comment, vote, label and report through
+chain and a community, people post, comment and vote through
 the public submit route, and a forged write is refused. The reader's node
 joins from the author's node alone and reads the community back: posts ranked
 by post time and votes, a thread as a tree, a picture fetched from peers,
-and a moderator's labelled comment hiding a post for the reader who follows them.
+and votes counted from members only.
 
 ```sh
 LATTICE=<lattice-node>/.build/debug/lattice \
