@@ -150,7 +150,7 @@ export function commentNode(c, community, names, now = Date.now()) {
     : `<div class="body">${esc(c.body)}</div>`;
   return `<div class="c${c.pending ? " pending" : ""}">
     <div class="by"><strong>${byline(c.author, names)}</strong>${c.pending ? pendingNote(c.pending) : when(c.time, now)}</div>
-    ${body}${link ? linkTag(link, link) : ""}
+    ${body}${link && !collapsed(c, c.expanded) ? linkTag(link, link) : ""}
     <div class="acts">${c.pending ? "" : `${voteBox({ ...c, community }, { row: true })}<button type="button" data-reply="${esc(c.author)}/${esc(c.id)}">Reply</button>`}</div>
     ${c.error ? `<p class="inline-error">${esc(c.error)}</p>` : ""}
     ${c.replies.map((r) => commentNode(r, community, names, now)).join("")}

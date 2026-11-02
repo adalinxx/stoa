@@ -4,8 +4,8 @@
 // result is read back by descending the state trie by CID. A second node,
 // the reader's, joins the community from the first as its only peer and
 // reads the community from its own state: the posts ranked by post time and
-// votes, a thread as a tree, a picture fetched from peers, and the feed as a
-// reader who follows one moderator sees it.
+// votes counted from members only, a thread as a tree, and a picture fetched
+// from peers.
 //
 //   LATTICE=<lattice-node>/.build/debug/lattice \
 //   LATTICE_SDK=<lattice-sdk>/packages/sdk/dist/index.js node e2e/run.mjs
@@ -136,10 +136,7 @@ try {
   console.log("Nexus, Nexus/stoa and Nexus/stoa/bitcoin are mined");
 
   // The home chain: what Alice reads.
-  await writes("join on the home chain", HOME, alice, [
-    ...write.join(alice.address, "bitcoin"),
-    ...write.advertise(alice.address, "bitcoin", { about: "Bitcoin talk" }),
-  ]);
+  await writes("join on the home chain", HOME, alice, write.join(alice.address, "bitcoin"));
 
   // A link post with a picture: the picture's Volume is pinned on Alice's
   // node, and the post names its CID.
@@ -157,7 +154,7 @@ try {
     write.post(
       linkPost.author,
       linkPost.id,
-      { title: "The whitepaper", body: "Worth a reread.", link: "https://bitcoin.org/bitcoin.pdf", tags: ["oc"] },
+      { title: "The whitepaper", body: "Worth a reread.", link: "https://bitcoin.org/bitcoin.pdf" },
       [volume.cid],
     ),
   );
@@ -205,8 +202,7 @@ try {
   });
   const home = await state(HOME, readerNode);
   assert.deepEqual(await read.joined(home, alice.address), ["bitcoin"]);
-  assert.deepEqual([...(await read.communities(home)).keys()], ["bitcoin"]);
-  console.log("reader: joins and communities from the home chain");
+  console.log("reader: joins from the home chain");
 
   // Votes count from members. Carol only commented and nobody has engaged
   // with her yet: her votes are kept, and not counted.

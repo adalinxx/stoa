@@ -349,7 +349,7 @@ const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(h
  * earlier send landed, and Landed is thrown rather than editing it.
  *
  * `records` may be a function of the state it is written against: then the
- * write rewrites the reader's own records (their votes and replies), and it
+ * write rewrites the reader's own records (their votes), and it
  * is built only once the reader's last such write on this chain has landed
  * (waiting while the window says it is preparing), so no write undoes
  * another.
@@ -914,7 +914,7 @@ function paintLastFeed() {
   const title = next.view === "home" ? "Home" : `s/${next.community}`;
   if (store.get(lastFeedKey(title), null) === null) return;
   setTitle(title);
-  // Without Join or Moderation, and its sort tabs inert: nothing acts until
+  // Without Join, and its sort tabs inert: nothing acts until
   // the reader's own choices are read. The feed's own frame replaces it.
   frame(`early|${title}`, feedFrame(title));
   document.querySelector("#main .tabs").inert = true;
@@ -1288,7 +1288,7 @@ function showAside() {
   }
   const about = "A community with a chain of its own. Anyone can post here, and anyone can mine it.";
   $("#aside").innerHTML = `<div class="card"><h4>s/${esc(c)}</h4><p class="muted">${about}</p>
-    <dl class="kv"><dt>Votes</dt><dd>count from its members: the accounts its first posters' upvotes, replies and follows reach. What members downvote more than upvote is collapsed.</dd></dl>
+    <dl class="kv"><dt>Votes</dt><dd>count from its members: the accounts its first posters' upvotes and follows reach. What members downvote more than upvote is collapsed.</dd></dl>
     <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>${joinCard()}`;
   // Each read fills only the aside it was made for.
   const height = $("#aside-height"), node = $("#aside-node");
