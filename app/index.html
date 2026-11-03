@@ -42,6 +42,7 @@ header.top { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; 
 .btn:disabled { opacity: .5; cursor: default; }
 .btn.icon { padding: 6px 8px; }
 .btn.small { padding: 3px 9px; font-size: 13px; line-height: 20px; }
+.rail-new { margin: 10px 8px 0; }
 .btn svg { width: 18px; height: 18px; }
 .who { display: flex; }
 .account-name { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; }
@@ -213,6 +214,7 @@ td:last-child { text-align: right; }
     <div class="rail-list">
       <ul class="tree"><li><a href="#/" data-nav="home">Home</a></li><li><a href="#/following" data-nav="following">Following</a></li></ul>
       <div id="communities"><p class="muted" style="padding:5px 8px;margin:0">Loading…</p></div>
+      <button class="btn small rail-new" type="button" id="open-community">＋ New community</button>
     </div>
   </nav>
   <main>
@@ -298,6 +300,18 @@ td:last-child { text-align: right; }
     <p class="hint" id="np-media-off" hidden></p>
     <p class="cost" id="np-cost" aria-live="polite"></p>
     <div class="row2"><span class="status" id="np-status" role="status"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" id="np-post" value="post">Post</button></div>
+  </form>
+</dialog>
+
+<dialog id="community" aria-labelledby="nc-title">
+  <form method="dialog" id="community-form">
+    <h3 id="nc-title">New community</h3>
+    <p class="lede">It starts on Stoa's chain, beside the others. Its first five posters are its seeds, and their upvotes and follows make its members. If it outgrows the shared chain, its members can move it to a chain of its own.</p>
+    <label for="nc-name">Name</label>
+    <input type="text" id="nc-name" required maxlength="160" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="bitcoin">
+    <p class="hint">Lowercase letters, digits and -. Put / between levels for a community inside another, like bitcoin/lightning.</p>
+    <p class="cost" id="nc-cost" aria-live="polite"></p>
+    <div class="row2"><span class="status" id="nc-status" role="status"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" id="nc-create" value="create">Create</button></div>
   </form>
 </dialog>
 

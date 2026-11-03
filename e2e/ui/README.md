@@ -28,7 +28,11 @@ reader, with Show; media nobody serves; following someone from their
 profile, the Following feed, and a member's follow making a new account's
 votes count;
 Top and New ordering; an earlier render finishing after a newer one without
-writing over it; and a community the node does not serve shown as such.
+writing over it; a community the node does not serve shown as such; a new
+community made from the rail on the home chain, posted to and voted in, kept
+apart from the others; and a community with a chain of its own moved to the
+home chain by a member's choice, new posts going there and earlier ones
+still read.
 
 ```sh
 cd e2e/ui && npm ci && npx playwright install chromium

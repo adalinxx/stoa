@@ -17,6 +17,7 @@ import { writeRequest } from "./vendor/moniker-sdk/src/records/wallet.mjs";
 import { stepFor } from "./vendor/moniker-sdk/src/picker.mjs";
 import { selfhold } from "./vendor/selfhold.mjs";
 import * as write from "../client/write.mjs";
+import * as places from "../client/places.mjs";
 import { byline, collapsed, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, profileHref, safeLink, short, voteBox, when } from "./lib.mjs";
 
 const $ = (s) => document.querySelector(s);
@@ -111,8 +112,45 @@ const settings = {
 const homePath = () => settings.home.split("/");
 const followsPath = () => settings.follows.split("/");
 // s/all: every community's posts at once. It is no chain of its own.
-const ALL = "all";
+const ALL = places.ALL;
+/** A community's own chain, `<home>/<name>`, whether or not it has one. */
 const chainOf = (community) => (community === ALL ? homePath() : [...homePath(), ...community.split("/")]);
+// Communities with a chain of their own (children of the home chain), and
+// what accounts declared about each on the home chain (places.declarations).
+let ownChains = new Set();
+let declared = new Map();
+/** Whether a community is named on the home chain (declared there, or being created by the reader). */
+const onHome = (community) => declared.has(community) || pendingItems.has(`community|${community}`);
+/**
+ * Where a community lives, each place `{ chain, scope? }`: its own chain, and
+ * the home chain once it is named there, its records scoped to it
+ * (client/places.mjs). A community that moved is read from both. One named
+ * nowhere is looked for on a chain of its own, which some node may serve.
+ */
+const placesOf = (community) => [
+  ...(ownChains.has(community) || !onHome(community) ? [{ chain: chainOf(community) }] : []),
+  ...(onHome(community) ? [{ chain: homePath(), scope: community }] : []),
+];
+// Chains that couldn't be read when last asked ("A/B"): new posts don't go to one while another place can be.
+const unreadable = new Set();
+/** Where its new posts go, as its members chose when it was last read (or, till then, its own chain if it has one). */
+const postingPlaces = new Map(); // community → { at, weights }
+const postingPlace = (community) => {
+  const at = postingPlaces.get(community)?.at ?? (ownChains.has(community) ? "own" : "home");
+  const all = placesOf(community);
+  const read = all.filter((place) => !unreadable.has(place.chain.join("/")));
+  const from = read.length ? read : all;
+  return from.find((place) => (at === "own") === !place.scope) ?? from[0];
+};
+/** Where its new posts go, its members' choice read first if it hasn't been. */
+async function placeToPost(community) {
+  if (!postingPlaces.has(community)) await communityState(community).then((state) => choosePlace(state)).catch(() => {});
+  return postingPlace(community);
+}
+// Where each item read was found: "<community>|<author>|<id>" → place. A
+// vote or reply is written where the item lives.
+const itemPlaces = new Map();
+const placeOfItem = (community, author, id) => itemPlaces.get(keyOf(community, author, id)) ?? postingPlace(community);
 const hostOf = (url) => {
   try {
     return new URL(url).host;
@@ -342,6 +380,34 @@ function readAhead(chain) {
 const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(homePath().length).join("/") : ALL);
 
 /**
+ * A community's records wherever it lives (placesOf), as one view
+ * (places.union): `{ get, list, where, community, places, states, hash,
+ * missing }`, `where(key)` the index in `places` of the place holding `key`.
+ * A place no node serves is left out, in `missing`; with none read, the
+ * first place's failure is thrown.
+ */
+async function communityState(community, { ahead = false } = {}) {
+  const all = placesOf(community);
+  // The home chain as this render read it, rather than its tip asked again for every community.
+  const read = (chain) => (homeState && chain.join("/") === settings.home ? homeState : stateOf(chain, { ahead }));
+  const settled = await Promise.allSettled(all.map((place) => read(place.chain)));
+  settled.forEach(({ status }, n) => unreadable[status === "fulfilled" ? "delete" : "add"](all[n].chain.join("/")));
+  if (!settled.some(({ status }) => status === "fulfilled")) throw settled[0].reason;
+  const at = all.filter((_, n) => settled[n].status === "fulfilled");
+  const states = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
+  const view = places.union(states.map((state, n) => (at[n].scope ? places.scoped(state, community) : state)));
+  const missing = all.filter((_, n) => settled[n].status === "rejected");
+  return { ...view, community, places: at, states, missing, hash: states.map((state) => state.hash).join(" ") };
+}
+/** Notes the place each of `items` (with `author`, `id`) was found in, for votes and replies on it. */
+async function notePlaces(state, items) {
+  await Promise.all(items.map(async ({ author, id }) => {
+    const n = await state.where(`user/${author}/post/${id}`);
+    if (n >= 0) itemPlaces.set(keyOf(state.community, author, id), state.places[n]);
+  }));
+}
+
+/**
  * Sign and send `records` on `chain`, as the connected account. Selfhold's
  * window opens at once, in the click, while the page reads the chain and
  * builds the write; Selfhold shows it, pays its fee (with this device's
@@ -361,11 +427,13 @@ const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(h
  * (waiting while the window says it is preparing), so no write undoes
  * another.
  */
-async function send(chain, records, status = () => {}, beforeWallet = () => true, fresh) {
+async function send(place, records, status = () => {}, beforeWallet = () => true, fresh) {
   const address = connected;
   if (!address) throw new Said("Connect Selfhold first.");
   if (!beforeWallet()) throw new Withdrawn();
-  const community = communityOf(chain);
+  // A chain, or a place: a chain and, on the home chain, the community the records are scoped to.
+  const { chain, scope } = Array.isArray(place) ? { chain: place } : place;
+  const community = scope ?? communityOf(chain);
   // Our own refusal while building, said as is (the window closes, nothing sent).
   let refused = null;
   let sentActions = [];
@@ -388,10 +456,10 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
     } catch (error) {
       throw new Said(readFailure(error, community, chain.join("/") === settings.follows ? "Follows" : undefined));
     }
-    const built = ordered ? await records(state) : records;
+    const built = ordered ? await records(scope ? places.scoped(state, scope) : state) : records;
     // A key already holding its new value is no change: nothing to sign for it.
-    const actions = (await write.changes(state, built)).filter((a) => a.oldValue !== a.newValue);
-    const record = fresh && actions.find((a) => a.key === fresh);
+    const actions = (await write.changes(state, scope ? places.scopeWrites(scope, built) : built)).filter((a) => a.oldValue !== a.newValue);
+    const record = fresh && actions.find((a) => a.key === (scope ? places.scopedKey(scope, fresh) : fresh));
     if (record && record.oldValue !== undefined) throw new Landed();
     // Already so on the chain: nothing to sign, nothing to pay.
     if (!actions.length) return null;
@@ -704,7 +772,7 @@ function followsReader() {
 // A community's members and their votes, once per state read.
 const standings = new Map(); // "A/B hash" → promise of { members, votes }
 function standingOf(state, posts) {
-  const key = `${state.chain.join("/")} ${state.hash}`;
+  const key = `${state.community} ${state.hash}`;
   if (!standings.has(key)) {
     // One state's at a time is plenty: the last few are kept for a quick back and forth.
     if (standings.size > 8) standings.delete(standings.keys().next().value);
@@ -723,33 +791,43 @@ function standingOf(state, posts) {
 // that would read more than a fresh computation is given up for one.
 const KEPT_FOR = 24 * 3600_000;
 const DIFF_BUDGET = 4000;
-/** Whether a key starting with `path` may be `<space>/<a>/<kind>/…` (no `kind`: any). */
-const keysOf = (space, kind) => (path) => {
-  const [s, a, k] = path.split("/");
-  if (!space.startsWith(s) || (s !== space && a !== undefined)) return false;
-  return !kind || k === undefined || kind.startsWith(k) || k.startsWith(`${kind}`);
+/** Whether a key starting with `path` (which may end inside a segment) may fit `pattern`, its segments `*` for any. */
+const mayFit = (pattern) => (path) => {
+  const parts = path.split("/");
+  return parts.every((part, n) => n >= pattern.length || pattern[n] === "*" || (n === parts.length - 1 ? pattern[n].startsWith(part) : part === pattern[n]));
 };
-const edgeKeys = keysOf("user", "edges");
-const followKeys = keysOf("follows");
-const keptStandings = new Map(); // "node|chain" → promise of { at, root, follows, kept } or undefined
+/** Whether `key` is under `pattern`: every segment of it matched. */
+const fits = (pattern, key) => {
+  const parts = key.split("/");
+  return parts.length > pattern.length && pattern.every((segment, n) => segment === "*" || parts[n] === segment);
+};
+/** Where an account's edges records are in a place: `user/<a>/edges/` on its own chain, scoped on the home chain. */
+const edgesPattern = (place) => (place.scope ? ["user", "*", "c", places.segmentOf(place.scope), "edges"] : ["user", "*", "edges"]);
+const FOLLOWS = ["follows", "*"];
+const keptStandings = new Map(); // "node|community|chains|…" → promise of { at, roots, follows, kept, retry } or undefined
 
 async function computeStanding(state, posts) {
-  const seeds = seedsOf(posts ?? (await read.posts(state)));
+  // Seeds from where the community was founded (places.founding): a place it moved to adds members, not seeds.
+  const { at: foundedAt, seeds } = state.places.length > 1 ? await places.founding(state, posts ?? (await read.posts(state))) : { at: 0, seeds: seedsOf(posts ?? (await read.posts(state))) };
+  const founded = state.places[foundedAt]?.scope ? "home" : "own";
   const followsOf = followsReader();
   const follows = await followsOf.state;
-  const where = `${settings.node}|${state.chain.join("/")}|${settings.follows}|${settings.moniker}`;
+  const chains = state.places.map((place) => place.chain.join("/")).join(",");
+  const where = `${settings.node}|s/${state.community}|${chains}|${settings.follows}|${settings.moniker}`;
   const last = await (keptStandings.get(where) ?? lastKept(where));
+  const roots = state.states.map((s) => s.root);
   let before, changed;
-  if (last && Date.now() - last.at < KEPT_FOR && (last.follows === null) === (follows === null)) {
+  if (last?.roots?.length === roots.length && Date.now() - last.at < KEPT_FOR && (last.follows === null) === (follows === null)) {
     try {
       changed = new Set(last.retry ?? []);
-      for await (const [key] of diff(state.load, last.root, state.root, { could: edgeKeys, budget: DIFF_BUDGET })) {
-        const [space, a, kind] = key.split("/");
-        if (space === "user" && kind === "edges") changed.add(a);
+      for (const [n, place] of state.places.entries()) {
+        const pattern = edgesPattern(place);
+        for await (const [key] of diff(state.states[n].load, last.roots[n], roots[n], { could: mayFit(pattern), budget: DIFF_BUDGET })) {
+          if (fits(pattern, key)) changed.add(key.split("/")[1]);
+        }
       }
-      if (follows) for await (const [key] of diff(follows.load, last.follows, follows.root, { could: followKeys, budget: DIFF_BUDGET })) {
-        const [space, a] = key.split("/");
-        if (space === "follows") changed.add(a);
+      if (follows) for await (const [key] of diff(follows.load, last.follows, follows.root, { could: mayFit(FOLLOWS), budget: DIFF_BUDGET })) {
+        if (fits(FOLLOWS, key)) changed.add(key.split("/")[1]);
       }
       before = last.kept;
     } catch {
@@ -759,10 +837,10 @@ async function computeStanding(state, posts) {
     }
   }
   const result = await memberVotes(state, seeds, { followsOf, before, changed: [...(changed ?? [])] });
-  const now = { at: before ? last.at : Date.now(), root: state.root, follows: follows?.root ?? null, kept: result.kept, retry: [...followsOf.failed] };
+  const now = { at: before ? last.at : Date.now(), roots, follows: follows?.root ?? null, kept: result.kept, retry: [...followsOf.failed] };
   keptStandings.set(where, Promise.resolve(now));
   keep(where, now);
-  return result;
+  return { ...result, founded };
 }
 
 // Kept across visits in IndexedDB; a browser that keeps nothing computes afresh each visit.
@@ -802,11 +880,11 @@ async function lastKept(where) {
   });
   return saved && { ...saved, kept: unpack(saved.kept) };
 }
-async function keep(where, { at, root, follows, kept, retry }) {
+async function keep(where, { at, roots, follows, kept, retry }) {
   const db = await standingDB;
   if (!db || !kept.push) return;
   try {
-    db.transaction("kept", "readwrite").objectStore("kept").put({ at, root, follows, kept: pack(kept), retry }, where);
+    db.transaction("kept", "readwrite").objectStore("kept").put({ at, roots, follows, kept: pack(kept), retry }, where);
   } catch {
     /* kept for this visit only */
   }
@@ -838,13 +916,29 @@ async function votesFor(state, posts) {
     standingOf(state, posts),
     reader ? read.edgesOf(state, reader).then(read.edgeSets) : null,
   ]);
-  if (reader) memberIn.set(`${reader} ${communityOf(state.chain)}`, counted.has(reader));
+  if (reader) memberIn.set(`${reader} ${state.community}`, counted.has(reader));
   return (author, id) => {
     const target = `${author}/${id}`;
     const v = votes.get(target);
     const mine = own?.up.has(target) ? 1 : own?.down.has(target) ? -1 : 0;
     return { ups: v?.ups ?? 0, downs: v?.downs ?? 0, mine, counted: reader !== undefined && counted.has(reader) };
   };
+}
+
+/** Where `state`'s community's new posts go, from what its members declared (places.chosenPlace). */
+async function choosePlace(state, posts) {
+  const c = state.community;
+  if (!ownChains.has(c)) return postingPlaces.set(c, { at: onHome(c) ? "home" : "own", weights: { home: 0, own: 0 } });
+  const { standing, members, founded } = await standingOf(state, posts);
+  postingPlaces.set(c, places.chosenPlace({ declared: declared.get(c) ?? new Map(), standing, members, hasOwn: true, founded }));
+  // The aside was drawn before its members were read: it says where they chose now.
+  if (route.community === c && route.view !== "post") showAside();
+}
+
+/** Every community: those with a chain of their own, those declared on the home chain, and ones the reader is creating. */
+function listCommunities() {
+  const creating = [...pendingItems.values()].filter((p) => p.kind === "community").map((p) => p.community);
+  return [...new Set([...ownChains, ...declared.keys(), ...creating])].sort();
 }
 
 // ------------------------------------------------- the reader's own writes
@@ -898,7 +992,7 @@ async function castVote(button) {
     pendingVotes.set(key, { direction });
     redraw();
     const voter = signer().address;
-    land = await send(chainOf(community), async (state) => write.vote(voter, await read.edgesOf(state, voter), author, id, direction));
+    land = await send(placeOfItem(community, author, id), async (state) => write.vote(voter, await read.edgesOf(state, voter), author, id, direction));
   } catch (error) {
     if (error instanceof Withdrawn || !mine()) return;
     pendingVotes.delete(key);
@@ -971,9 +1065,11 @@ function setTitle(text) {
 
 /** One community's posts with their votes and comment counts. */
 async function loadPosts(community) {
-  const state = await stateOf(chainOf(community), { ahead: true });
+  const state = await communityState(community, { ahead: true });
   const posts = await read.posts(state);
-  const votesOf = await votesFor(state, posts);
+  // A community without posts has no members to read.
+  if (!posts.length) return [];
+  const [votesOf] = await Promise.all([votesFor(state, posts), notePlaces(state, posts), choosePlace(state, posts)]);
   return Promise.all(
     posts.map(async (post) => {
       let comments = 0;
@@ -1132,15 +1228,19 @@ async function showPost({ community, author, id }, renderId) {
   if (fresh) setTitle(`s/${community}`);
   let tree;
   try {
-    const state = await stateOf(chainOf(community), { ahead: true });
+    const state = await communityState(community, { ahead: true });
     tree = await read.thread(state, author, id);
     if (tree) {
-      const votesOf = await votesFor(state);
+      const [votesOf] = await Promise.all([votesFor(state), choosePlace(state)]);
       const withVotes = (node) => {
         Object.assign(node, votesOf(node.author, node.id));
         node.replies.forEach(withVotes);
       };
       withVotes(tree);
+      const all = [];
+      const each = (node) => { all.push(node); node.replies.forEach(each); };
+      each(tree);
+      await notePlaces(state, all);
       const authors = [];
       const collect = (node) => { authors.push(node.author); node.replies.forEach(collect); };
       collect(tree);
@@ -1240,8 +1340,11 @@ async function showProfile({ address }, renderId) {
     loadNames([address]).catch(() => {}),
     Promise.all(communities.map(async (c) => {
       try {
-        const state = await stateOf(chainOf(c));
-        const [items, votesOf] = await Promise.all([read.itemsBy(state, address), votesFor(state)]);
+        const state = await communityState(c);
+        const items = await read.itemsBy(state, address);
+        // Where they wrote nothing, there are no votes to read.
+        if (!items.length) return { c, items };
+        const [votesOf] = await Promise.all([votesFor(state), notePlaces(state, items)]);
         return {
           c,
           items: await Promise.all(items.map(async (item) => {
@@ -1363,7 +1466,16 @@ const MEDIA_TYPES = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|ogg))$/;
 function mediaFile(cid, community) {
   if (!media.has(cid)) {
     media.set(cid, (async () => {
-      const volume = await nodes.read(chainOf(community), (node) => volumesOn(node.url, chainOf(community), { media: true }).get(cid));
+      let volume, failure;
+      for (const { chain } of placesOf(community)) {
+        try {
+          volume = await nodes.read(chain, (node) => volumesOn(node.url, chain, { media: true }).get(cid));
+          break;
+        } catch (error) {
+          failure = error;
+        }
+      }
+      if (!volume) throw failure;
       const file = sdk.decodeDagCbor(volume.bytes(cid));
       if (typeof file?.type !== "string" || !MEDIA_TYPES.test(file.type) || !(file.bytes instanceof Uint8Array) || file.bytes.length > 8 << 20) return { unsupported: true };
       return { kind: file.type.startsWith("video/") ? "video" : "img", url: URL.createObjectURL(new Blob([file.bytes], { type: file.type })) };
@@ -1438,15 +1550,56 @@ function showAside() {
     $("#aside").innerHTML = `<div class="card"><h4>s/all</h4><p class="muted">Every community's posts at once, each ranked by its own members' votes.</p><dl class="kv"><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></div>${joinCard()}`;
     return;
   }
-  const about = "A community with a chain of its own. Anyone can post here, and anyone can mine it.";
+  const own = !postingPlace(c).scope;
+  const about = own
+    ? "A community with a chain of its own. Anyone can post here, and anyone can mine it."
+    : "A community on Stoa's chain, beside the others. Anyone can post here.";
   $("#aside").innerHTML = `<div class="card"><h4>s/${esc(c)}</h4><p class="muted">${about}</p>
     <dl class="kv"><dt>Votes</dt><dd>count from its members: the accounts its first posters' upvotes and follows reach. What members downvote more than upvote is collapsed.</dd>${signer() ? '<dt>Your votes</dt><dd id="aside-you">…</dd>' : ""}</dl>
-    <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>${joinCard()}`;
+    ${placeCard(c)}
+    <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>${placesOf(c).length > 1 ? "Chains" : "Chain"}</dt><dd class="mono">${placesOf(c).map((p) => pathHTML(p.chain) + (unreadable.has(p.chain.join("/")) ? " <span class=\"muted\">(no node serves it now: its posts are missing)</span>" : "")).join("<br>")}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>${joinCard()}`;
   drawYou();
   // Each read fills only the aside it was made for.
   const height = $("#aside-height"), node = $("#aside-node");
-  nodes.list(chainOf(c)).then(([first]) => first && (node.textContent = first.found ? `${hostOf(first.url)}, found for this community: its operator declared it, and what it serves isn't checked` : hostOf(first.url)), () => {});
-  api("/api/chain/info", chainOf(c)).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
+  const live = postingPlace(c).chain;
+  nodes.list(live).then(([first]) => first && (node.textContent = first.found ? `${hostOf(first.url)}, found for this community: its operator declared it, and what it serves isn't checked` : hostOf(first.url)), () => {});
+  api("/api/chain/info", live).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
+}
+
+const PLACE_NAMES = { own: "its own chain", home: "Stoa's chain" };
+/** Where a community's new posts go, chosen by its members, and the reader's say in it. */
+function placeCard(c) {
+  if (!ownChains.has(c)) {
+    if (!onHome(c)) return "";
+    return `<dl class="kv"><dt>Lives on</dt><dd>Stoa's chain. Once a node operator gives it a chain of its own (<span class="mono">${pathHTML(chainOf(c))}</span>), its members can move it there.</dd></dl>`;
+  }
+  const at = postingPlace(c).scope ? "home" : "own";
+  const other = at === "own" ? "home" : "own";
+  const { home = 0, own = 0 } = postingPlaces.get(c)?.weights ?? {};
+  const total = home + own;
+  const split = total
+    ? `Of the standing its members declared, ${Math.round((100 * own) / total)}% chose its own chain and ${Math.round((100 * home) / total)}% Stoa's chain.`
+    : "No member has chosen, so it stays on its own chain.";
+  const reader = signer()?.address;
+  const mine = reader && declared.get(c)?.get(reader);
+  const counts = reader && memberIn.get(`${reader} ${c}`);
+  const yours = mine ? ` You chose ${PLACE_NAMES[mine]}${counts === false ? ": it counts once you're a member" : ""}.` : "";
+  const button = reader && mine !== other ? `<button class="btn small" type="button" data-place="${other}">Choose ${PLACE_NAMES[other]}</button>` : "";
+  return `<dl class="kv"><dt>New posts go to</dt><dd>${PLACE_NAMES[at]}, as its members chose. ${split}${yours} Posts already written stay where they are and are read from both.</dd></dl>${button}`;
+}
+
+/** The reader declares where `c`'s new posts should go: `at` is "home" or "own". */
+function choosePlaceFor(c, at) {
+  const reader = signer();
+  if (!reader) return needAccount("Choices are signed by your account, so others can count them.");
+  const before = declared.get(c)?.get(reader.address);
+  const set = (value) => {
+    if (!declared.has(c)) declared.set(c, new Map());
+    if (value) declared.get(c).set(reader.address, value);
+    else declared.get(c).delete(reader.address);
+    showAside();
+  };
+  saveChoice(places.declare(reader.address, c, at), () => set(at), `your choice for s/${c}`, { undo: () => set(before) });
 }
 
 // Renders overlap (a navigation while the last one still reads the node);
@@ -1467,7 +1620,14 @@ async function render() {
   homeState = home;
   if (home) {
     const reader = signer();
-    await Promise.all([loadMine(home).catch(() => {}), reader && loadNames([reader.address]).catch(() => {})]);
+    await Promise.all([
+      loadMine(home).catch(() => {}),
+      reader && loadNames([reader.address]).catch(() => {}),
+      places.declarations(home).then((found) => (declared = found), () => {}),
+    ]);
+    // A community being created is drawn till a read shows it.
+    for (const p of pendingItems.values()) if (p.kind === "community" && declared.has(p.community)) pendingItems.delete(p.key);
+    communities = listCommunities();
   }
   if (stale(id)) return;
   route = next;
@@ -1515,6 +1675,8 @@ document.addEventListener("click", async (event) => {
     openReply(el.dataset.reply);
   } else if (el.dataset.join) {
     toggleJoin(el.dataset.join);
+  } else if (el.dataset.place) {
+    choosePlaceFor(route.community, el.dataset.place);
   } else if (el.dataset.follow) {
     toggleFollow(el.dataset.follow);
   } else if (el.hasAttribute("data-retry")) {
@@ -1735,7 +1897,7 @@ $("#reply-form").addEventListener("submit", async (event) => {
     build: (author) => {
       const newId = draftId(draftKey);
       return {
-        chain: chainOf(community),
+        chain: placeOfItem(community, postAuthor, postId),
         records: write.comment(author, newId, on, { body }, target ? { parent: target } : {}),
         fresh: `user/${author}/post/${newId}`,
         pending: { key: keyOf(community, author, newId), kind: "comment", community, author, id: newId, value, on, parent: target },
@@ -1785,6 +1947,45 @@ function openNewPost() {
   drawMediaPicker();
 }
 $("#open-new").onclick = openNewPost;
+
+function openNewCommunity() {
+  opened($("#community"));
+  $("#nc-status").textContent = "";
+  $("#nc-status").classList.remove("bad");
+  $("#community").showModal();
+  $("#nc-name").focus();
+  $("#nc-cost").textContent = signingNote();
+}
+$("#open-community").onclick = openNewCommunity;
+$("#community-form").addEventListener("submit", async (event) => {
+  if (event.submitter?.value !== "create") return;
+  event.preventDefault();
+  const status = $("#nc-status");
+  status.classList.add("bad");
+  const name = $("#nc-name").value.trim().toLowerCase().replace(/^s\//, "");
+  if (name === ALL) return (status.textContent = "s/all shows every community at once. Choose another name.");
+  if (!places.isName(name)) return (status.textContent = "Use lowercase letters, digits and -, with / between levels, like bitcoin/lightning.");
+  if (communities.includes(name)) return (status.textContent = `s/${name} already exists.`);
+  // Posts written in it on Stoa's chain before anyone named it make it theirs: first come.
+  const home = await stateOf(homePath()).catch(() => null);
+  const posted = home && !(await home.list(`index/c/${places.segmentOf(name)}/post/`).next()).done;
+  if (posted) return (status.textContent = `s/${name} already has posts on Stoa's chain. Choose another name.`);
+  await sendFromDialog({
+    status, button: $("#nc-create"),
+    build: (author) => ({
+      chain: homePath(),
+      records: places.declare(author, name, "home"),
+      fresh: `index/community/${places.segmentOf(name)}/${author}`,
+      pending: { key: `community|${name}`, kind: "community", community: name, author },
+    }),
+    sent: () => $("#community-form").reset(),
+    done: () => {
+      $("#community").close();
+      communities = listCommunities();
+      location.hash = `#/s/${encodeURIComponent(name)}`;
+    },
+  });
+});
 document.querySelectorAll("dialog").forEach((dialog) => {
   // Focus goes back to what opened the dialog, found again if a redraw
   // replaced it meanwhile (refocus acts only when focus fell to the page).
@@ -1822,12 +2023,13 @@ $("#new-form").addEventListener("submit", async (event) => {
   const value = { title, ...(link && { link }), ...($("#np-b").value.trim() && { body: $("#np-b").value.trim() }) };
   let made;
   const media = attachment ? [attachment.cid] : [];
+  const place = await placeToPost(community);
   await sendFromDialog({
     status, button: $("#np-post"),
     build: (author) => {
       const id = draftId(`new-post:${community}`);
       made = { author, id };
-      return { chain: chainOf(community), records: write.post(author, id, value, media), fresh: `user/${author}/post/${id}`, pending: { key: keyOf(community, author, id), kind: "post", community, author, id, value, media } };
+      return { chain: place, records: write.post(author, id, value, media), fresh: `user/${author}/post/${id}`, pending: { key: keyOf(community, author, id), kind: "post", community, author, id, value, media } };
     },
     sent: () => {
       $("#new-form").reset();
@@ -2087,12 +2289,13 @@ $("#profile-form").addEventListener("submit", async (event) => {
 const MOST_MEDIA = (1 << 20) - 256; // one Volume of at most 1 MiB, its block's framing included
 const UPLOADS = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm))$/;
 let attachment = null; // { cid, file: { kind, url }, state: "storing" | "kept" | "failed", stop, chain }
-const storageChains = new Map(); // "<sponsor> <community>" → Promise<chain | null>
-const storageOn = (community) => {
-  if (!settings.sponsor) return Promise.resolve(null);
-  const key = `${settings.sponsor} ${community}`;
+const storageChains = new Map(); // "<sponsor> <chain>" → Promise<chain | null>
+const storageOn = async (community) => {
+  if (!settings.sponsor) return null;
+  const chain = (await placeToPost(community)).chain.join("/");
+  const key = `${settings.sponsor} ${chain}`;
   if (!storageChains.has(key)) {
-    const asked = storageChain(settings.sponsor, [chainOf(community).join("/"), homePath().join("/")]);
+    const asked = storageChain(settings.sponsor, [...new Set([chain, homePath().join("/")])]);
     storageChains.set(key, asked);
     // A sponsor that didn't answer is asked again next time.
     asked.then((chain) => chain || storageChains.delete(key));
@@ -2321,8 +2524,16 @@ async function boot() {
   try {
     const children = (await listed).directories ?? [];
     // s/all is every community at once, not a chain: no child may take its name.
-    communities = children.filter((c) => c !== ALL);
-    for (const c of likelyShown()) readAhead(chainOf(c));
+    ownChains = new Set(children.filter((c) => c !== ALL));
+    declared = await stateOf(homePath(), { ahead: true }).then(places.declarations).catch(() => new Map());
+    // A nested community named on the home chain may have a chain of its own under its parent's.
+    for (let depth = 1; depth < 4; depth++) {
+      const parents = [...ownChains].filter((c) => c.split("/").length === depth && [...declared.keys()].some((name) => name.startsWith(`${c}/`)));
+      const found = await Promise.all(parents.map((p) => api("/api/chain/children", chainOf(p)).then((r) => (r.directories ?? []).map((d) => `${p}/${d}`), () => [])));
+      found.flat().forEach((c) => ownChains.add(c));
+    }
+    communities = listCommunities();
+    for (const c of likelyShown()) for (const { chain } of placesOf(c)) readAhead(chain);
   } catch (error) {
     communities = [];
     shown = null;

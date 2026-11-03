@@ -12,6 +12,7 @@ import { after, before, test as nodeTest } from "node:test";
 import { chromium, expect as baseExpect } from "@playwright/test";
 import { mediaVolume } from "../../client/media.mjs";
 import * as read from "../../client/read.mjs";
+import * as places from "../../client/places.mjs";
 import * as write from "../../client/write.mjs";
 import { FOLLOWS, MONIKER, start } from "./stack.mjs";
 
@@ -409,4 +410,65 @@ test("a community no node serves says so, with a way out, instead of looking emp
   await page.locator('#settings-form button[value="save"]').click();
   await expect(page.locator("#st-status")).toContainText("must be an https address");
   expect(String(await page.evaluate(() => localStorage.getItem("stoa:node")))).not.toContain("192.168.1.5");
+});
+
+test("a new community lives on Stoa's chain: made from the rail, posted to, and kept apart from the others", async ({ page }) => {
+  await openApp(page, feed);
+  const address = await signIn(page);
+  const name = `town-${Date.now().toString(36)}`;
+  await page.getByRole("button", { name: "New community" }).click();
+  await page.locator("#nc-name").fill(name);
+  await approveInSelfhold(page, page.locator("#nc-create"));
+  await expect(page).toHaveURL(new RegExp(`#/s/${name}$`));
+  await expect(page.locator("#communities")).toContainText(`s/${name}`);
+  await expect.poll(async () => (await stateOf(homePath)).get(`index/community/${name}/${address}`)).toBe(JSON.stringify({ at: "home" }));
+  await shot(page, "community-made");
+
+  await page.locator("#open-new").click();
+  await page.locator("#np-c").selectOption(name);
+  await page.locator("#np-t").fill("First on the shared chain");
+  await approveInSelfhold(page, page.locator("#np-post"));
+  await expect(page.locator(".op .meta time")).toBeVisible();
+  // On the home chain, listed under the community, the post saying where it is.
+  const home = await stateOf(homePath);
+  const listed = [];
+  for await (const [key] of home.list(`index/c/${name}/post/`)) listed.push(key);
+  expect(listed).toHaveLength(1);
+  const [, , , , id] = listed[0].split("/");
+  expect(JSON.parse(await home.get(`user/${address}/post/${id}`)).c).toBe(name);
+
+  // A vote on it is kept with the community's records on the home chain.
+  await openApp(page, `#/s/${name}`);
+  await approveInSelfhold(page, page.locator(".post", { hasText: "First on the shared chain" }).locator(".vote.up"));
+  await expect.poll(async () => (await stateOf(homePath)).get(`user/${address}/c/${name}/edges/0`), { timeout: 120_000 }).toContain(`${address}/${id}`);
+
+  // Another community doesn't show it.
+  await openApp(page, feed);
+  await expect(page.locator(".post").first()).toBeVisible();
+  await expect(page.locator(".post", { hasText: "First on the shared chain" })).toHaveCount(0);
+});
+
+test("a community with a chain of its own moves to Stoa's chain when its members choose: new posts go there, earlier ones stay", async ({ page }) => {
+  // The poster wrote among the community's first posts: a member, whose choice counts.
+  await writeAs(poster, homePath, places.declare(poster.address, community, "home"));
+  try {
+    await openApp(page, feed);
+    await expect(page.locator("#aside")).toContainText("Stoa's chain, as its members chose");
+    const address = await signIn(page);
+    await page.locator("#open-new").click();
+    await page.locator("#np-c").selectOption(community);
+    await page.locator("#np-t").fill("After the move");
+    await approveInSelfhold(page, page.locator("#np-post"));
+    await expect(page.locator(".op .meta time")).toBeVisible();
+    const listed = [];
+    for await (const [key] of (await stateOf(homePath)).list(`index/c/${community}/post/`)) listed.push(key);
+    expect(listed.some((key) => key.endsWith(`/${address}`))).toBe(true);
+    // Its earlier posts, on its own chain, are read with the new ones.
+    await openApp(page, feed);
+    await expect(page.locator(".post", { hasText: "After the move" })).toBeVisible();
+    await expect(page.locator(".post", { hasText: "Older, liked" })).toBeVisible();
+  } finally {
+    // Back to its own chain, for whatever runs next.
+    await writeAs(poster, homePath, places.declare(poster.address, community, "own"));
+  }
 });
