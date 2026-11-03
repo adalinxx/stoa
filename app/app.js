@@ -1,14 +1,13 @@
 // Stoa in the browser: reads every record from a node by CID, ranks and
 // filters here, and asks Selfhold to sign each write: its window over the
-// page, whose key a passkey keeps, or Selfhold for Chrome. A fee sponsor takes
-// this device's work for each fee, and a storage sponsor for each file kept,
-// so taking part needs no coins. No server of its own.
+// page, whose key a passkey keeps, or Selfhold for Chrome. A sponsor takes
+// this device's work for each fee and each file kept, so taking part needs
+// no coins. No server of its own.
 import * as sdk from "./vendor/lattice-sdk.js";
-import { judge, treatments } from "../client/moderation.mjs";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
-import { memberVotes, seedsOf } from "../client/standing.mjs";
-import { tip, view, volumeLoader } from "../client/state.mjs";
+import { memberVotes, pack, seedsOf, unpack } from "../client/standing.mjs";
+import { diff, tip, view, volumeLoader } from "../client/state.mjs";
 import { mediaVolume } from "../client/media.mjs";
 import { StorageRefused, StorageStopped, store as storeFile, storageChain } from "../client/storage.mjs";
 import { hasher, workDevice } from "../client/work/hash.mjs";
@@ -18,7 +17,8 @@ import { writeRequest } from "./vendor/moniker-sdk/src/records/wallet.mjs";
 import { stepFor } from "./vendor/moniker-sdk/src/picker.mjs";
 import { selfhold } from "./vendor/selfhold.mjs";
 import * as write from "../client/write.mjs";
-import { byline, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, profileHref, safeLink, short, voteBox, when } from "./lib.mjs";
+import * as places from "../client/places.mjs";
+import { byline, collapsed, commentNode, esc, mediaSlot, nameOf, ordered, parseRoute, pathHTML, pendingNote, plural, postHref, postRow, profileHref, safeLink, short, voteBox, when } from "./lib.mjs";
 
 const $ = (s) => document.querySelector(s);
 
@@ -88,9 +88,10 @@ const sponsorAddress = (url) => {
     return "";
   }
 };
+// Follows, the follow graph every app shares.
+const DEFAULT_FOLLOWS = "Nexus/testnet/follows-449390";
 const savedMoniker = store.get("monikerChain", null);
 const savedSponsor = store.get("sponsor", null);
-const savedStorage = store.get("storage", null);
 const settings = {
   // A node saved before addresses were checked, or since retired, falls back
   // to the default.
@@ -99,18 +100,57 @@ const settings = {
   // Kept only when the reader chose a chain other than the SDK's, so a
   // reader on the default follows it when an SDK release moves Moniker.
   moniker: savedMoniker && !RETIRED_MONIKER.test(savedMoniker) ? savedMoniker : MONIKER.chain.join("/"),
+  // Kept only when the reader chose another, as the moniker chain is.
+  follows: store.get("followsChain", null) ?? DEFAULT_FOLLOWS,
   // Kept only when the reader chose another (or none, ""), as the moniker chain is.
+  // The sponsor pays fees and keeps files, each for this device's work.
   sponsor: typeof savedSponsor === "string" ? savedSponsor : DEFAULT_SPONSOR,
-  storage: typeof savedStorage === "string" ? savedStorage : DEFAULT_SPONSOR,
   // Selfhold for Chrome only where Settings choose it; else Selfhold's window.
   extension: store.get("wallet", "web") === "extension",
   walletPage: walletPageOf(store.get("walletPage", DEFAULT_WALLET_PAGE)),
 };
 const homePath = () => settings.home.split("/");
-// The Stoa chain is a community too, s/all: posts of its own, and its page
-// shows every community's posts with them.
-const ALL = "all";
+const followsPath = () => settings.follows.split("/");
+// s/all: every community's posts at once. It is no chain of its own.
+const ALL = places.ALL;
+/** A community's own chain, `<home>/<name>`, whether or not it has one. */
 const chainOf = (community) => (community === ALL ? homePath() : [...homePath(), ...community.split("/")]);
+// Communities with a chain of their own (children of the home chain), and
+// what accounts declared about each on the home chain (places.declarations).
+let ownChains = new Set();
+let declared = new Map();
+/** Whether a community is named on the home chain (declared there, or being created by the reader). */
+const onHome = (community) => declared.has(community) || pendingItems.has(`community|${community}`);
+/**
+ * Where a community lives, each place `{ chain, scope? }`: its own chain, and
+ * the home chain once it is named there, its records scoped to it
+ * (client/places.mjs). A community that moved is read from both. One named
+ * nowhere is looked for on a chain of its own, which some node may serve.
+ */
+const placesOf = (community) => [
+  ...(ownChains.has(community) || !onHome(community) ? [{ chain: chainOf(community) }] : []),
+  ...(onHome(community) ? [{ chain: homePath(), scope: community }] : []),
+];
+// Chains that couldn't be read when last asked ("A/B"): new posts don't go to one while another place can be.
+const unreadable = new Set();
+/** Where its new posts go, as its members chose when it was last read (or, till then, its own chain if it has one). */
+const postingPlaces = new Map(); // community → { at, weights }
+const postingPlace = (community) => {
+  const at = postingPlaces.get(community)?.at ?? (ownChains.has(community) ? "own" : "home");
+  const all = placesOf(community);
+  const read = all.filter((place) => !unreadable.has(place.chain.join("/")));
+  const from = read.length ? read : all;
+  return from.find((place) => (at === "own") === !place.scope) ?? from[0];
+};
+/** Where its new posts go, its members' choice read first if it hasn't been. */
+async function placeToPost(community) {
+  if (!postingPlaces.has(community)) await communityState(community).then((state) => choosePlace(state)).catch(() => {});
+  return postingPlace(community);
+}
+// Where each item read was found: "<community>|<author>|<id>" → place. A
+// vote or reply is written where the item lives.
+const itemPlaces = new Map();
+const placeOfItem = (community, author, id) => itemPlaces.get(keyOf(community, author, id)) ?? postingPlace(community);
 const hostOf = (url) => {
   try {
     return new URL(url).host;
@@ -119,7 +159,6 @@ const hostOf = (url) => {
   }
 };
 const nodeHost = () => hostOf(settings.node);
-const ADDRESS = /^b[a-z2-7]{40,}$/;
 
 // ---------------------------------------------------------------- wallet
 
@@ -163,6 +202,9 @@ function setConnected(address) {
     pendingVotes.clear();
     pendingItems.clear();
     itemErrors.clear();
+    followChoices.clear();
+    // Until the next read, the new account has none of the last one's joins or follows.
+    mine = { joined: [], follows: new Set() };
   }
   connected = address;
 }
@@ -207,10 +249,10 @@ function needsCoins({ sponsor: why, address }) {
   const reason = extension()
     ? "Selfhold for Chrome pays fees in coins, and this account holds too few. Turn off Selfhold for Chrome in Settings to take part with Selfhold's window, where this device's work pays."
     : {
-      down: "This device's work usually pays the fee, but the fee sponsor isn't answering right now. Try again in a few minutes.",
+      down: "This device's work usually pays the fee, but the sponsor isn't answering right now. Try again in a few minutes.",
       dear: "This device can't do the fee's work in reasonable time right now. Try again in a few minutes.",
-      most: "The fee sponsor pays only so much for one write, and this one costs more than that.",
-    }[why] ?? (settings.sponsor ? "The fee sponsor couldn't pay this fee. Try again in a few minutes." : "No fee sponsor is set in Settings, so the fee is paid in coins.");
+      most: "The sponsor pays only so much for one write, and this one costs more than that.",
+    }[why] ?? (settings.sponsor ? "The sponsor couldn't pay this fee. Try again in a few minutes." : "No sponsor is set in Settings, so the fee is paid in coins.");
   return `${reason} Or send coins to your account ID (${short(address ?? connected ?? "")}).`;
 }
 
@@ -281,8 +323,7 @@ async function apiOn(base, path, chain) {
 }
 
 /** Why a chain could not be read, for a person. */
-function readFailure(error, community) {
-  const where = community ? `s/${community}` : "Stoa";
+function readFailure(error, community, where = community ? `s/${community}` : "Stoa") {
   if (error instanceof sdk.ChainOfflineError) return `No node serves ${where} right now.`;
   if (error?.status === 404 || /HTTP 404/.test(error?.message ?? "")) return `${nodeHost()} doesn't serve ${where}.`;
   if (error instanceof TypeError) return `Couldn't reach ${nodeHost()}.`;
@@ -339,10 +380,38 @@ function readAhead(chain) {
 const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(homePath().length).join("/") : ALL);
 
 /**
+ * A community's records wherever it lives (placesOf), as one view
+ * (places.union): `{ get, list, where, community, places, states, hash,
+ * missing }`, `where(key)` the index in `places` of the place holding `key`.
+ * A place no node serves is left out, in `missing`; with none read, the
+ * first place's failure is thrown.
+ */
+async function communityState(community, { ahead = false } = {}) {
+  const all = placesOf(community);
+  // The home chain as this render read it, rather than its tip asked again for every community.
+  const read = (chain) => (homeState && chain.join("/") === settings.home ? homeState : stateOf(chain, { ahead }));
+  const settled = await Promise.allSettled(all.map((place) => read(place.chain)));
+  settled.forEach(({ status }, n) => unreadable[status === "fulfilled" ? "delete" : "add"](all[n].chain.join("/")));
+  if (!settled.some(({ status }) => status === "fulfilled")) throw settled[0].reason;
+  const at = all.filter((_, n) => settled[n].status === "fulfilled");
+  const states = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
+  const view = places.union(states.map((state, n) => (at[n].scope ? places.scoped(state, community) : state)));
+  const missing = all.filter((_, n) => settled[n].status === "rejected");
+  return { ...view, community, places: at, states, missing, hash: states.map((state) => state.hash).join(" ") };
+}
+/** Notes the place each of `items` (with `author`, `id`) was found in, for votes and replies on it. */
+async function notePlaces(state, items) {
+  await Promise.all(items.map(async ({ author, id }) => {
+    const n = await state.where(`user/${author}/post/${id}`);
+    if (n >= 0) itemPlaces.set(keyOf(state.community, author, id), state.places[n]);
+  }));
+}
+
+/**
  * Sign and send `records` on `chain`, as the connected account. Selfhold's
  * window opens at once, in the click, while the page reads the chain and
  * builds the write; Selfhold shows it, pays its fee (with this device's
- * work, through the fee sponsor) and sends it. Resolves once it is sent, with
+ * work, through the sponsor) and sends it. Resolves once it is sent, with
  * a promise of its landing (true once every write reads back; `onSlow`
  * after a minute without it), or of true at once when nothing needed
  * changing. `status(text)` hears where it stands.
@@ -353,16 +422,18 @@ const communityOf = (chain) => (chain.length > homePath().length ? chain.slice(h
  * earlier send landed, and Landed is thrown rather than editing it.
  *
  * `records` may be a function of the state it is written against: then the
- * write rewrites the reader's own records (their votes and replies), and it
+ * write rewrites the reader's own records (their votes), and it
  * is built only once the reader's last such write on this chain has landed
  * (waiting while the window says it is preparing), so no write undoes
  * another.
  */
-async function send(chain, records, status = () => {}, beforeWallet = () => true, fresh) {
+async function send(place, records, status = () => {}, beforeWallet = () => true, fresh) {
   const address = connected;
   if (!address) throw new Said("Connect Selfhold first.");
   if (!beforeWallet()) throw new Withdrawn();
-  const community = communityOf(chain);
+  // A chain, or a place: a chain and, on the home chain, the community the records are scoped to.
+  const { chain, scope } = Array.isArray(place) ? { chain: place } : place;
+  const community = scope ?? communityOf(chain);
   // Our own refusal while building, said as is (the window closes, nothing sent).
   let refused = null;
   let sentActions = [];
@@ -383,12 +454,12 @@ async function send(chain, records, status = () => {}, beforeWallet = () => true
     try {
       state = await stateOf(chain);
     } catch (error) {
-      throw new Said(readFailure(error, community));
+      throw new Said(readFailure(error, community, chain.join("/") === settings.follows ? "Follows" : undefined));
     }
-    const built = ordered ? await records(state) : records;
+    const built = ordered ? await records(scope ? places.scoped(state, scope) : state) : records;
     // A key already holding its new value is no change: nothing to sign for it.
-    const actions = (await write.changes(state, built)).filter((a) => a.oldValue !== a.newValue);
-    const record = fresh && actions.find((a) => a.key === fresh);
+    const actions = (await write.changes(state, scope ? places.scopeWrites(scope, built) : built)).filter((a) => a.oldValue !== a.newValue);
+    const record = fresh && actions.find((a) => a.key === (scope ? places.scopedKey(scope, fresh) : fresh));
     if (record && record.oldValue !== undefined) throw new Landed();
     // Already so on the chain: nothing to sign, nothing to pay.
     if (!actions.length) return null;
@@ -490,12 +561,7 @@ function notice(message, { bad = false, action } = {}) {
 
 // The reader's choices: on their home chain once written there, in this
 // browser until then (or when writing them fails).
-let mine = { joined: [], follows: new Map() };
-// What the reader undid wins over the chain until the chain catches up.
-const follows = (community) => {
-  const off = store.get(`follows-off:${community}`, []);
-  return [...new Set([...(mine.follows.get(community) ?? []), ...store.get(`follows:${community}`, [])])].filter((a) => !off.includes(a));
-};
+let mine = { joined: [], follows: new Set() };
 const joinedList = () => {
   const local = store.get("joined", null);
   const left = store.get("left", []);
@@ -503,27 +569,34 @@ const joinedList = () => {
   return list.filter((c) => !left.includes(c));
 };
 
-/** Read the reader's joins and followed labels from the home chain. */
+/** Read the reader's joins from the home chain. */
 async function loadMine(home) {
   const reader = signer();
-  if (!reader) return (mine = { joined: [], follows: new Map() });
-  const joined = await read.joined(home, reader.address);
-  const followed = await Promise.all(communities.map(async (c) => [c, await read.followedModerators(home, reader.address, c)]));
-  mine = { joined, follows: new Map(followed) };
+  if (!reader) return (mine = { joined: [], follows: new Set() });
+  const [joined, follows] = await Promise.all([read.joined(home, reader.address), followsReader()(reader.address)]);
+  mine = { joined, follows: new Set(follows) };
 }
 
+// Follows and unfollows sent this visit, shown at once: account → true or false.
+const followChoices = new Map();
+const following = (address) => followChoices.get(address) ?? mine.follows.has(address);
+/** The accounts the reader follows. */
+const followed = () => new Set([...mine.follows, ...followChoices.keys()].filter(following));
+
 /**
- * A reader choice: kept in the browser and shown at once, then written to the
- * home chain (it lands a block later). The notice says where it stands; if the
- * write fails the choice stays in this browser and the notice says why.
+ * A reader choice: kept in the browser and shown at once, then written to
+ * `chain`, the home chain unless said (it lands a block later). The notice
+ * says where it stands; if the write fails the choice stays in this browser
+ * and the notice says why, or, with `undo`, it is taken back. `records` may
+ * be a function of the chain's state, as `send` takes them; `keys` then names
+ * what a second change must wait for.
  */
 // Home-chain keys with a save in flight. A write is made against the state it
 // read, so a second change to the same key waits for the first to land.
 const savingKeys = new Set();
-const saving = (records) => records.some(([key]) => savingKeys.has(key));
 
-function saveChoice(records, keepLocally, what, { about = what } = {}) {
-  if (signer() && saving(records)) {
+function saveChoice(records, keepLocally, what, { about = what, chain = homePath(), undo, keys = records.map(([key]) => key) } = {}) {
+  if (signer() && keys.some((key) => savingKeys.has(key))) {
     const message = `Your last change to ${about} is still landing. Try again once it has.`;
     // A notice behind an open dialog would go unseen: say it in the dialog.
     const inDialog = document.querySelector("dialog[open] .status");
@@ -538,16 +611,19 @@ function saveChoice(records, keepLocally, what, { about = what } = {}) {
   keepLocally();
   if (!signer()) return true;
   const Whats = what[0].toUpperCase() + what.slice(1);
-  const keys = records.map(([key]) => key);
   keys.forEach((key) => savingKeys.add(key));
   const shown = notice(`Saving ${what}: approve it in ${walletName()}.`);
-  send(homePath(), records)
+  send(chain, records)
     .then((land) => {
       shown.update(`Saving ${what}: waiting for a block…`);
       return land(() => shown.update(`Saving ${what}: sent, not in a block yet. It may still land.`));
     })
     .then((landed) => (landed ? shown.close() : shown.update(`${Whats} was sent but hasn't landed yet. It may still land.`)))
-    .catch((error) => shown.update(`${Whats} is kept in this browser only. ${said(error)}`, { bad: true }))
+    .catch((error) => {
+      if (!undo) return shown.update(`${Whats} is kept in this browser only. ${said(error)}`, { bad: true });
+      undo();
+      shown.update(`${Whats} wasn't saved. ${said(error)}`, { bad: true });
+    })
     .finally(() => keys.forEach((key) => savingKeys.delete(key)));
   return true;
 }
@@ -638,46 +714,22 @@ async function loadNames(addresses) {
 function forgetName(a) {
   lookups.delete(a);
 }
-const labelActions = () => store.get("labelActions", { spam: "hide", nsfw: "blur", "off-topic": "collapse" });
-let showAll = false;
-// Items the reader chose to see despite a label, for this visit.
+// Posts the reader chose to see though members downvoted them, for this visit.
 const revealed = new Set();
-// Collapsed comments the reader opened, and blurred media they uncovered.
+// Collapsed comments the reader opened.
 const expanded = new Set();
-const unblurred = new Set();
-
-async function judgeFor(state, community) {
-  if (showAll) return () => ({ treatment: "show", labels: [] });
-  const sets = new Map(await Promise.all(follows(community).map(async (a) => [a, await read.labelsBy(state, a)])));
-  const verdict = judge(sets, labelActions());
-  return (item) => (revealed.has(`${item.author}/${item.id}`) ? { treatment: "show", labels: verdict(item).labels } : verdict(item));
-}
-
-function follow(community, address, following) {
-  const keep = () => {
-    const on = store.get(`follows:${community}`, []), off = store.get(`follows-off:${community}`, []);
-    store.set(`follows:${community}`, following ? [...new Set([...on, address])] : on.filter((x) => x !== address));
-    store.set(`follows-off:${community}`, following ? off.filter((x) => x !== address) : [...new Set([...off, address])]);
-  };
-  const reader = signer();
-  if (reader) return saveChoice(write.followModerator(reader.address, community, address, following), keep, "who you follow");
-  keep();
-  return true;
-}
 
 // ------------------------------------------------------------- standing
 
 // Votes count from a community's members: the accounts its seeds' standing
-// reaches, through upvotes, replies and follows (docs/standing.md). Until a
-// community publishes a view, its seeds are the authors of its first posts,
-// which nobody can claim later: a post's time is held to its block.
-// Follows, the follow graph every app shares.
-const FOLLOWS = ["Nexus", "testnet", "follows-449390"];
+// reaches, through upvotes and follows (docs/standing.md). Its seeds are the
+// authors of its first posts, which nobody can claim later: a post's time is
+// held to its block.
 
 // The account showing each followed handle now, as every app reads it; a
 // failed read is tried again next time.
 const shownBy = new Map(); // handle → promise of an account or undefined
-function accountShowing(handle) {
+function accountShowing(handle, { failed = () => {} } = {}) {
   if (!shownBy.has(handle)) {
     const found = (async () => {
       const account = await moniker.pointer(handle);
@@ -686,7 +738,7 @@ function accountShowing(handle) {
     shownBy.set(handle, found);
     found.catch(() => shownBy.delete(handle));
   }
-  return shownBy.get(handle).catch(() => undefined);
+  return shownBy.get(handle).catch(() => (failed(), undefined));
 }
 
 /**
@@ -695,33 +747,162 @@ function accountShowing(handle) {
  * votes still count from posts.
  */
 function followsReader() {
-  const follows = stateOf(FOLLOWS);
+  const follows = stateOf(followsPath());
   follows.catch(() => {});
-  return async (a) => {
+  const reader = async (a) => {
     try {
       const state = await follows;
       const prefix = `follows/${a}/`;
       const targets = [];
       for await (const [key] of state.list(prefix)) targets.push(key.slice(prefix.length));
-      const accounts = await Promise.all(targets.map((target) => (target.startsWith("@") ? accountShowing(target.slice(1)) : target)));
+      const accounts = await Promise.all(targets.map((target) => (target.startsWith("@") ? accountShowing(target.slice(1), { failed: () => reader.failed.add(a) }) : target)));
       return accounts.filter(Boolean);
     } catch {
+      reader.failed.add(a);
       return [];
     }
   };
+  // The state read, or null if Follows couldn't be read.
+  reader.state = follows.catch(() => null);
+  // The accounts whose follows couldn't be read (taken as none, this time).
+  reader.failed = new Set();
+  return reader;
 }
 
 // A community's members and their votes, once per state read.
 const standings = new Map(); // "A/B hash" → promise of { members, votes }
 function standingOf(state, posts) {
-  const key = `${state.chain.join("/")} ${state.hash}`;
+  const key = `${state.community} ${state.hash}`;
   if (!standings.has(key)) {
     // One state's at a time is plenty: the last few are kept for a quick back and forth.
     if (standings.size > 8) standings.delete(standings.keys().next().value);
-    standings.set(key, (async () => memberVotes(state, seedsOf(posts ?? (await read.posts(state))), { followsOf: followsReader() }))());
+    standings.set(key, computeStanding(state, posts));
     standings.get(key).catch(() => standings.delete(key));
   }
   return standings.get(key);
+}
+
+// What each community's last computation kept, here and across visits
+// (docs/standing.md, Read cost): the next one reads again only the accounts
+// whose votes or follows changed since, found by comparing the two states'
+// tries, and goes on from there; accounts whose follows couldn't be read
+// are read again next time. Kept a day at most: a handle that moved since
+// (a follow of @h stands for whoever shows it) is caught then. A comparison
+// that would read more than a fresh computation is given up for one.
+const KEPT_FOR = 24 * 3600_000;
+const DIFF_BUDGET = 4000;
+/** Whether a key starting with `path` (which may end inside a segment) may fit `pattern`, its segments `*` for any. */
+const mayFit = (pattern) => (path) => {
+  const parts = path.split("/");
+  return parts.every((part, n) => n >= pattern.length || pattern[n] === "*" || (n === parts.length - 1 ? pattern[n].startsWith(part) : part === pattern[n]));
+};
+/** Whether `key` is under `pattern`: every segment of it matched. */
+const fits = (pattern, key) => {
+  const parts = key.split("/");
+  return parts.length > pattern.length && pattern.every((segment, n) => segment === "*" || parts[n] === segment);
+};
+/** Where an account's edges records are in a place: `user/<a>/edges/` on its own chain, scoped on the home chain. */
+const edgesPattern = (place) => (place.scope ? ["user", "*", "c", places.segmentOf(place.scope), "edges"] : ["user", "*", "edges"]);
+const FOLLOWS = ["follows", "*"];
+const keptStandings = new Map(); // "node|community|chains|…" → promise of { at, roots, follows, kept, retry } or undefined
+
+async function computeStanding(state, posts) {
+  // Seeds from where the community was founded (places.founding): a place it moved to adds members, not seeds.
+  const { at: foundedAt, seeds } = state.places.length > 1 ? await places.founding(state, posts ?? (await read.posts(state))) : { at: 0, seeds: seedsOf(posts ?? (await read.posts(state))) };
+  const founded = state.places[foundedAt]?.scope ? "home" : "own";
+  const followsOf = followsReader();
+  const follows = await followsOf.state;
+  const chains = state.places.map((place) => place.chain.join("/")).join(",");
+  const where = `${settings.node}|s/${state.community}|${chains}|${settings.follows}|${settings.moniker}`;
+  const last = await (keptStandings.get(where) ?? lastKept(where));
+  const roots = state.states.map((s) => s.root);
+  let before, changed;
+  if (last?.roots?.length === roots.length && Date.now() - last.at < KEPT_FOR && (last.follows === null) === (follows === null)) {
+    try {
+      changed = new Set(last.retry ?? []);
+      for (const [n, place] of state.places.entries()) {
+        const pattern = edgesPattern(place);
+        for await (const [key] of diff(state.states[n].load, last.roots[n], roots[n], { could: mayFit(pattern), budget: DIFF_BUDGET })) {
+          if (fits(pattern, key)) changed.add(key.split("/")[1]);
+        }
+      }
+      if (follows) for await (const [key] of diff(follows.load, last.follows, follows.root, { could: mayFit(FOLLOWS), budget: DIFF_BUDGET })) {
+        if (fits(FOLLOWS, key)) changed.add(key.split("/")[1]);
+      }
+      before = last.kept;
+    } catch {
+      // The last state is no longer served, or differs too much: computed afresh.
+      before = undefined;
+      changed = undefined;
+    }
+  }
+  const result = await memberVotes(state, seeds, { followsOf, before, changed: [...(changed ?? [])] });
+  const now = { at: before ? last.at : Date.now(), roots, follows: follows?.root ?? null, kept: result.kept, retry: [...followsOf.failed] };
+  keptStandings.set(where, Promise.resolve(now));
+  keep(where, now);
+  return { ...result, founded };
+}
+
+// Kept across visits in IndexedDB; a browser that keeps nothing computes afresh each visit.
+const standingDB = new Promise((resolve) => {
+  try {
+    const open = indexedDB.open("stoa-standing", 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("kept");
+    open.onsuccess = () => {
+      resolve(open.result);
+      // What is past its day is of no use to anyone: dropped.
+      try {
+        const old = open.result.transaction("kept", "readwrite").objectStore("kept").openCursor();
+        old.onsuccess = () => {
+          const at = old.result;
+          if (!at) return;
+          if (!(Date.now() - at.value?.at < KEPT_FOR)) at.delete();
+          at.continue();
+        };
+      } catch {}
+    };
+    open.onerror = () => resolve(null);
+  } catch {
+    resolve(null);
+  }
+});
+async function lastKept(where) {
+  const db = await standingDB;
+  if (!db) return undefined;
+  const saved = await new Promise((resolve) => {
+    try {
+      const request = db.transaction("kept").objectStore("kept").get(where);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(undefined);
+    } catch {
+      resolve(undefined);
+    }
+  });
+  return saved && { ...saved, kept: unpack(saved.kept) };
+}
+async function keep(where, { at, roots, follows, kept, retry }) {
+  const db = await standingDB;
+  if (!db || !kept.push) return;
+  try {
+    db.transaction("kept", "readwrite").objectStore("kept").put({ at, roots, follows, kept: pack(kept), retry }, where);
+  } catch {
+    /* kept for this visit only */
+  }
+}
+
+// Whether the reader is a member of a community, as its last read found:
+// "<reader> <community>" → true or false.
+const memberIn = new Map();
+
+/** The aside's line on whether the reader's votes count in the community shown. */
+function drawYou() {
+  const line = $("#aside-you");
+  const reader = signer()?.address;
+  const key = `${reader} ${route.community}`;
+  if (!line || !memberIn.has(key)) return;
+  line.textContent = memberIn.get(key)
+    ? "count: you're one of its members."
+    : "are kept, and count once members upvote what you post here or follow you.";
 }
 
 /**
@@ -735,12 +916,29 @@ async function votesFor(state, posts) {
     standingOf(state, posts),
     reader ? read.edgesOf(state, reader).then(read.edgeSets) : null,
   ]);
+  if (reader) memberIn.set(`${reader} ${state.community}`, counted.has(reader));
   return (author, id) => {
     const target = `${author}/${id}`;
     const v = votes.get(target);
     const mine = own?.up.has(target) ? 1 : own?.down.has(target) ? -1 : 0;
     return { ups: v?.ups ?? 0, downs: v?.downs ?? 0, mine, counted: reader !== undefined && counted.has(reader) };
   };
+}
+
+/** Where `state`'s community's new posts go, from what its members declared (places.chosenPlace). */
+async function choosePlace(state, posts) {
+  const c = state.community;
+  if (!ownChains.has(c)) return postingPlaces.set(c, { at: onHome(c) ? "home" : "own", weights: { home: 0, own: 0 } });
+  const { standing, members, founded } = await standingOf(state, posts);
+  postingPlaces.set(c, places.chosenPlace({ declared: declared.get(c) ?? new Map(), standing, members, hasOwn: true, founded }));
+  // The aside was drawn before its members were read: it says where they chose now.
+  if (route.community === c && route.view !== "post") showAside();
+}
+
+/** Every community: those with a chain of their own, those declared on the home chain, and ones the reader is creating. */
+function listCommunities() {
+  const creating = [...pendingItems.values()].filter((p) => p.kind === "community").map((p) => p.community);
+  return [...new Set([...ownChains, ...declared.keys(), ...creating])].sort();
 }
 
 // ------------------------------------------------- the reader's own writes
@@ -794,7 +992,7 @@ async function castVote(button) {
     pendingVotes.set(key, { direction });
     redraw();
     const voter = signer().address;
-    land = await send(chainOf(community), async (state) => write.vote(voter, await read.edgesOf(state, voter), author, id, direction));
+    land = await send(placeOfItem(community, author, id), async (state) => write.vote(voter, await read.edgesOf(state, voter), author, id, direction));
   } catch (error) {
     if (error instanceof Withdrawn || !mine()) return;
     pendingVotes.delete(key);
@@ -824,7 +1022,8 @@ async function castVote(button) {
 
 let communities = [];
 let route = { view: "home" };
-let sort = store.get("sort", "hot");
+const SORTS = ["hot", "new", "top"];
+let sort = SORTS.includes(store.get("sort")) ? store.get("sort") : "hot";
 // What the current view last read, so a vote or reveal redraws without re-reading.
 let shown = null;
 
@@ -835,10 +1034,10 @@ function renderRail() {
   const others = communities.filter((c) => !joined.includes(c));
   $("#communities").innerHTML = !communities.length
     ? '<p class="muted" style="padding:5px 8px;margin:0">No communities yet.</p>'
-    : (mineList.length ? `<h3>Your communities</h3><ul class="tree">${mineList.map(link).join("")}</ul>` : "")
+    : `<ul class="tree">${link(ALL)}</ul>` + (mineList.length ? `<h3>Your communities</h3><ul class="tree">${mineList.map(link).join("")}</ul>` : "")
       + (others.length ? `<h3>${mineList.length ? "More communities" : "Communities"}</h3><ul class="tree">${others.map(link).join("")}</ul>` : "");
   document.querySelectorAll(".tree a").forEach((a) => {
-    const on = (route.view === "home" && a.dataset.nav === "home") || a.dataset.c === route.community;
+    const on = a.dataset.nav ? a.dataset.nav === route.view : a.dataset.c === route.community;
     a.classList.toggle("on", on);
     if (on) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
@@ -866,22 +1065,25 @@ function setTitle(text) {
 
 /** One community's posts with their votes and comment counts. */
 async function loadPosts(community) {
-  const state = await stateOf(chainOf(community), { ahead: true });
-  const [posts, judgeItem] = await Promise.all([read.posts(state), judgeFor(state, community)]);
-  const votesOf = await votesFor(state, posts);
+  const state = await communityState(community, { ahead: true });
+  const posts = await read.posts(state);
+  // A community without posts has no members to read.
+  if (!posts.length) return [];
+  const [votesOf] = await Promise.all([votesFor(state, posts), notePlaces(state, posts), choosePlace(state, posts)]);
   return Promise.all(
     posts.map(async (post) => {
       let comments = 0;
       for await (const _ of state.list(`index/comment/${post.author}/${post.id}/`)) comments++;
-      return { ...post, community, ...votesOf(post.author, post.id), comments, verdict: judgeItem(post) };
+      return { ...post, community, ...votesOf(post.author, post.id), comments };
     }),
   );
 }
 
-const sortTabs = () => `<div class="tabs" role="group" aria-label="Sort posts">${["hot", "new", "top", "controversial"].map((s) => `<button type="button" class="tab" data-sort="${s}" aria-pressed="${s === sort}">${s[0].toUpperCase() + s.slice(1)}</button>`).join("")}</div>`;
+const sortTabs = () => `<div class="tabs" role="group" aria-label="Sort posts">${SORTS.map((s) => `<button type="button" class="tab" data-sort="${s}" aria-pressed="${s === sort}">${s[0].toUpperCase() + s.slice(1)}</button>`).join("")}</div>`;
 
 function communityActions(c) {
-  return `<button class="btn" type="button" id="join" data-join="${esc(c)}">${joinedList().includes(c) ? "Leave" : "Join"}</button><button class="btn" type="button" data-mods="${esc(c)}">Moderation</button>`;
+  if (c === ALL) return "";
+  return `<button class="btn" type="button" id="join" data-join="${esc(c)}">${joinedList().includes(c) ? "Leave" : "Join"}</button>`;
 }
 
 /**
@@ -945,37 +1147,37 @@ function paintLastFeed() {
   const title = next.view === "home" ? "Home" : `s/${next.community}`;
   if (store.get(lastFeedKey(title), null) === null) return;
   setTitle(title);
-  // Without Join or Moderation, and its sort tabs inert: nothing acts until
+  // Without Join, and its sort tabs inert: nothing acts until
   // the reader's own choices are read. The feed's own frame replaces it.
   frame(`early|${title}`, feedFrame(title));
   document.querySelector("#main .tabs").inert = true;
   showLastFeed(title);
 }
 
-async function showFeed(list, { title, community }, id) {
-  setTitle(community ? `s/${community}` : "Home");
+/** The posts of `list`'s communities, or only those by `authors` (a Set) when given. */
+async function showFeed(list, { title, community, authors }, id) {
+  setTitle(title);
   if (frame(`feed|${title}`, feedFrame(title, community))) showLastFeed(title);
   if (community && $("#join")) $("#join").textContent = joinedList().includes(community) ? "Leave" : "Join";
   const results = await Promise.all(list.map((c) => loadPosts(c).then((posts) => ({ c, posts }), (error) => ({ c, error }))));
-  const posts = results.flatMap((r) => r.posts ?? []);
-  const labellers = list.flatMap((c) => follows(c));
-  await loadNames([...posts.map((p) => p.author), ...labellers]).catch(() => {});
+  const posts = results.flatMap((r) => r.posts ?? []).filter((p) => !authors || authors.has(p.author));
+  await loadNames(posts.map((p) => p.author)).catch(() => {});
   if (stale(id)) return;
   // A refresh keeps rows where the reader last saw them (a post never moves
   // under the pointer after a vote); a new sort or view ranks afresh.
   const order = shown?.view === "feed" && shown.title === title && shown.sort === sort ? shown.order : null;
-  shown = { view: "feed", title, list, community, posts, failures: results.filter((r) => r.error), order, sort };
+  shown = { view: "feed", title, list, community, authors, posts, failures: results.filter((r) => r.error), order, sort };
   if (shown.failures.length) announce(shown.failures.map((f) => readFailure(f.error, f.c)).join(" "), { once: true });
   redraw();
 }
 
 function drawFeed() {
   if (!$("#feed")) return;
-  const { list, community, posts, failures } = shown;
+  const { list, community, authors, posts, failures } = shown;
   const read = new Set(posts.map((q) => keyOf(q.community, q.author, q.id)));
   for (const p of pendingItems.values()) if (p.kind === "post" && read.has(p.key)) pendingItems.delete(p.key);
-  const pending = [...pendingItems.values()].filter((p) => p.kind === "post" && list.includes(p.community))
-    .map((p) => ({ ...p.value, tags: p.value.tags ?? [], media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, verdict: { treatment: "show", labels: [] }, pending: p.slow ? "slow" : "waiting" }));
+  const pending = [...pendingItems.values()].filter((p) => p.kind === "post" && list.includes(p.community) && (!authors || authors.has(p.author)))
+    .map((p) => ({ ...p.value, media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, pending: p.slow ? "slow" : "waiting" }));
   const keyed = (p) => `${p.community}|${p.author}|${p.id}`;
   if (shown.sort !== sort || !shown.order) {
     shown.order = rank(posts, sort).map(keyed);
@@ -986,7 +1188,7 @@ function drawFeed() {
   const fresh = rank(posts.filter((p) => !at.has(keyed(p))), sort);
   const kept = posts.filter((p) => at.has(keyed(p))).sort((a, b) => at.get(keyed(a)) - at.get(keyed(b)));
   shown.order = [...fresh, ...kept].map(keyed);
-  const rows = [...pending, ...[...fresh, ...kept].map((p) => withVote(p, p.community))];
+  const rows = [...pending, ...[...fresh, ...kept].map((p) => ({ ...withVote(p, p.community), revealed: revealed.has(`${p.author}/${p.id}`) }))];
   const retry = `<button class="btn" type="button" data-retry>Try again</button><button class="btn" type="button" data-choose-node>Choose another node</button>`;
   let html = "";
   if (failures.length && !rows.length) {
@@ -998,6 +1200,10 @@ function drawFeed() {
     }
     if (rows.length) {
       html += rows.map((p) => postRow(p, names, { inCommunity: Boolean(community) && community !== ALL })).join("");
+    } else if (authors) {
+      html += authors.size
+        ? `<div class="panel"><h2>Nothing yet from the people you follow</h2><p>Their posts in every community show here.</p></div>`
+        : `<div class="panel"><h2>You don't follow anyone yet</h2><p>Open someone's name and press Follow: their posts in every community show here, and your follow counts toward their standing.</p></div>`;
     } else if (!list.length) {
       html += `<div class="panel"><h2>Your home feed is empty</h2><p>Join a community to see its posts here.</p><div class="row2">${communities.slice(0, 6).map((c) => `<a class="btn" href="#/s/${encodeURIComponent(c)}">s/${esc(c)}</a>`).join("")}</div></div>`;
     } else {
@@ -1011,7 +1217,7 @@ function drawFeed() {
   feed.classList.remove("earlier");
   document.querySelector("#main .tabs")?.toggleAttribute("hidden", rows.length < 2);
   // Before media fills its slots: their files are read again on the next visit.
-  // Not with this visit's own pending rows or posts shown past moderation.
+  // Not with this visit's own pending rows or posts the reader chose to see.
   const ownOnly = pending.length || rows.some((p) => revealed.has(`${p.author}/${p.id}`));
   if (rows.length && !failures.length && !ownOnly && html.length < 200_000) saveLastFeed(shown.title, html);
   loadMedia();
@@ -1020,21 +1226,25 @@ function drawFeed() {
 async function showPost({ community, author, id }, renderId) {
   const fresh = frame(`post|${community}|${author}|${id}`, `<a class="back" href="#/s/${encodeURIComponent(community)}">← s/${esc(community)}</a><div id="thread"><p class="empty">Reading from ${esc(nodeHost())}…</p></div>`);
   if (fresh) setTitle(`s/${community}`);
-  let tree, judgeItem;
+  let tree;
   try {
-    const state = await stateOf(chainOf(community), { ahead: true });
-    [tree, judgeItem] = await Promise.all([read.thread(state, author, id), judgeFor(state, community)]);
+    const state = await communityState(community, { ahead: true });
+    tree = await read.thread(state, author, id);
     if (tree) {
-      const votesOf = await votesFor(state);
+      const [votesOf] = await Promise.all([votesFor(state), choosePlace(state)]);
       const withVotes = (node) => {
         Object.assign(node, votesOf(node.author, node.id));
         node.replies.forEach(withVotes);
       };
       withVotes(tree);
+      const all = [];
+      const each = (node) => { all.push(node); node.replies.forEach(each); };
+      each(tree);
+      await notePlaces(state, all);
       const authors = [];
       const collect = (node) => { authors.push(node.author); node.replies.forEach(collect); };
       collect(tree);
-      await loadNames([...authors, ...follows(community)]).catch(() => {});
+      await loadNames(authors).catch(() => {});
     }
   } catch (error) {
     if (stale(renderId)) return;
@@ -1047,18 +1257,18 @@ async function showPost({ community, author, id }, renderId) {
   if (stale(renderId)) return;
   // A refresh of the same post keeps comments where they were.
   const commentRank = shown?.view === "post" ? shown.commentRank : null;
-  shown = { view: "post", community, author, id, tree, judgeItem, commentRank };
+  shown = { view: "post", community, author, id, tree, commentRank };
   redraw();
 }
 
 /** The thread as last read, with the reader's pending comments and votes in place. */
 function drawThread() {
   if (!$("#thread")) return;
-  const { community, author, id, judgeItem } = shown;
+  const { community, author, id } = shown;
   let tree = shown.tree && ordered(structuredClone(shown.tree));
   if (tree) pendingItems.delete(keyOf(community, author, id));
   const pendingPost = pendingItems.get(keyOf(community, author, id));
-  if (!tree && pendingPost) tree = { ...pendingPost.value, author, id, tags: pendingPost.value.tags ?? [], labels: [], media: pendingPost.media ?? [], replies: [], ups: 0, downs: 0, mine: 0, pending: pendingPost.slow ? "slow" : "waiting" };
+  if (!tree && pendingPost) tree = { ...pendingPost.value, author, id, media: pendingPost.media ?? [], replies: [], ups: 0, downs: 0, mine: 0, pending: pendingPost.slow ? "slow" : "waiting" };
   if (!tree) {
     $("#thread").innerHTML = `<div class="panel"><h2>This post isn't here</h2><p>${esc(nodeHost())} doesn't have it in s/${esc(community)}. Its author may have deleted it, or it hasn't reached this node yet.</p><div class="row2"><a class="btn" href="#/s/${encodeURIComponent(community)}">Back to s/${esc(community)}</a></div></div>`;
     return;
@@ -1075,7 +1285,7 @@ function drawThread() {
       continue;
     }
     const parent = (p.parent && byKey.get(`${p.parent.author}/${p.parent.id}`)) || tree;
-    parent.replies.push({ author: p.author, id: p.id, body: p.value.body ?? "", labels: p.value.labels ?? [], replies: [], ups: 0, downs: 0, pending: p.slow ? "slow" : "waiting" });
+    parent.replies.push({ author: p.author, id: p.id, body: p.value.body ?? "", replies: [], ups: 0, downs: 0, pending: p.slow ? "slow" : "waiting" });
   }
   // Comments keep the places they were first drawn in (a vote landing never
   // moves one under the pointer); ones not seen before follow, in order.
@@ -1103,23 +1313,23 @@ function drawThread() {
   counting(tree);
   const link = safeLink(tree.link);
   $("#thread").innerHTML = `<article class="op${tree.pending ? " pending" : ""}">
-      <div class="meta"><a href="#/s/${encodeURIComponent(community)}">s/${esc(community)}</a>${byline(author, names)}${tree.pending ? pendingNote(tree.pending) : when(tree.time)}${tree.tags.map((t) => `<span class="tag">${esc(t.toUpperCase())}</span>`).join("")}</div>
+      <div class="meta"><a href="#/s/${encodeURIComponent(community)}">s/${esc(community)}</a>${byline(author, names)}${tree.pending ? pendingNote(tree.pending) : when(tree.time)}</div>
       <h1>${esc(tree.title)}</h1>
       ${link ? `<a class="link" href="${esc(link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(link)} ↗</a>` : ""}
-      ${tree.media.map((cid) => mediaSlot(cid, community, tree.tags.includes("nsfw"))).join("")}
+      ${tree.media.map((cid) => mediaSlot(cid, community)).join("")}
       ${tree.body ? `<div class="body" style="margin-top:10px">${esc(tree.body)}</div>` : ""}
-      ${tree.pending ? "" : `<div class="acts" style="margin-top:10px">${voteBox({ ...tree, community }, { row: true })}<button type="button" data-reply="${esc(author)}/${esc(id)}">Reply</button><button type="button" data-label="${esc(author)}/${esc(id)}">Label…</button></div>`}
+      ${tree.pending ? "" : `<div class="acts" style="margin-top:10px">${voteBox({ ...tree, community }, { row: true })}<button type="button" data-reply="${esc(author)}/${esc(id)}">Reply</button></div>`}
       ${tree.error ? `<p class="inline-error">${esc(tree.error)}</p>` : ""}
     </article>
     <section class="comments" aria-label="Comments">
-      ${count ? `<p class="comments-head">${plural(count, "comment")}</p>${tree.replies.map((c) => commentNode(c, community, judgeItem, follows(community), names)).join("")}`
+      ${count ? `<p class="comments-head">${plural(count, "comment")}</p>${tree.replies.map((c) => commentNode(c, community, names)).join("")}`
         : tree.pending ? "" : `<p class="empty">No comments yet. <button class="linkish" type="button" data-reply="${esc(author)}/${esc(id)}">Write the first one</button></p>`}
     </section>`;
   loadMedia();
 }
 
 // A profile page: how an account appears, what it wrote in each community,
-// and its karma. Read from every community chain (one prefix scan each).
+// Read from every community chain (one prefix scan each).
 let profileTab = "posts";
 
 async function showProfile({ address }, renderId) {
@@ -1130,15 +1340,18 @@ async function showProfile({ address }, renderId) {
     loadNames([address]).catch(() => {}),
     Promise.all(communities.map(async (c) => {
       try {
-        const state = await stateOf(chainOf(c));
-        const [items, judgeItem, votesOf] = await Promise.all([read.itemsBy(state, address), judgeFor(state, c), votesFor(state)]);
+        const state = await communityState(c);
+        const items = await read.itemsBy(state, address);
+        // Where they wrote nothing, there are no votes to read.
+        if (!items.length) return { c, items };
+        const [votesOf] = await Promise.all([votesFor(state), notePlaces(state, items)]);
         return {
           c,
           items: await Promise.all(items.map(async (item) => {
             let comments = 0, on;
             if (item.on) on = await read.item(state, item.on.author, item.on.id);
             else for await (const _ of state.list(`index/comment/${item.author}/${item.id}/`)) comments++;
-            return { ...item, community: c, ...votesOf(item.author, item.id), comments, verdict: judgeItem(item), onTitle: on?.title };
+            return { ...item, community: c, ...votesOf(item.author, item.id), comments, onTitle: on?.title };
           })),
         };
       } catch (error) {
@@ -1164,14 +1377,13 @@ function drawProfile() {
   const pending = mine ? [...pendingItems.values()].filter((p) => p.kind === "post" && p.author === address && !items.some((i) => i.community === p.community && i.id === p.id)) : [];
   const posts = items.filter((i) => i.title !== undefined && !i.on);
   const comments = items.filter((i) => i.on);
-  const karma = items.reduce((total, i) => total + i.ups - i.downs, 0);
   const handleLine = handle
     ? `<a class="handle" href="${esc(`${MONIKER.app}#/@${handle}`)}" target="_blank" rel="noopener" title="This handle points at this account on Moniker">@${esc(handle)}</a>`
     : `<span class="muted">${mine ? "No @handle yet" : "No @handle"}</span>`;
   const link = safeLink(profile.link);
   const list = profileTab === "posts"
-    ? [...pending.map((p) => ({ ...p.value, tags: p.value.tags ?? [], media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, verdict: { treatment: "show", labels: [] }, pending: p.slow ? "slow" : "waiting" })),
-      ...rank(posts, "new").map((p) => withVote(p, p.community))].map((p) => postRow(p, names)).join("")
+    ? [...pending.map((p) => ({ ...p.value, media: p.media ?? [], author: p.author, id: p.id, community: p.community, ups: 0, downs: 0, mine: 0, comments: 0, pending: p.slow ? "slow" : "waiting" })),
+      ...rank(posts, "new").map((p) => ({ ...withVote(p, p.community), revealed: revealed.has(`${p.author}/${p.id}`) }))].map((p) => postRow(p, names)).join("")
     : rank(comments, "new").map((c) => commentRow(withVote(c, c.community))).join("");
   const empty = profileTab === "posts"
     ? `<p class="empty">${mine ? "You haven't posted yet." : "No posts yet."}</p>`
@@ -1183,25 +1395,27 @@ function drawProfile() {
         <p class="handle-line">${handleLine}</p>
         <p class="id-line">${name || handle ? `<span class="mono muted" title="${esc(address)}">${esc(short(address))}</span> ` : ""}<button class="linkish" type="button" data-copy-id="${esc(address)}">Copy account ID</button></p>
       </div>
-      ${mine ? '<button class="btn" type="button" data-edit-profile>Edit profile</button>' : ""}
+      ${mine ? '<button class="btn" type="button" data-edit-profile>Edit profile</button>' : followButton(address)}
     </section>
     ${profile.bio ? `<p class="bio">${esc(profile.bio)}</p>` : mine && !profile.name ? '<p class="bio muted">Add a name and a few words about yourself, so people know who\'s posting.</p>' : ""}
     ${link ? `<a class="link" href="${esc(link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(link)} ↗</a>` : ""}
-    <dl class="stats"><div><dt>Karma</dt><dd>${karma}</dd></div><div><dt>Posts</dt><dd>${posts.length}</dd></div><div><dt>Comments</dt><dd>${comments.length}</dd></div></dl>
+    <dl class="stats"><div><dt>Posts</dt><dd>${posts.length}</dd></div><div><dt>Comments</dt><dd>${comments.length}</dd></div></dl>
     ${failures.length ? `<div class="panel bad"><p style="margin:0">${failures.map((f) => esc(readFailure(f.error, f.c))).join(" ")} What they wrote there is missing below.</p></div>` : ""}
     <div class="tabs" role="group" aria-label="Show"><button type="button" class="tab" data-profile-tab="posts" aria-pressed="${profileTab === "posts"}">Posts</button><button type="button" class="tab" data-profile-tab="comments" aria-pressed="${profileTab === "comments"}">Comments</button></div>
     <div id="profile-items">${list || empty}</div>`;
   loadMedia();
 }
 
+const followButton = (address) => following(address)
+  ? `<button class="btn" type="button" data-follow="${esc(address)}" aria-pressed="true">Following</button>`
+  : `<button class="btn primary" type="button" data-follow="${esc(address)}" aria-pressed="false">Follow</button>`;
+
 /** One of an account's comments, on its profile: where, on what, and what it said. */
 function commentRow(c) {
   const href = postHref(c.community, c.on.author, c.on.id);
-  const { treatment, labels } = c.verdict;
-  const folded = treatment === "hide" || treatment === "collapse";
   return `<article class="mini">
-    <div class="meta"><a href="#/s/${encodeURIComponent(c.community)}">s/${esc(c.community)}</a><span>on <a href="${href}">${esc(c.onTitle ?? "a post")}</a></span>${when(c.time)}${c.labels.map((l) => `<span class="tag label">${esc(l)}</span>`).join("")}</div>
-    ${folded ? `<p class="muted" style="margin:2px 0">Labelled ${esc(labels.map((l) => l.label).join(", "))}. <a href="${href}">See it in the thread</a></p>` : `<div class="body">${esc((c.body ?? "").slice(0, 600))}</div>`}
+    <div class="meta"><a href="#/s/${encodeURIComponent(c.community)}">s/${esc(c.community)}</a><span>on <a href="${href}">${esc(c.onTitle ?? "a post")}</a></span>${when(c.time)}</div>
+    ${collapsed(c) ? `<p class="muted" style="margin:2px 0">More members downvoted it than upvoted it. <a href="${href}">See it in the thread</a></p>` : `<div class="body">${esc((c.body ?? "").slice(0, 600))}</div>`}
     <div class="acts">${voteBox({ ...c, community: c.community }, { row: true })}<a href="${href}">Open thread</a></div>
     ${c.error ? `<p class="inline-error">${esc(c.error)}</p>` : ""}
   </article>`;
@@ -1222,7 +1436,7 @@ function focusIn(el) {
   const by = (attr) => `[${attr}="${CSS.escape(el.getAttribute(attr))}"]`;
   if (el.dataset.vote) return `${by("data-vote")}${by("data-target")}`;
   if (el.tagName === "SUMMARY") return "summary";
-  for (const attr of ["data-reply", "data-label", "data-reveal", "data-follow", "data-sort", "data-mods", "data-join", "data-cid", "data-profile-tab", "data-edit-profile", "data-copy-id"]) {
+  for (const attr of ["data-reply", "data-reveal", "data-sort", "data-join", "data-cid", "data-profile-tab", "data-edit-profile", "data-follow", "data-copy-id"]) {
     if (el.hasAttribute(attr)) return `${el.tagName.toLowerCase()}${by(attr)}`;
   }
   if (el.id) return `#${CSS.escape(el.id)}`;
@@ -1240,6 +1454,7 @@ function redraw(again = focusSelector()) {
   if (shown?.view === "feed") drawFeed();
   else if (shown?.view === "post") drawThread();
   else if (shown?.view === "profile") drawProfile();
+  drawYou();
   refocus(again);
 }
 
@@ -1251,7 +1466,16 @@ const MEDIA_TYPES = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|ogg))$/;
 function mediaFile(cid, community) {
   if (!media.has(cid)) {
     media.set(cid, (async () => {
-      const volume = await nodes.read(chainOf(community), (node) => volumesOn(node.url, chainOf(community), { media: true }).get(cid));
+      let volume, failure;
+      for (const { chain } of placesOf(community)) {
+        try {
+          volume = await nodes.read(chain, (node) => volumesOn(node.url, chain, { media: true }).get(cid));
+          break;
+        } catch (error) {
+          failure = error;
+        }
+      }
+      if (!volume) throw failure;
       const file = sdk.decodeDagCbor(volume.bytes(cid));
       if (typeof file?.type !== "string" || !MEDIA_TYPES.test(file.type) || !(file.bytes instanceof Uint8Array) || file.bytes.length > 8 << 20) return { unsupported: true };
       return { kind: file.type.startsWith("video/") ? "video" : "img", url: URL.createObjectURL(new Blob([file.bytes], { type: file.type })) };
@@ -1267,9 +1491,8 @@ function mediaFile(cid, community) {
   }
   return media.get(cid);
 }
-const mediaTag = ({ kind, url }, cid, blur) => {
-  const blurred = blur && !unblurred.has(cid);
-  const attrs = `class="media${blurred ? " blur" : ""}" data-cid="${esc(cid)}" src="${url}"${blurred ? ' title="Tap to show" data-unblur tabindex="0" role="button" aria-label="Blurred: show it"' : ""}`;
+const mediaTag = ({ kind, url }, cid) => {
+  const attrs = `class="media" data-cid="${esc(cid)}" src="${url}"`;
   return kind === "video" ? `<video ${attrs} controls></video>` : `<img ${attrs} alt="">`;
 };
 const settled = new Map(); // cid → { kind, url } once read, for drawing without a wait
@@ -1284,7 +1507,7 @@ async function loadMedia() {
   // Already read: in place before the next paint.
   for (const slot of slots) {
     const file = settled.get(slot.dataset.media);
-    if (file) slot.outerHTML = mediaTag(file, slot.dataset.media, slot.dataset.blur === "1");
+    if (file) slot.outerHTML = mediaTag(file, slot.dataset.media);
     else if (unserved.has(slot.dataset.media)) notServed(slot);
   }
   // The rest are read side by side, each filled as it arrives.
@@ -1297,7 +1520,7 @@ async function loadMedia() {
       slot.removeAttribute("data-media");
     } else if (file) {
       settled.set(cid, file);
-      slot.outerHTML = mediaTag(file, cid, slot.dataset.blur === "1");
+      slot.outerHTML = mediaTag(file, cid);
     } else {
       notServed(slot);
     }
@@ -1310,25 +1533,73 @@ const joinCard = () => signer() ? "" : `<div class="card"><h4>Take part</h4><p c
 function showAside() {
   const c = route.community;
   if (route.view === "profile") {
-    $("#aside").innerHTML = `<div class="card"><h4>Profiles</h4><p class="muted">A name and a few words, kept on Stoa's chain and changed only by their owner. The @handle comes from Moniker, which every Lattice app shares: it shows only while the handle points at this account.</p></div>${joinCard()}`;
+    $("#aside").innerHTML = `<div class="card"><h4>Profiles</h4><p class="muted">A name and a few words, kept on Stoa's chain and changed only by their owner. The @handle comes from Moniker, which every Lattice app shares: it shows only while the handle points at this account.</p>
+      <dl class="kv"><dt>Follows</dt><dd>are kept on Follows, which every Lattice app shares. A follow vouches for someone: once members of a community follow an account, its votes there count.</dd></dl></div>${joinCard()}`;
+    return;
+  }
+  if (route.view === "following") {
+    $("#aside").innerHTML = `<div class="card"><h4>Following</h4><p class="muted">Posts by the people you follow, from every community. Your follows are kept on Follows, which every Lattice app shares.</p></div>${joinCard()}`;
     return;
   }
   if (!c) {
     $("#aside").innerHTML = `<div class="card"><h4>Home</h4><p class="muted">Posts from the communities you joined, ranked on this page from votes and post times.</p><dl class="kv"><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></div>${joinCard()}`;
     return;
   }
-  const n = follows(c).length;
   const detailsOpen = $("#aside details")?.open ? " open" : "";
-  const about = c === ALL
-    ? "Every community's posts, with posts of its own on the Stoa chain. Anyone can post here, and anyone can mine it."
-    : "A community with a chain of its own. Anyone can post here, and anyone can mine it.";
+  if (c === ALL) {
+    $("#aside").innerHTML = `<div class="card"><h4>s/all</h4><p class="muted">Every community's posts at once, each ranked by its own members' votes.</p><dl class="kv"><dt>Node</dt><dd>${esc(nodeHost())}</dd></dl></div>${joinCard()}`;
+    return;
+  }
+  const own = !postingPlace(c).scope;
+  const about = own
+    ? "A community with a chain of its own. Anyone can post here, and anyone can mine it."
+    : "A community on Stoa's chain, beside the others. Anyone can post here.";
   $("#aside").innerHTML = `<div class="card"><h4>s/${esc(c)}</h4><p class="muted">${about}</p>
-    <dl class="kv"><dt>Labels</dt><dd>${n ? `you follow ${plural(n, "account")}` : "you follow no one"} · <button class="linkish" type="button" data-mods="${esc(c)}">Manage</button></dd></dl>
-    <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>Chain</dt><dd class="mono">${pathHTML(chainOf(c))}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>${joinCard()}`;
+    <dl class="kv"><dt>Votes</dt><dd>count from its members: the accounts its first posters' upvotes and follows reach. What members downvote more than upvote is collapsed.</dd>${signer() ? '<dt>Your votes</dt><dd id="aside-you">…</dd>' : ""}</dl>
+    ${placeCard(c)}
+    <details class="more"${detailsOpen}><summary>Chain details</summary><dl class="kv"><dt>${placesOf(c).length > 1 ? "Chains" : "Chain"}</dt><dd class="mono">${placesOf(c).map((p) => pathHTML(p.chain) + (unreadable.has(p.chain.join("/")) ? " <span class=\"muted\">(no node serves it now: its posts are missing)</span>" : "")).join("<br>")}</dd><dt>Height</dt><dd class="mono" id="aside-height">…</dd><dt>Node</dt><dd id="aside-node">${esc(nodeHost())}</dd></dl></details></div>${joinCard()}`;
+  drawYou();
   // Each read fills only the aside it was made for.
   const height = $("#aside-height"), node = $("#aside-node");
-  nodes.list(chainOf(c)).then(([first]) => first && (node.textContent = first.found ? `${hostOf(first.url)}, found for this community: its operator declared it, and what it serves isn't checked` : hostOf(first.url)), () => {});
-  api("/api/chain/info", chainOf(c)).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
+  const live = postingPlace(c).chain;
+  nodes.list(live).then(([first]) => first && (node.textContent = first.found ? `${hostOf(first.url)}, found for this community: its operator declared it, and what it serves isn't checked` : hostOf(first.url)), () => {});
+  api("/api/chain/info", live).then((i) => (height.textContent = i.height ?? "starting")).catch(() => (height.textContent = "not served by this node"));
+}
+
+const PLACE_NAMES = { own: "its own chain", home: "Stoa's chain" };
+/** Where a community's new posts go, chosen by its members, and the reader's say in it. */
+function placeCard(c) {
+  if (!ownChains.has(c)) {
+    if (!onHome(c)) return "";
+    return `<dl class="kv"><dt>Lives on</dt><dd>Stoa's chain. Once a node operator gives it a chain of its own (<span class="mono">${pathHTML(chainOf(c))}</span>), its members can move it there.</dd></dl>`;
+  }
+  const at = postingPlace(c).scope ? "home" : "own";
+  const other = at === "own" ? "home" : "own";
+  const { home = 0, own = 0 } = postingPlaces.get(c)?.weights ?? {};
+  const total = home + own;
+  const split = total
+    ? `Of the standing its members declared, ${Math.round((100 * own) / total)}% chose its own chain and ${Math.round((100 * home) / total)}% Stoa's chain.`
+    : "No member has chosen, so it stays on its own chain.";
+  const reader = signer()?.address;
+  const mine = reader && declared.get(c)?.get(reader);
+  const counts = reader && memberIn.get(`${reader} ${c}`);
+  const yours = mine ? ` You chose ${PLACE_NAMES[mine]}${counts === false ? ": it counts once you're a member" : ""}.` : "";
+  const button = reader && mine !== other ? `<button class="btn small" type="button" data-place="${other}">Choose ${PLACE_NAMES[other]}</button>` : "";
+  return `<dl class="kv"><dt>New posts go to</dt><dd>${PLACE_NAMES[at]}, as its members chose. ${split}${yours} Posts already written stay where they are and are read from both.</dd></dl>${button}`;
+}
+
+/** The reader declares where `c`'s new posts should go: `at` is "home" or "own". */
+function choosePlaceFor(c, at) {
+  const reader = signer();
+  if (!reader) return needAccount("Choices are signed by your account, so others can count them.");
+  const before = declared.get(c)?.get(reader.address);
+  const set = (value) => {
+    if (!declared.has(c)) declared.set(c, new Map());
+    if (value) declared.get(c).set(reader.address, value);
+    else declared.get(c).delete(reader.address);
+    showAside();
+  };
+  saveChoice(places.declare(reader.address, c, at), () => set(at), `your choice for s/${c}`, { undo: () => set(before) });
 }
 
 // Renders overlap (a navigation while the last one still reads the node);
@@ -1349,7 +1620,14 @@ async function render() {
   homeState = home;
   if (home) {
     const reader = signer();
-    await Promise.all([loadMine(home).catch(() => {}), reader && loadNames([reader.address]).catch(() => {})]);
+    await Promise.all([
+      loadMine(home).catch(() => {}),
+      reader && loadNames([reader.address]).catch(() => {}),
+      places.declarations(home).then((found) => (declared = found), () => {}),
+    ]);
+    // A community being created is drawn till a read shows it.
+    for (const p of pendingItems.values()) if (p.kind === "community" && declared.has(p.community)) pendingItems.delete(p.key);
+    communities = listCommunities();
   }
   if (stale(id)) return;
   route = next;
@@ -1365,6 +1643,7 @@ async function render() {
   refocus(again);
   if (route.view === "post") await showPost(route, id);
   else if (route.view === "profile") await showProfile(route, id);
+  else if (route.view === "following") await showFeed(communities, { title: "Following", authors: followed() }, id);
   else if (route.view === "community") await showFeed(route.community === ALL ? communities : [route.community], { title: `s/${route.community}`, community: route.community }, id);
   else await showFeed(joinedList().filter((c) => communities.includes(c)), { title: "Home" }, id);
   readsAhead.clear();
@@ -1390,21 +1669,16 @@ document.addEventListener("click", async (event) => {
     expanded.add(el.dataset.expand);
     el.closest("p").nextElementSibling.hidden = false;
     el.closest("p").remove();
-  } else if (el.hasAttribute("data-unblur")) {
-    unblurred.add(el.dataset.cid);
-    el.classList.remove("blur");
-    for (const attr of ["data-unblur", "role", "aria-label", "title"]) el.removeAttribute(attr);
   } else if (el.dataset.vote) {
     castVote(el);
-  } else if (el.dataset.reply || el.dataset.label) {
-    openReply(el.dataset.reply ?? el.dataset.label, Boolean(el.dataset.label));
-  } else if (el.dataset.follow) {
-    follow(route.community, el.dataset.follow, true);
-    refresh();
-  } else if (el.dataset.mods) {
-    openMods(el.dataset.mods);
+  } else if (el.dataset.reply) {
+    openReply(el.dataset.reply);
   } else if (el.dataset.join) {
     toggleJoin(el.dataset.join);
+  } else if (el.dataset.place) {
+    choosePlaceFor(route.community, el.dataset.place);
+  } else if (el.dataset.follow) {
+    toggleFollow(el.dataset.follow);
   } else if (el.hasAttribute("data-retry")) {
     $("#main").dataset.view = "";
     boot();
@@ -1448,6 +1722,42 @@ function toggleJoin(c) {
   if (reader) saveChoice(write.join(reader.address, c, joining), keep, joining ? `that you joined s/${c}` : `that you left s/${c}`, { about: `joining s/${c}` });
   else keep();
   render();
+}
+
+/**
+ * Follow `address`, or stop, on Follows, which every app reads. A follow
+ * vouches for them: members' follows make an account a member, so its votes
+ * count. Following someone who shows a handle follows the handle, as Follows
+ * does; stopping deletes both.
+ */
+function toggleFollow(address) {
+  const reader = signer();
+  if (!reader) return needAccount("Follows are signed by your account, so every app can read them.");
+  if (reader.address === address) return;
+  const on = !following(address);
+  const handle = handles.get(address);
+  // Stopping deletes every follow that stands for them now: of the account,
+  // and of any handle it shows, read from Follows itself.
+  const records = on
+    ? write.follow(reader.address, handle ? `@${handle}` : address)
+    : async (state) => {
+      const prefix = `follows/${reader.address}/`;
+      const found = [];
+      for await (const [key] of state.list(prefix)) {
+        const t = key.slice(prefix.length);
+        if (!t.includes("/") && (t.startsWith("@") ? await accountShowing(t.slice(1)) : t) === address) found.push(...write.follow(reader.address, t, false));
+      }
+      return found;
+    };
+  const before = followChoices.get(address);
+  const put = (value) => {
+    // A choice belongs to the account that made it.
+    if (connected !== reader.address) return;
+    if (value === undefined) followChoices.delete(address);
+    else followChoices.set(address, value);
+    redraw();
+  };
+  saveChoice(records, () => put(on), on ? "your follow" : "your unfollow", { about: "this follow", chain: followsPath(), undo: () => put(before), keys: [`follows/${reader.address}/${address}`] });
 }
 
 // A write from a dialog: the dialog stays until the wallet has sent it, then
@@ -1553,27 +1863,21 @@ const draftId = (key) => {
   return draftIds.get(key);
 };
 let replyTarget = null;
-const KNOWN_LABELS = ["spam", "off-topic", "nsfw", "low-effort"];
-function openReply(target, labelling) {
+function openReply(target) {
   const [author, id] = target.split("/");
   // What is answered is fixed now, whatever the route does while the dialog is open.
   opened($("#reply"));
-  replyTarget = { author, id, labelling, key: `${labelling ? "label" : "reply"}:${target}`, community: route.community, post: { author: route.author, id: route.id } };
+  replyTarget = { author, id, key: `reply:${target}`, community: route.community, post: { author: route.author, id: route.id } };
   const onPost = route.author === author && route.id === id;
   const findNode = (node) => (node.author === author && node.id === id ? node : node.replies.map(findNode).find(Boolean));
   const node = shown?.tree && findNode(shown.tree);
   const quoted = node ? (onPost ? node.title : node.body) : "";
-  $("#reply-title").textContent = labelling ? `Label this ${onPost ? "post" : "comment"}` : `Reply to ${nameOf(author, names)}`;
+  $("#reply-title").textContent = `Reply to ${nameOf(author, names)}`;
   $("#rp-quote").innerHTML = `<strong>${esc(nameOf(author, names))}</strong>: ${esc((quoted ?? "").slice(0, 400))}`;
-  $("#rp-labels-wrap").hidden = !labelling;
-  $("#rp-chips").innerHTML = [...new Set([...KNOWN_LABELS, ...Object.keys(labelActions())])].map((l) => `<label><input type="checkbox" value="${esc(l)}"> ${esc(l)}</label>`).join("");
-  $("#rp-b-label").innerHTML = labelling ? 'Reason <span class="muted">(optional, public)</span>' : "Your reply";
-  $("#rp-send").textContent = labelling ? "Add label" : "Reply";
   $("#rp-b").value = drafts.get(replyTarget.key) ?? "";
-  $("#rp-labels").value = "";
   $("#rp-status").textContent = "";
   $("#reply").showModal();
-  $(labelling ? "#rp-chips input" : "#rp-b").focus();
+  $("#rp-b").focus();
   $("#rp-cost").textContent = signingNote();
 }
 $("#rp-b").addEventListener("input", () => replyTarget && drafts.set(replyTarget.key, $("#rp-b").value));
@@ -1585,27 +1889,16 @@ $("#reply-form").addEventListener("submit", async (event) => {
   const { community, post: on, key: draftKey } = replyTarget;
   const { author: postAuthor, id: postId } = on;
   const target = replyTarget.author === postAuthor && replyTarget.id === postId ? undefined : { author: replyTarget.author, id: replyTarget.id };
-  const typed = $("#rp-labels").value.split(",").map((l) => l.trim().toLowerCase()).filter(Boolean);
-  const labels = replyTarget.labelling ? [...new Set([...[...document.querySelectorAll("#rp-chips input:checked")].map((i) => i.value), ...typed])] : [];
   const body = $("#rp-b").value.trim();
-  if (replyTarget.labelling && labels.length === 0) return ($("#rp-status").textContent = "Choose at least one label.");
-  if (!replyTarget.labelling && !body) return ($("#rp-status").textContent = "Write something first.");
-  const labelling = replyTarget.labelling;
-  const value = labelling ? { body, labels } : { body };
+  if (!body) return ($("#rp-status").textContent = "Write something first.");
+  const value = { body };
   await sendFromDialog({
     status, button: $("#rp-send"),
     build: (author) => {
       const newId = draftId(draftKey);
       return {
-        chain: chainOf(community),
-        // A reply is listed among the author's edges (it vouches for what it
-        // answers); a label vouches for nothing.
-        records: labelling
-          ? write.label(author, newId, on, labels, { target, body })
-          : async (state) => [
-              ...write.comment(author, newId, on, { body }, target ? { parent: target } : {}),
-              ...write.replied(author, await read.edgesOf(state, author), (target ?? on).author, (target ?? on).id),
-            ],
+        chain: placeOfItem(community, postAuthor, postId),
+        records: write.comment(author, newId, on, { body }, target ? { parent: target } : {}),
         fresh: `user/${author}/post/${newId}`,
         pending: { key: keyOf(community, author, newId), kind: "comment", community, author, id: newId, value, on, parent: target },
       };
@@ -1654,6 +1947,45 @@ function openNewPost() {
   drawMediaPicker();
 }
 $("#open-new").onclick = openNewPost;
+
+function openNewCommunity() {
+  opened($("#community"));
+  $("#nc-status").textContent = "";
+  $("#nc-status").classList.remove("bad");
+  $("#community").showModal();
+  $("#nc-name").focus();
+  $("#nc-cost").textContent = signingNote();
+}
+$("#open-community").onclick = openNewCommunity;
+$("#community-form").addEventListener("submit", async (event) => {
+  if (event.submitter?.value !== "create") return;
+  event.preventDefault();
+  const status = $("#nc-status");
+  status.classList.add("bad");
+  const name = $("#nc-name").value.trim().toLowerCase().replace(/^s\//, "");
+  if (name === ALL) return (status.textContent = "s/all shows every community at once. Choose another name.");
+  if (!places.isName(name)) return (status.textContent = "Use lowercase letters, digits and -, with / between levels, like bitcoin/lightning.");
+  if (communities.includes(name)) return (status.textContent = `s/${name} already exists.`);
+  // Posts written in it on Stoa's chain before anyone named it make it theirs: first come.
+  const home = await stateOf(homePath()).catch(() => null);
+  const posted = home && !(await home.list(`index/c/${places.segmentOf(name)}/post/`).next()).done;
+  if (posted) return (status.textContent = `s/${name} already has posts on Stoa's chain. Choose another name.`);
+  await sendFromDialog({
+    status, button: $("#nc-create"),
+    build: (author) => ({
+      chain: homePath(),
+      records: places.declare(author, name, "home"),
+      fresh: `index/community/${places.segmentOf(name)}/${author}`,
+      pending: { key: `community|${name}`, kind: "community", community: name, author },
+    }),
+    sent: () => $("#community-form").reset(),
+    done: () => {
+      $("#community").close();
+      communities = listCommunities();
+      location.hash = `#/s/${encodeURIComponent(name)}`;
+    },
+  });
+});
 document.querySelectorAll("dialog").forEach((dialog) => {
   // Focus goes back to what opened the dialog, found again if a redraw
   // replaced it meanwhile (refocus acts only when focus fell to the page).
@@ -1688,16 +2020,16 @@ $("#new-form").addEventListener("submit", async (event) => {
     $("#np-l").focus();
     return (status.textContent = "The link must start with https:// or http://");
   }
-  const tags = [...document.querySelectorAll("#new-form .checks input:checked")].map((i) => i.value);
-  const value = { title, ...(link && { link }), ...($("#np-b").value.trim() && { body: $("#np-b").value.trim() }), ...(tags.length && { tags }) };
+  const value = { title, ...(link && { link }), ...($("#np-b").value.trim() && { body: $("#np-b").value.trim() }) };
   let made;
   const media = attachment ? [attachment.cid] : [];
+  const place = await placeToPost(community);
   await sendFromDialog({
     status, button: $("#np-post"),
     build: (author) => {
       const id = draftId(`new-post:${community}`);
       made = { author, id };
-      return { chain: chainOf(community), records: write.post(author, id, value, media), fresh: `user/${author}/post/${id}`, pending: { key: keyOf(community, author, id), kind: "post", community, author, id, value, media } };
+      return { chain: place, records: write.post(author, id, value, media), fresh: `user/${author}/post/${id}`, pending: { key: keyOf(community, author, id), kind: "post", community, author, id, value, media } };
     },
     sent: () => {
       $("#new-form").reset();
@@ -1711,70 +2043,6 @@ $("#new-form").addEventListener("submit", async (event) => {
       location.hash = postHref(community, made.author, made.id);
     },
   });
-});
-
-function openMods(community) {
-  const c = community ?? route.community ?? communities[0];
-  if (!c) return;
-  $("#mods-c").textContent = `s/${c}`;
-  // Opening clears the status; a redraw of the open dialog keeps what it says.
-  if (!$("#mods").open) $("#mods-status").textContent = "";
-  const list = follows(c);
-  $("#mods-list").innerHTML = list.length
-    ? list.map((a) => `<tr><td>${names.has(a) ? `<strong>${esc(names.get(a))}</strong> ` : ""}<span class="mono muted" title="${esc(a)}">${esc(short(a))}</span></td><td><button class="btn small" type="button" data-unfollow="${esc(a)}">Unfollow</button></td></tr>`).join("")
-    : '<tr><td class="muted" colspan="2" style="text-align:left;white-space:normal">You follow no one here, so you see everything.</td></tr>';
-  const actions = labelActions();
-  $("#label-actions").innerHTML = Object.entries(actions).map(([label, chosen]) => `<tr><td>${esc(label)}</td><td><div class="seg" role="group" aria-label="What ${esc(label)} does" data-label-action="${esc(label)}">${treatments.map((t) => `<button type="button" aria-pressed="${t === chosen}">${t}</button>`).join("")}</div></td></tr>`).join("");
-  $("#mods").dataset.community = c;
-  $("#showall").checked = showAll;
-  if (!$("#mods").open) $("#mods").showModal();
-}
-$("#mods").addEventListener("click", (event) => {
-  const c = $("#mods").dataset.community;
-  const unfollow = event.target.closest("[data-unfollow]");
-  if (unfollow) {
-    follow(c, unfollow.dataset.unfollow, false);
-    openMods(c);
-  }
-  const seg = event.target.closest("[data-label-action]");
-  if (seg && event.target.tagName === "BUTTON") {
-    store.set("labelActions", { ...labelActions(), [seg.dataset.labelAction]: event.target.textContent });
-    openMods(c);
-  }
-});
-$("#mods-add-btn").onclick = () => {
-  const c = $("#mods").dataset.community;
-  const address = $("#mods-add").value.trim();
-  if (!address) return $("#mods-add").focus();
-  if (!ADDRESS.test(address)) return ($("#mods-status").textContent = "That isn't an account address. It starts with “b” and is about 60 characters.");
-  $("#mods-status").textContent = "";
-  // Kept in the box when the change has to wait, so it can be sent again.
-  if (follow(c, address, true)) $("#mods-add").value = "";
-  openMods(c);
-};
-$("#mods-add").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    $("#mods-add-btn").click();
-  }
-});
-const addLabel = () => {
-  const label = $("#new-label").value.trim().toLowerCase();
-  if (!label) return $("#new-label").focus();
-  $("#new-label").value = "";
-  if (!(label in labelActions())) store.set("labelActions", { ...labelActions(), [label]: "badge" });
-  openMods($("#mods").dataset.community);
-};
-$("#new-label-btn").onclick = addLabel;
-$("#new-label").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    addLabel();
-  }
-});
-$("#mods").addEventListener("close", () => {
-  showAll = $("#showall").checked;
-  refresh();
 });
 
 // ---------------------------------------------------------------- profile
@@ -2016,17 +2284,18 @@ $("#profile-form").addEventListener("submit", async (event) => {
 
 // ------------------------------------------------------------------ media
 
-// A post's image or video is kept for good by the storage sponsor, paid with
+// A post's image or video is kept for good by the sponsor, paid with
 // this device's work: no coins, and no node of the poster's own.
 const MOST_MEDIA = (1 << 20) - 256; // one Volume of at most 1 MiB, its block's framing included
 const UPLOADS = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm))$/;
 let attachment = null; // { cid, file: { kind, url }, state: "storing" | "kept" | "failed", stop, chain }
-const storageChains = new Map(); // "<sponsor> <community>" → Promise<chain | null>
-const storageOn = (community) => {
-  if (!settings.storage) return Promise.resolve(null);
-  const key = `${settings.storage} ${community}`;
+const storageChains = new Map(); // "<sponsor> <chain>" → Promise<chain | null>
+const storageOn = async (community) => {
+  if (!settings.sponsor) return null;
+  const chain = (await placeToPost(community)).chain.join("/");
+  const key = `${settings.sponsor} ${chain}`;
   if (!storageChains.has(key)) {
-    const asked = storageChain(settings.storage, [chainOf(community).join("/"), homePath().join("/")]);
+    const asked = storageChain(settings.sponsor, [...new Set([chain, homePath().join("/")])]);
     storageChains.set(key, asked);
     // A sponsor that didn't answer is asked again next time.
     asked.then((chain) => chain || storageChains.delete(key));
@@ -2041,9 +2310,9 @@ async function drawMediaPicker() {
   if ($("#np-c").value !== community) return;
   $("#np-file-wrap").hidden = !chain && !attachment;
   $("#np-media-off").hidden = Boolean(chain || attachment);
-  $("#np-media-off").textContent = settings.storage
-    ? "Images and video can't be added right now: the storage sponsor in Settings isn't keeping files."
-    : "Images and video need a storage sponsor, set in Settings.";
+  $("#np-media-off").textContent = settings.sponsor
+    ? "Images and video can't be added right now: the sponsor in Settings isn't keeping files."
+    : "Images and video need a sponsor, set in Settings.";
 }
 
 function drawAttachment() {
@@ -2060,7 +2329,7 @@ function drawAttachment() {
   $("#np-post").disabled = state === "storing" || $("#new").hasAttribute("data-busy");
 }
 
-/** Keeps the chosen file through the storage sponsor, saying how far along it is. */
+/** Keeps the chosen file through the sponsor, saying how far along it is. */
 async function keepAttachment() {
   const mine = attachment;
   const stop = new AbortController();
@@ -2074,15 +2343,15 @@ async function keepAttachment() {
   };
   try {
     const chain = await storageOn($("#np-c").value);
-    if (!chain) throw new StorageRefused("The storage sponsor isn't keeping files right now.");
-    await storeFile(settings.storage, mine.volume, {
+    if (!chain) throw new StorageRefused("The sponsor isn't keeping files right now.");
+    await storeFile(settings.sponsor, mine.volume, {
       chain, hash: hasher, signal: stop.signal,
       progress: ({ stage, done }) => say({
-        upload: "Sending it to the storage sponsor…",
+        upload: "Sending it to the sponsor…",
         work: `Keeping it for good: this device's ${device} is paying with work…`,
-        busy: "The storage sponsor is busy: waiting a moment…",
+        busy: "The sponsor is busy: waiting a moment…",
         grind: `Keeping it for good: this device's ${device} is paying with work… ${Math.round((done ?? 0) * 100)}%`,
-        pin: "Paid. The storage sponsor is keeping it…",
+        pin: "Paid. The sponsor is keeping it…",
       }[stage]),
     });
     // Kept: shown at once in the post, without reading it back.
@@ -2125,8 +2394,8 @@ function openSettings({ advanced = false } = {}) {
   $("#st-node").value = settings.node;
   $("#st-home").value = settings.home;
   $("#st-moniker").value = settings.moniker;
+  $("#st-follows").value = settings.follows;
   $("#st-sponsor").value = settings.sponsor;
-  $("#st-storage").value = settings.storage;
   $("#st-extension-row").hidden = !window.lattice?.isLatticeWallet;
   $("#st-extension").checked = settings.extension;
   $("#st-status").textContent = "";
@@ -2139,8 +2408,8 @@ $("#open-settings").onclick = () => openSettings();
 function renderAccount() {
   const reader = signer();
   $("#st-account-hint").textContent = reader
-    ? extension() ? "Selfhold for Chrome keeps your key and asks you to approve each post, comment, vote and label."
-      : "Your key is kept by your passkey, in Selfhold's window. It asks you to approve each post, comment, vote and label; Stoa never sees the key."
+    ? extension() ? "Selfhold for Chrome keeps your key and asks you to approve each post, comment and vote."
+      : "Your key is kept by your passkey, in Selfhold's window. It asks you to approve each post, comment and vote; Stoa never sees the key."
     : "Selfhold makes your account with a passkey: your face, fingerprint or screen lock. Nothing to install, and no coins.";
   $("#st-address-row").hidden = !reader;
   $("#st-icon").innerHTML = reader ? accountIcon(reader.address, 20) : "";
@@ -2169,9 +2438,8 @@ $("#settings-form").addEventListener("submit", async (event) => {
     field.focus();
   };
   if (typed && !node) return bad($("#st-node"), "The node must be an https address, like https://node.example (http only for this computer).");
-  const sponsor = $("#st-sponsor").value.trim(), storage = $("#st-storage").value.trim();
-  if (sponsor && !sponsorAddress(sponsor)) return bad($("#st-sponsor"), "The fee sponsor must be an https address, or empty to pay fees in coins.");
-  if (storage && !sponsorAddress(storage)) return bad($("#st-storage"), "The storage sponsor must be an https address, or empty for none.");
+  const sponsor = $("#st-sponsor").value.trim();
+  if (sponsor && !sponsorAddress(sponsor)) return bad($("#st-sponsor"), "The sponsor must be an https address, or empty to pay fees in coins and add no files.");
   // Selfhold for Chrome or the window: each keeps its own account.
   const useExtension = $("#st-extension").checked;
   if (useExtension !== settings.extension) {
@@ -2181,19 +2449,21 @@ $("#settings-form").addEventListener("submit", async (event) => {
     render();
   }
   settings.sponsor = sponsor && sponsorAddress(sponsor);
-  settings.storage = storage && sponsorAddress(storage);
   store.set("sponsor", settings.sponsor === DEFAULT_SPONSOR ? null : settings.sponsor);
-  store.set("storage", settings.storage === DEFAULT_SPONSOR ? null : settings.storage);
-  const home = $("#st-home").value.trim(), monikerChain = $("#st-moniker").value.trim();
-  const moved = (node && node !== settings.node) || (home && home !== settings.home) || (monikerChain && monikerChain !== settings.moniker);
+  const home = $("#st-home").value.trim(), monikerChain = $("#st-moniker").value.trim(), followsChain = $("#st-follows").value.trim();
+  const moved = (node && node !== settings.node) || (home && home !== settings.home) || (monikerChain && monikerChain !== settings.moniker) || (followsChain && followsChain !== settings.follows);
   if (!moved) return;
   settings.node = node || settings.node;
   settings.home = home || settings.home;
   settings.moniker = monikerChain || settings.moniker;
+  settings.follows = followsChain || settings.follows;
   store.set("node", settings.node);
   store.set("home", settings.home);
   store.set("monikerChain", settings.moniker === MONIKER.chain.join("/") ? null : settings.moniker);
-  // Names are read again, from the node and chains now chosen.
+  store.set("followsChain", settings.follows === DEFAULT_FOLLOWS ? null : settings.follows);
+  // Names are read again, from the node and chains now chosen, and standing afresh.
+  standings.clear();
+  keptStandings.clear();
   names.clear();
   profiles.clear();
   handles.clear();
@@ -2253,8 +2523,17 @@ async function boot() {
   paintLastFeed();
   try {
     const children = (await listed).directories ?? [];
-    communities = [ALL, ...children.filter((c) => c !== ALL)];
-    for (const c of likelyShown()) readAhead(chainOf(c));
+    // s/all is every community at once, not a chain: no child may take its name.
+    ownChains = new Set(children.filter((c) => c !== ALL));
+    declared = await stateOf(homePath(), { ahead: true }).then(places.declarations).catch(() => new Map());
+    // A nested community named on the home chain may have a chain of its own under its parent's.
+    for (let depth = 1; depth < 4; depth++) {
+      const parents = [...ownChains].filter((c) => c.split("/").length === depth && [...declared.keys()].some((name) => name.startsWith(`${c}/`)));
+      const found = await Promise.all(parents.map((p) => api("/api/chain/children", chainOf(p)).then((r) => (r.directories ?? []).map((d) => `${p}/${d}`), () => [])));
+      found.flat().forEach((c) => ownChains.add(c));
+    }
+    communities = listCommunities();
+    for (const c of likelyShown()) for (const { chain } of placesOf(c)) readAhead(chain);
   } catch (error) {
     communities = [];
     shown = null;
@@ -2280,13 +2559,6 @@ function likelyShown() {
   return joinedList().filter((c) => communities.includes(c));
 }
 let navigated = false;
-// Blurred media is a button to the keyboard too.
-document.addEventListener("keydown", (event) => {
-  if ((event.key === "Enter" || event.key === " ") && event.target.hasAttribute?.("data-unblur")) {
-    event.preventDefault();
-    event.target.click();
-  }
-});
 window.addEventListener("hashchange", () => {
   for (const [key, error] of itemErrors) if (error.untilNavigation) itemErrors.delete(key);
   navigated = true;

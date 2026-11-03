@@ -2,8 +2,9 @@
 
 The real page (`app/`) in headless Chromium, driven through Playwright,
 against a private Lattice stack (`stack.mjs`): one host mining Nexus, a Stoa
-home chain and one community (Stoa's policy) and Moniker (its own policy, the
-module `Nexus/moniker` launched with, in `moniker/`), all from a 2-second test
+home chain and one community (Stoa's policy), Moniker (its own policy, the
+module `Nexus/moniker` launched with, in `moniker/`) and Follows (its own, in
+`follows/`, built from the Follows repository), all from a 2-second test
 spec with a fee of 1; a sponsor (lattice-sponsor) that pays fees and keeps
 files on the home chain for work; and Selfhold's window, built from
 selfhold-wallet and served on localhost.
@@ -21,11 +22,17 @@ write (the draft kept, sent on the next press) and from a vote; posting,
 nested comments, voting and taking a vote back, all coinless; a profile
 (name, bio) on Stoa and an @handle claimed on Moniker, refused when it is
 someone else's, on bylines and the profile page; an image kept for good by
-the storage sponsor for this device's work, and shown; a write declined in
-Selfhold's window not sent; s/all; labels hiding a post only for a reader who
-follows the labeller, at once, with Show and unfollow; media nobody serves;
+the sponsor for this device's work, and shown; a write declined in
+Selfhold's window not sent; s/all; what members downvoted collapsed for every
+reader, with Show; media nobody serves; following someone from their
+profile, the Following feed, and a member's follow making a new account's
+votes count;
 Top and New ordering; an earlier render finishing after a newer one without
-writing over it; and a community the node does not serve shown as such.
+writing over it; a community the node does not serve shown as such; a new
+community made from the rail on the home chain, posted to and voted in, kept
+apart from the others; and a community with a chain of its own moved to the
+home chain by a member's choice, new posts going there and earlier ones
+still read.
 
 ```sh
 cd e2e/ui && npm ci && npx playwright install chromium

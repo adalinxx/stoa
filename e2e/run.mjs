@@ -4,8 +4,8 @@
 // result is read back by descending the state trie by CID. A second node,
 // the reader's, joins the community from the first as its only peer and
 // reads the community from its own state: the posts ranked by post time and
-// votes, a thread as a tree, a picture fetched from peers, and the feed as a
-// reader who follows one moderator sees it.
+// votes counted from members only, a thread as a tree, and a picture fetched
+// from peers.
 //
 //   LATTICE=<lattice-node>/.build/debug/lattice \
 //   LATTICE_SDK=<lattice-sdk>/packages/sdk/dist/index.js node e2e/run.mjs
@@ -15,8 +15,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { mediaVolume, operator, readMedia } from "../client/media.mjs";
-import { judge } from "../client/moderation.mjs";
-import { karma, rank } from "../client/rank.mjs";
+import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
 import { memberVotes, seedsOf } from "../client/standing.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
@@ -137,10 +136,7 @@ try {
   console.log("Nexus, Nexus/stoa and Nexus/stoa/bitcoin are mined");
 
   // The home chain: what Alice reads.
-  await writes("join on the home chain", HOME, alice, [
-    ...write.join(alice.address, "bitcoin"),
-    ...write.advertise(alice.address, "bitcoin", { about: "Bitcoin talk" }),
-  ]);
+  await writes("join on the home chain", HOME, alice, write.join(alice.address, "bitcoin"));
 
   // A link post with a picture: the picture's Volume is pinned on Alice's
   // node, and the post names its CID.
@@ -158,7 +154,7 @@ try {
     write.post(
       linkPost.author,
       linkPost.id,
-      { title: "The whitepaper", body: "Worth a reread.", link: "https://bitcoin.org/bitcoin.pdf", tags: ["oc"] },
+      { title: "The whitepaper", body: "Worth a reread.", link: "https://bitcoin.org/bitcoin.pdf" },
       [volume.cid],
     ),
   );
@@ -170,11 +166,7 @@ try {
   // its seeds, so their votes count from the start.
   await writes("rules post", BITCOIN, mod, write.post(mod.address, write.newId(), { title: "Rules" }));
 
-  // A reply lists what it answers among its author's edges.
-  const reply = (a, id, value, parent) => async (now) => [
-    ...write.comment(a.address, id, linkPost, value, parent ? { parent } : {}),
-    ...write.replied(a.address, await read.edgesOf(now, a.address), (parent ?? linkPost).author, (parent ?? linkPost).id),
-  ];
+  const reply = (a, id, value, parent) => write.comment(a.address, id, linkPost, value, parent ? { parent } : {});
   const c1 = { author: bob.address, id: write.newId() };
   await writes("comment", BITCOIN, bob, reply(bob, c1.id, { body: "Section 11 still holds." }));
   const c2 = { author: carol.address, id: write.newId() };
@@ -189,11 +181,6 @@ try {
   await writes("vote", BITCOIN, mod, vote(mod, textPost, -1));
   await writes("a vote changed", BITCOIN, carol, vote(carol, textPost, 1));
 
-  // Moderation is a labelled comment; a report is one from an account no
-  // reader follows as a moderator.
-  await writes("moderator's labelled comment", BITCOIN, mod,
-    write.label(mod.address, write.newId(), textPost, ["spam"], { body: "Shilling." }));
-  await writes("report", BITCOIN, carol, write.label(carol.address, write.newId(), textPost, ["report: spam"]));
 
   // Bob writes into Alice's records: the policy refuses it.
   const { response: forged } = await submit(BITCOIN, bob, [[`user/${alice.address}/post/${linkPost.id}`, '{"title":"forged"}']]);
@@ -211,12 +198,11 @@ try {
   readers.lattice("up");
   const community = await until("the reader's node has the community", async () => {
     const now = await state(BITCOIN, readerNode);
-    return (await read.labelsBy(now, carol.address)).size === 1 && now;
+    return read.edgeSets(await read.edgesOf(now, carol.address)).up.has(`${textPost.author}/${textPost.id}`) && now;
   });
   const home = await state(HOME, readerNode);
   assert.deepEqual(await read.joined(home, alice.address), ["bitcoin"]);
-  assert.deepEqual([...(await read.communities(home)).keys()], ["bitcoin"]);
-  console.log("reader: joins and communities from the home chain");
+  console.log("reader: joins from the home chain");
 
   // Votes count from members. Carol only commented and nobody has engaged
   // with her yet: her votes are kept, and not counted.
@@ -254,29 +240,13 @@ try {
   assert.deepEqual(first.media, [volume.cid]);
   assert.ok(second.time >= first.time, "the text post was written after the link post");
   assert.deepEqual(rank(listed, "new").map((p) => p.id), [textPost.id, linkPost.id]);
-  assert.equal(rank(listed, "controversial")[0].id, textPost.id);
   console.log("reader: posts ranked by votes and post time");
 
   const tree = await read.thread(community, linkPost.author, linkPost.id);
   assert.deepEqual(tree.replies.map((c) => c.id), [c1.id]);
   assert.deepEqual(tree.replies[0].replies.map((c) => c.id), [c2.id]);
   assert.equal(tree.replies[0].replies[0].link, "https://example.com/s6");
-  const bobsItems = (await read.itemsBy(community, bob.address)).map((item) => {
-    const [ups, downs] = counted(votes, item);
-    return { ups, downs };
-  });
-  assert.equal(karma(bobsItems), 1);
-  console.log("reader: the thread as a tree; Bob's karma is 1");
-
-  // Moderation as a reader chooses it.
-  const followingMod = judge(new Map([[mod.address, await read.labelsBy(community, mod.address)]]), { spam: "hide" });
-  const followingNoOne = judge(new Map(), { spam: "hide" });
-  assert.equal(followingMod(textPost).treatment, "hide");
-  assert.equal(followingMod(linkPost).treatment, "show");
-  assert.equal(followingNoOne(textPost).treatment, "show");
-  const reports = (await read.thread(community, textPost.author, textPost.id)).replies.filter((c) => c.labels.length > 0);
-  assert.deepEqual(reports.map((c) => c.labels).sort(), [["report: spam"], ["spam"]]);
-  console.log("reader: the moderator's labelled comment hides the post for a reader who follows them, and only for them");
+  console.log("reader: the thread as a tree");
 
   // The picture, from peers through the reader's own node.
   const readersNode = readers.operator(reader.rpc);

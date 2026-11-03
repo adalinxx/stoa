@@ -1,6 +1,6 @@
 // A private Stoa stack for the UI tests: one Lattice host mining Nexus, the
-// home chain and one community (Stoa's policy), and Moniker (its own policy,
-// the module Nexus/moniker launched with), all from a fast test spec, with
+// home chain and one community (Stoa's policy), Moniker (its own policy,
+// the module Nexus/moniker launched with) and Follows (its own), all from a fast test spec, with
 // public reads and submits; a sponsor (lattice-sponsor) that pays fees and
 // keeps files for work; Selfhold's window, served on localhost; and a static
 // server for the repository, so the real app/ page runs against it.
@@ -21,6 +21,8 @@ export const COMMUNITY = "bitcoin";
 export const CHAIN = [...HOME, COMMUNITY];
 // Where @handles come from, on Moniker's own policy.
 export const MONIKER = ["Nexus", "moniker"];
+// Whom people follow, on Follows' own policy (follows/chain, built).
+export const FOLLOWS = ["Nexus", "follows"];
 const here = (path) => fileURLToPath(new URL(path, import.meta.url));
 const repo = here("../../");
 const ports = { listen: 26001, rpc: 26080, publicRead: 26081, web: 26090, sponsor: 26091, wallet: 26092 };
@@ -85,8 +87,9 @@ export async function start() {
     lattice("child", "create", chain.join("/"), "--spec", here("./spec.json"), "--policy-module", policy);
   }
   lattice("child", "create", MONIKER.join("/"), "--spec", here("./moniker/spec.json"), "--policy-module", here("./moniker/moniker_policy.wasm"));
+  lattice("child", "create", FOLLOWS.join("/"), "--spec", here("./follows/spec.json"), "--policy-module", here("./follows/follows_policy.wasm"));
   configure((t) => {
-    t.mine.recipients = { [HOME.join("/")]: miner.address, [CHAIN.join("/")]: miner.address, [MONIKER.join("/")]: miner.address };
+    t.mine.recipients = Object.fromEntries([HOME, CHAIN, MONIKER, FOLLOWS].map((chain) => [chain.join("/"), miner.address]));
   });
   lattice("mine", "start");
   const node = `http://127.0.0.1:${ports.publicRead}`;
@@ -94,8 +97,8 @@ export async function start() {
     const r = await fetch(`${node}/api/state/account/${miner.address}?chainPath=${chain.join("/")}`);
     return r.ok ? BigInt((await r.json()).balance ?? 0) : 0n;
   };
-  await until("the home chain, the community and Moniker fund the miner", async () =>
-    (await balance(HOME)) > 1000n && (await balance(CHAIN)) > 1000n && (await balance(MONIKER)) > 1000n);
+  await until("the home chain, the community, Moniker and Follows fund the miner", async () =>
+    (await balance(HOME)) > 1000n && (await balance(CHAIN)) > 1000n && (await balance(MONIKER)) > 1000n && (await balance(FOLLOWS)) > 1000n);
   const web = await serve(ports.web);
   // Selfhold's window, on localhost, where passkeys work and the app (on 127.0.0.1) is another site.
   const walletWeb = process.env.LATTICE_WALLET_WEB && resolvePath(process.env.LATTICE_WALLET_WEB);
@@ -108,7 +111,7 @@ export async function start() {
   const sponsorKey = `${root}/sponsor-key.json`;
   execFileSync(process.env.LATTICE, ["key", "generate", "--out", sponsorKey]);
   const sponsorAddress = JSON.parse(readFileSync(sponsorKey, "utf8")).address;
-  for (const chain of [HOME, CHAIN, MONIKER]) await transfer(sdk, node, miner, minerKey, sponsorAddress, 500n, chain);
+  for (const chain of [HOME, CHAIN, MONIKER, FOLLOWS]) await transfer(sdk, node, miner, minerKey, sponsorAddress, 500n, chain);
   const log = openSync(`${root}/sponsor.log`, "a");
   const sponsor = spawn(process.env.LATTICE_SPONSOR || join(dirname(process.env.LATTICE), "lattice-sponsor"), [
     "--node", `http://127.0.0.1:${ports.rpc}`, "--cookie-file", `${root}/chains/Nexus/.cookie`, "--key", sponsorKey,
@@ -116,8 +119,8 @@ export async function start() {
     "--sell-storage", "--storage-rate", `${HOME.join("/")}=1000000`, "--storage-file", `${root}/sponsor-storage.json`,
   ], { stdio: ["ignore", log, log] });
   const sponsorURL = `http://127.0.0.1:${ports.sponsor}`;
-  await until("the sponsor prices Stoa's chains and Moniker", async () => {
-    for (const chain of [HOME, CHAIN, MONIKER]) {
+  await until("the sponsor prices Stoa's chains, Moniker and Follows", async () => {
+    for (const chain of [HOME, CHAIN, MONIKER, FOLLOWS]) {
       const r = await fetch(`${sponsorURL}/work`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chain: chain.join("/") }) });
       if (!r.ok) return false;
     }
@@ -126,7 +129,7 @@ export async function start() {
 
   const info = {
     root, node, rpc: `http://127.0.0.1:${ports.rpc}`, app: `http://127.0.0.1:${ports.web}/app/`,
-    home: HOME.join("/"), community: COMMUNITY, moniker: MONIKER.join("/"), minerKey: Buffer.from(minerKey).toString("hex"), miner: miner.address,
+    home: HOME.join("/"), community: COMMUNITY, moniker: MONIKER.join("/"), follows: FOLLOWS.join("/"), minerKey: Buffer.from(minerKey).toString("hex"), miner: miner.address,
     sponsor: sponsorURL, sponsorAddress, walletPage: `http://localhost:${ports.wallet}/`,
   };
   return {

@@ -12,8 +12,9 @@ import { after, before, test as nodeTest } from "node:test";
 import { chromium, expect as baseExpect } from "@playwright/test";
 import { mediaVolume } from "../../client/media.mjs";
 import * as read from "../../client/read.mjs";
+import * as places from "../../client/places.mjs";
 import * as write from "../../client/write.mjs";
-import { MONIKER, start } from "./stack.mjs";
+import { FOLLOWS, MONIKER, start } from "./stack.mjs";
 
 const running = await start();
 writeFileSync(new URL("./.stack.json", import.meta.url), JSON.stringify(running.info));
@@ -74,9 +75,9 @@ const expect = baseExpect.configure({ timeout: 120_000 });
 
 const community = stack.community;
 const feed = `#/s/${community}`;
-// Another client's poster and labeller, who sign with keys they hold.
+// Another client's poster and voter, who sign with keys they hold.
 const poster = newAccount();
-const labeller = newAccount();
+const voter = newAccount();
 const sponsorBalance = () => balance(stack.sponsorAddress, chainPath);
 // A 1x1 PNG.
 const picture = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a4500000000049454e44ae426082", "hex");
@@ -230,7 +231,7 @@ test("a profile: a name and bio on Stoa, and an @handle claimed on Moniker, on e
   await reader.close();
 });
 
-test("an image is kept for good by the storage sponsor, paid with this device's work, and shown in the post", async ({ page }) => {
+test("an image is kept for good by the sponsor, paid with this device's work, and shown in the post", async ({ page }) => {
   await openApp(page, feed);
   await signIn(page);
   await page.getByRole("button", { name: "New post" }).click();
@@ -285,48 +286,31 @@ test("a visitor who votes is asked to sign in, and told why", async ({ page }) =
   await expect(page.locator("#who #account-btn")).toBeVisible();
 });
 
-test("s/all is the Stoa chain's own community, and its page shows every community's posts too", async ({ page }) => {
+test("s/all shows every community's posts, each named, and is no place to post", async ({ page }) => {
   await fund(poster.address);
   await writeAs(poster, chainPath, write.post(poster.address, write.newId(), { title: "From another client" }));
-  await writeAs(poster, homePath, write.post(poster.address, write.newId(), { title: "Hello from the top" }));
   await openApp(page, "#/s/all");
   await expect(page.locator(".post", { hasText: "From another client" }).locator(".meta")).toContainText(`s/${community}`);
-  await expect(page.locator(".post", { hasText: "Hello from the top" }).locator(".meta")).toContainText("s/all");
-  await page.goto(stack.app + feed);
-  await expect(page.locator(".post", { hasText: "From another client" })).toBeVisible();
-  await expect(page.locator(".post", { hasText: "Hello from the top" })).toHaveCount(0);
+  await expect(page.locator("#join")).toHaveCount(0);
+  await page.getByRole("button", { name: "New post" }).first().click();
+  await expect(page.locator("#np-c option[value=all]")).toHaveCount(0);
 });
 
-test("labels hide a post only for a reader who follows the labeller, at once, and Show reveals it", async ({ page }) => {
-  await fund(labeller.address);
+test("what members downvoted more than upvoted is collapsed for every reader, with Show", async ({ page }) => {
+  await fund(voter.address);
   const id = write.newId();
-  await writeAs(poster, chainPath, write.post(poster.address, id, { title: "Labelled post" }));
-  await writeAs(labeller, chainPath, write.label(labeller.address, write.newId(), { author: poster.address, id }, ["spam"], { body: "Testing labels." }));
+  await writeAs(poster, chainPath, write.post(poster.address, id, { title: "Downvoted post" }));
+  // The poster wrote among the community's first posts: a member, whose
+  // downvote outweighs the no member upvotes.
+  await writeAs(poster, chainPath, async (state) => write.vote(poster.address, await read.edgesOf(state, poster.address), poster.address, id, -1));
+  // A fresh account's upvote is kept, and does not count.
+  await writeAs(voter, chainPath, async (state) => write.vote(voter.address, await read.edgesOf(state, voter.address), poster.address, id, 1));
   await openApp(page, feed);
-  await expect(page.locator(".post", { hasText: "Labelled post" })).toBeVisible();
-  await page.getByRole("button", { name: "Moderation" }).first().click();
-  await page.locator("#mods-add").fill(labeller.address);
-  await page.locator("#mods-add-btn").click();
-  await page.locator("#mods button[value=ok]").click();
-  const hidden = page.locator(".hidden-row", { hasText: "labelled spam" });
+  const hidden = page.locator(".hidden-row", { hasText: "more members downvoted it" });
   await expect(hidden).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator(".post", { hasText: "Labelled post" })).toHaveCount(0);
+  await expect(page.locator(".post", { hasText: "Downvoted post" })).toHaveCount(0);
   await hidden.getByRole("button", { name: "Show" }).click();
-  await expect(page.locator(".post", { hasText: "Labelled post" })).toBeVisible();
-
-  // A reader who follows no one sees it.
-  const reader = await browser.newContext();
-  const other = await reader.newPage();
-  await openApp(other, feed);
-  await expect(other.locator(".post", { hasText: "Labelled post" })).toBeVisible();
-  await reader.close();
-
-  // Unfollowing brings it back, also at once.
-  await page.goto(stack.app + feed);
-  await page.getByRole("button", { name: "Moderation" }).first().click();
-  await page.locator(`[data-unfollow="${labeller.address}"]`).click();
-  await page.locator("#mods button[value=ok]").click();
-  await expect(page.locator(".post", { hasText: "Labelled post" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator(".post", { hasText: "Downvoted post" })).toBeVisible();
 });
 
 test("media nobody serves says so", async ({ page }) => {
@@ -356,33 +340,60 @@ test("Top orders by members' score and New by post time; a stranger's vote count
   await expect(unliked.locator(".votes .score")).toHaveText("0");
 });
 
+test("Follow on a profile goes to Follows; the Following feed shows their posts; a member's follow makes your votes count", async ({ page }) => {
+  const title = "A post from someone followed";
+  await writeAs(poster, chainPath, write.post(poster.address, write.newId(), { title }));
+  await openApp(page, feed);
+  const address = await signIn(page);
+  // Nobody has vouched for a new account: its votes are kept, and not counted yet.
+  await expect(page.locator("#aside-you")).toHaveText(/are kept, and count once members upvote what you post here or follow you/);
+  const following = page.locator("nav.rail").getByRole("link", { name: "Following" });
+  await following.click();
+  await expect(page.locator("#feed")).toContainText("You don't follow anyone yet");
+
+  await page.goto(stack.app + `#/u/${poster.address}`);
+  await approveInSelfhold(page, page.getByRole("button", { name: "Follow", exact: true }));
+  await expect(page.getByRole("button", { name: "Following", exact: true })).toBeVisible();
+  await expect.poll(async () => (await stateOf(FOLLOWS)).get(`follows/${address}/${poster.address}`)).toBe("1");
+  expect(await (await stateOf(FOLLOWS)).get(`followers/${poster.address}/${address}`)).toBe("1");
+  expect(await balance(address, FOLLOWS)).toBe(0n);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Following", exact: true })).toBeVisible();
+  await following.click();
+  await expect(page.locator(".post", { hasText: title })).toBeVisible();
+
+  // A member follows them back: their votes count.
+  await fund(poster.address, 20n, [FOLLOWS]);
+  await writeAs(poster, FOLLOWS, write.follow(poster.address, address));
+  await page.goto(stack.app + feed);
+  await page.reload();
+  await expect(page.locator("#aside-you")).toHaveText("count: you're one of its members.");
+});
+
 test("an earlier render that finishes last does not write over a newer one", async ({ page }) => {
   // Force the race: hold the community reads the first render makes after it
-  // has read the chain's tip (so it has already judged with no follows), let
-  // the follow's render finish, then release the first. Without the guard
-  // the first render writes the post back, unhidden.
+  // has read the chain's tip, go to another page and let its render finish,
+  // then release the first. Without the guard the first render writes the
+  // community's feed over the page the reader went to.
   let communityReads = 0;
-  let followed = false;
+  let moved = false;
   let release;
   const held = new Promise((resolve) => (release = resolve));
   await page.route("**/volumes/**", async (route) => {
     const fromCommunity = new URL(route.request().url()).searchParams.get("chainPath") === chainPath.join("/");
-    if (fromCommunity && !followed && ++communityReads > 2) await held;
+    if (fromCommunity && !moved && ++communityReads > 2) await held;
     await route.continue();
   });
   await openApp(page, feed);
   await expect.poll(() => communityReads, { timeout: 60_000 }).toBeGreaterThan(2);
-  followed = true;
-  await page.getByRole("button", { name: "Moderation" }).first().click();
-  await page.locator("#mods-add").fill(labeller.address);
-  await page.locator("#mods-add-btn").click();
-  await page.locator("#mods button[value=ok]").click();
-  const hidden = page.locator(".hidden-row", { hasText: "labelled spam" });
-  await expect(hidden).toBeVisible({ timeout: 60_000 });
+  moved = true;
+  await page.evaluate(() => (location.hash = "#/s/nowhere"));
+  const panel = page.locator(".panel.bad", { hasText: "No node serves s/nowhere" });
+  await expect(panel).toBeVisible({ timeout: 60_000 });
   release();
   await page.waitForTimeout(5000);
-  await expect(hidden).toBeVisible({ timeout: 1000 });
-  await expect(page.locator(".post", { hasText: "Labelled post" })).toHaveCount(0);
+  await expect(panel).toBeVisible({ timeout: 1000 });
+  await expect(page.locator(".post")).toHaveCount(0);
 });
 
 test("a community no node serves says so, with a way out, instead of looking empty", async ({ page }) => {
@@ -399,4 +410,65 @@ test("a community no node serves says so, with a way out, instead of looking emp
   await page.locator('#settings-form button[value="save"]').click();
   await expect(page.locator("#st-status")).toContainText("must be an https address");
   expect(String(await page.evaluate(() => localStorage.getItem("stoa:node")))).not.toContain("192.168.1.5");
+});
+
+test("a new community lives on Stoa's chain: made from the rail, posted to, and kept apart from the others", async ({ page }) => {
+  await openApp(page, feed);
+  const address = await signIn(page);
+  const name = `town-${Date.now().toString(36)}`;
+  await page.getByRole("button", { name: "New community" }).click();
+  await page.locator("#nc-name").fill(name);
+  await approveInSelfhold(page, page.locator("#nc-create"));
+  await expect(page).toHaveURL(new RegExp(`#/s/${name}$`));
+  await expect(page.locator("#communities")).toContainText(`s/${name}`);
+  await expect.poll(async () => (await stateOf(homePath)).get(`index/community/${name}/${address}`)).toBe(JSON.stringify({ at: "home" }));
+  await shot(page, "community-made");
+
+  await page.locator("#open-new").click();
+  await page.locator("#np-c").selectOption(name);
+  await page.locator("#np-t").fill("First on the shared chain");
+  await approveInSelfhold(page, page.locator("#np-post"));
+  await expect(page.locator(".op .meta time")).toBeVisible();
+  // On the home chain, listed under the community, the post saying where it is.
+  const home = await stateOf(homePath);
+  const listed = [];
+  for await (const [key] of home.list(`index/c/${name}/post/`)) listed.push(key);
+  expect(listed).toHaveLength(1);
+  const [, , , , id] = listed[0].split("/");
+  expect(JSON.parse(await home.get(`user/${address}/post/${id}`)).c).toBe(name);
+
+  // A vote on it is kept with the community's records on the home chain.
+  await openApp(page, `#/s/${name}`);
+  await approveInSelfhold(page, page.locator(".post", { hasText: "First on the shared chain" }).locator(".vote.up"));
+  await expect.poll(async () => (await stateOf(homePath)).get(`user/${address}/c/${name}/edges/0`), { timeout: 120_000 }).toContain(`${address}/${id}`);
+
+  // Another community doesn't show it.
+  await openApp(page, feed);
+  await expect(page.locator(".post").first()).toBeVisible();
+  await expect(page.locator(".post", { hasText: "First on the shared chain" })).toHaveCount(0);
+});
+
+test("a community with a chain of its own moves to Stoa's chain when its members choose: new posts go there, earlier ones stay", async ({ page }) => {
+  // The poster wrote among the community's first posts: a member, whose choice counts.
+  await writeAs(poster, homePath, places.declare(poster.address, community, "home"));
+  try {
+    await openApp(page, feed);
+    await expect(page.locator("#aside")).toContainText("Stoa's chain, as its members chose");
+    const address = await signIn(page);
+    await page.locator("#open-new").click();
+    await page.locator("#np-c").selectOption(community);
+    await page.locator("#np-t").fill("After the move");
+    await approveInSelfhold(page, page.locator("#np-post"));
+    await expect(page.locator(".op .meta time")).toBeVisible();
+    const listed = [];
+    for await (const [key] of (await stateOf(homePath)).list(`index/c/${community}/post/`)) listed.push(key);
+    expect(listed.some((key) => key.endsWith(`/${address}`))).toBe(true);
+    // Its earlier posts, on its own chain, are read with the new ones.
+    await openApp(page, feed);
+    await expect(page.locator(".post", { hasText: "After the move" })).toBeVisible();
+    await expect(page.locator(".post", { hasText: "Older, liked" })).toBeVisible();
+  } finally {
+    // Back to its own chain, for whatever runs next.
+    await writeAs(poster, homePath, places.declare(poster.address, community, "own"));
+  }
 });

@@ -145,7 +145,7 @@ export async function openApp(page, hash = "#/", { settings = {} } = {}) {
       };
       if (localStorage.getItem("stoa:node")) return;
       for (const [name, value] of Object.entries(seed.values)) localStorage.setItem(`stoa:${name}`, JSON.stringify(value));
-    }, { key: REQUESTS, seed: { app: stack.app, values: { node: stack.node, home: stack.home, monikerChain: stack.moniker, sponsor: stack.sponsor, storage: stack.sponsor, walletPage: stack.walletPage, ...settings } } });
+    }, { key: REQUESTS, seed: { app: stack.app, values: { node: stack.node, home: stack.home, monikerChain: stack.moniker, followsChain: stack.follows, sponsor: stack.sponsor, walletPage: stack.walletPage, ...settings } } });
     const arm = () => (context.selfhold = new Promise((resolve) => {
       const opened = async (popup) => {
         if (!(await popup.opener().catch(() => null))) return;
