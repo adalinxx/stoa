@@ -155,6 +155,14 @@ test("home chain: joins", async () => {
   assert.deepEqual(await read.joined(state, "alice"), ["bitcoin", "bitcoin/lightning"]);
 });
 
+test("Follows: a follow is both keys, the followers twin after it, and stopping deletes both", async () => {
+  assert.deepEqual(write.follow("alice", "@bob"), [["follows/alice/@bob", "1"], ["followers/@bob/alice", "1"]]);
+  const state = memory();
+  await state.apply(write.follow("alice", "bob"));
+  await state.apply(write.follow("alice", "bob", false));
+  assert.equal(state.raw.size, 0);
+});
+
 test("an account's items", async () => {
   const state = memory();
   await state.apply(write.post("alice", "p1", { title: "Root" }, ["m"]));

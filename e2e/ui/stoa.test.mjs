@@ -13,7 +13,7 @@ import { chromium, expect as baseExpect } from "@playwright/test";
 import { mediaVolume } from "../../client/media.mjs";
 import * as read from "../../client/read.mjs";
 import * as write from "../../client/write.mjs";
-import { MONIKER, start } from "./stack.mjs";
+import { FOLLOWS, MONIKER, start } from "./stack.mjs";
 
 const running = await start();
 writeFileSync(new URL("./.stack.json", import.meta.url), JSON.stringify(running.info));
@@ -337,6 +337,36 @@ test("Top orders by members' score and New by post time; a stranger's vote count
   await expect.poll(async () => (await titles())[0]).toBe("Newer, unliked");
   const unliked = page.locator(".post", { hasText: "Newer, unliked" });
   await expect(unliked.locator(".votes .score")).toHaveText("0");
+});
+
+test("Follow on a profile goes to Follows; the Following feed shows their posts; a member's follow makes your votes count", async ({ page }) => {
+  const title = "A post from someone followed";
+  await writeAs(poster, chainPath, write.post(poster.address, write.newId(), { title }));
+  await openApp(page, feed);
+  const address = await signIn(page);
+  // Nobody has vouched for a new account: its votes are kept, and not counted yet.
+  await expect(page.locator("#aside-you")).toHaveText(/are kept, and count once members upvote what you post here or follow you/);
+  const following = page.locator("nav.rail").getByRole("link", { name: "Following" });
+  await following.click();
+  await expect(page.locator("#feed")).toContainText("You don't follow anyone yet");
+
+  await page.goto(stack.app + `#/u/${poster.address}`);
+  await approveInSelfhold(page, page.getByRole("button", { name: "Follow", exact: true }));
+  await expect(page.getByRole("button", { name: "Following", exact: true })).toBeVisible();
+  await expect.poll(async () => (await stateOf(FOLLOWS)).get(`follows/${address}/${poster.address}`)).toBe("1");
+  expect(await (await stateOf(FOLLOWS)).get(`followers/${poster.address}/${address}`)).toBe("1");
+  expect(await balance(address, FOLLOWS)).toBe(0n);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Following", exact: true })).toBeVisible();
+  await following.click();
+  await expect(page.locator(".post", { hasText: title })).toBeVisible();
+
+  // A member follows them back: their votes count.
+  await fund(poster.address, 20n, [FOLLOWS]);
+  await writeAs(poster, FOLLOWS, write.follow(poster.address, address));
+  await page.goto(stack.app + feed);
+  await page.reload();
+  await expect(page.locator("#aside-you")).toHaveText("count: you're one of its members.");
 });
 
 test("an earlier render that finishes last does not write over a newer one", async ({ page }) => {

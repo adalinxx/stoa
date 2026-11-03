@@ -157,7 +157,8 @@ community's effective size (c / N_eff, N_eff = 1 / Σ p²).
   several posts.
 - **Lurkers become members only through follows** (the simulation has
   none): an account that only upvotes has no edges into it until members
-  follow it. Most of Reddit's votes are lurkers'; here the ranking is made by
+  follow it, with Follow on its profile page. The page tells a reader
+  whether their votes count in a community yet, and how they come to. Most of Reddit's votes are lurkers'; here the ranking is made by
   those who take part or whom members follow.
 
 ## Read cost

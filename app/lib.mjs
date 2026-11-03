@@ -62,6 +62,7 @@ export function parseRoute(hash) {
   };
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decode);
   if (parts[0] === "u" && parts[1]) return { view: "profile", address: parts[1] };
+  if (parts[0] === "following") return { view: "following" };
   if (parts[0] === "s" && parts.length >= 4) return { view: "post", community: parts[1], author: parts[2], id: parts[3] };
   if (parts[0] === "s" && parts[1]) return { view: "community", community: parts[1] };
   return { view: "home" };

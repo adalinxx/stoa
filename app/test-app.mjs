@@ -21,6 +21,7 @@ test("only http(s) links become links", () => {
 test("routes", () => {
   assert.deepEqual(parseRoute(""), { view: "home" });
   assert.deepEqual(parseRoute("#/s/bitcoin"), { view: "community", community: "bitcoin" });
+  assert.deepEqual(parseRoute("#/following"), { view: "following" });
   assert.deepEqual(parseRoute("#/s/bitcoin/bafy%2Fx/p1"), { view: "post", community: "bitcoin", author: "bafy/x", id: "p1" });
   assert.deepEqual(parseRoute("#/s/bit%E0coin"), { view: "community", community: "bit%E0coin" }, "a malformed escape does not throw");
 });
