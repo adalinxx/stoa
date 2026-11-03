@@ -1,7 +1,8 @@
 //   node --test client/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { accountEdges, graphOf, members, standing } from "./standing.mjs";
+import { accountEdges, graphOf, members, memberVotes, pack, reweigh, standing, unpack } from "./standing.mjs";
+import * as write from "./write.mjs";
 
 const close = (actual, expected, within = 1e-3) =>
   assert.ok(Math.abs(actual - expected) < within, `${actual} ≉ ${expected}`);
@@ -116,4 +117,60 @@ test("members: the accounts holding 98% of account standing, posts aside, ties k
   const tied = new Map([["a", 0.75], ["b", 0.125], ["c", 0.125], ["d", 0.0625]]);
   assert.deepEqual([...members(tied, { delta: 0.2 })], ["a", "b", "c"]);
   assert.equal(members(new Map()).size, 0);
+});
+
+test("reweigh: a push continued after edges change matches one started afresh", async () => {
+  // A random graph of accounts and posts; then some read accounts change their edges.
+  let seed = 7;
+  const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const ids = Array.from({ length: 60 }, (_, i) => `n${i}`);
+  const pick = (n) => [...new Set(Array.from({ length: n }, () => ids[Math.floor(random() * ids.length)]))].map((t) => [t, 1]);
+  const nodes = Object.fromEntries(ids.map((id) => [id, pick(1 + Math.floor(random() * 4))]));
+  nodes.n5 = [];
+  const first = await standing(["n0", "n1"], graph(nodes).edges, { epsilon: 1e-9 });
+  const changed = { ...nodes, n0: pick(3), n3: [], n5: pick(2), n9: [["n0", 1]] };
+  for (const id of ["n0", "n3", "n5", "n9"]) reweigh(first.push, id, changed[id]);
+  const readBefore = new Set(first.push.known.keys());
+  const { edges, asked } = graph(changed);
+  const continued = await standing(["n0", "n1"], edges, { epsilon: 1e-9, from: first.push });
+  const fresh = await standing(["n0", "n1"], graph(changed).edges, { epsilon: 1e-9 });
+  for (const id of new Set([...fresh.standing.keys(), ...continued.standing.keys()])) close(continued.standing.get(id) ?? 0, fresh.standing.get(id) ?? 0, 1e-6);
+  assert.ok(asked.flat().every((id) => !readBefore.has(id)), "nothing read before is read again");
+});
+
+test("memberVotes: from what it kept, reads again only the accounts that changed", async () => {
+  const map = new Map();
+  const state = {
+    get: async (key) => map.get(key),
+    async *list(prefix) {
+      for (const key of [...map.keys()].sort()) if (key.startsWith(prefix)) yield [key, map.get(key)];
+    },
+    async apply(writes) {
+      for (const { key, newValue } of await write.changes(this, writes)) newValue === undefined ? map.delete(key) : map.set(key, newValue);
+    },
+  };
+  const vote = async (a, author, id, direction) => {
+    const { edgesOf } = await import("./read.mjs");
+    await state.apply(write.vote(a, await edgesOf(state, a), author, id, direction));
+  };
+  await vote("seed", "alice", "p1", 1);
+  await vote("alice", "bob", "p2", 1);
+  await vote("carol", "bob", "p2", 1);
+  const listed = [];
+  const counting = { ...state, list: (prefix) => (listed.push(prefix), state.list(prefix)) };
+  const first = await memberVotes(counting, ["seed"]);
+  assert.equal(first.members.has("carol"), false);
+  assert.equal(first.votes.get("bob/p2").ups, 1);
+
+  // Alice now upvotes Carol's post: Carol is reached, and her vote counts.
+  await vote("alice", "carol", "p3", 1);
+  listed.length = 0;
+  const kept = unpack(JSON.parse(JSON.stringify(pack(first.kept))));
+  const next = await memberVotes(counting, ["seed"], { before: kept, changed: ["alice"] });
+  assert.ok(!listed.includes("user/seed/edges/"), "an unchanged account is not read again");
+  assert.ok(listed.includes("user/alice/edges/") && listed.includes("user/carol/edges/"));
+  const fresh = await memberVotes(state, ["seed"], { epsilon: 1e-4 });
+  assert.deepEqual([...next.members].sort(), [...fresh.members].sort());
+  assert.equal(next.votes.get("bob/p2").ups, 2);
+  assert.equal(first.votes.get("bob/p2").ups, 1, "what was kept is left as it was");
 });
