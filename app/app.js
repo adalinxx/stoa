@@ -661,7 +661,7 @@ const expanded = new Set();
 // The account showing each followed handle now, as every app reads it; a
 // failed read is tried again next time.
 const shownBy = new Map(); // handle → promise of an account or undefined
-function accountShowing(handle) {
+function accountShowing(handle, { failed = () => {} } = {}) {
   if (!shownBy.has(handle)) {
     const found = (async () => {
       const account = await moniker.pointer(handle);
@@ -670,7 +670,7 @@ function accountShowing(handle) {
     shownBy.set(handle, found);
     found.catch(() => shownBy.delete(handle));
   }
-  return shownBy.get(handle).catch(() => undefined);
+  return shownBy.get(handle).catch(() => (failed(), undefined));
 }
 
 /**
@@ -687,14 +687,17 @@ function followsReader() {
       const prefix = `follows/${a}/`;
       const targets = [];
       for await (const [key] of state.list(prefix)) targets.push(key.slice(prefix.length));
-      const accounts = await Promise.all(targets.map((target) => (target.startsWith("@") ? accountShowing(target.slice(1)) : target)));
+      const accounts = await Promise.all(targets.map((target) => (target.startsWith("@") ? accountShowing(target.slice(1), { failed: () => reader.failed.add(a) }) : target)));
       return accounts.filter(Boolean);
     } catch {
+      reader.failed.add(a);
       return [];
     }
   };
   // The state read, or null if Follows couldn't be read.
   reader.state = follows.catch(() => null);
+  // The accounts whose follows couldn't be read (taken as none, this time).
+  reader.failed = new Set();
   return reader;
 }
 
@@ -714,37 +717,49 @@ function standingOf(state, posts) {
 // What each community's last computation kept, here and across visits
 // (docs/standing.md, Read cost): the next one reads again only the accounts
 // whose votes or follows changed since, found by comparing the two states'
-// tries, and goes on from there. Kept a day at most: a handle that moved
-// since (a follow of @h stands for whoever shows it) is caught then.
+// tries, and goes on from there; accounts whose follows couldn't be read
+// are read again next time. Kept a day at most: a handle that moved since
+// (a follow of @h stands for whoever shows it) is caught then. A comparison
+// that would read more than a fresh computation is given up for one.
 const KEPT_FOR = 24 * 3600_000;
+const DIFF_BUDGET = 4000;
+/** Whether a key starting with `path` may be `<space>/<a>/<kind>/…` (no `kind`: any). */
+const keysOf = (space, kind) => (path) => {
+  const [s, a, k] = path.split("/");
+  if (!space.startsWith(s) || (s !== space && a !== undefined)) return false;
+  return !kind || k === undefined || kind.startsWith(k) || k.startsWith(`${kind}`);
+};
+const edgeKeys = keysOf("user", "edges");
+const followKeys = keysOf("follows");
 const keptStandings = new Map(); // "node|chain" → promise of { at, root, follows, kept } or undefined
 
 async function computeStanding(state, posts) {
   const seeds = seedsOf(posts ?? (await read.posts(state)));
   const followsOf = followsReader();
   const follows = await followsOf.state;
-  const where = `${settings.node}|${state.chain.join("/")}|${settings.follows}`;
+  const where = `${settings.node}|${state.chain.join("/")}|${settings.follows}|${settings.moniker}`;
   const last = await (keptStandings.get(where) ?? lastKept(where));
   let before, changed;
   if (last && Date.now() - last.at < KEPT_FOR && (last.follows === null) === (follows === null)) {
     try {
-      changed = new Set();
-      for await (const [key] of diff(state.load, last.root, state.root)) {
+      changed = new Set(last.retry ?? []);
+      for await (const [key] of diff(state.load, last.root, state.root, { could: edgeKeys, budget: DIFF_BUDGET })) {
         const [space, a, kind] = key.split("/");
         if (space === "user" && kind === "edges") changed.add(a);
       }
-      if (follows) for await (const [key] of diff(follows.load, last.follows, follows.root)) {
+      if (follows) for await (const [key] of diff(follows.load, last.follows, follows.root, { could: followKeys, budget: DIFF_BUDGET })) {
         const [space, a] = key.split("/");
         if (space === "follows") changed.add(a);
       }
       before = last.kept;
     } catch {
-      // The last state is no longer served: computed afresh.
+      // The last state is no longer served, or differs too much: computed afresh.
       before = undefined;
+      changed = undefined;
     }
   }
   const result = await memberVotes(state, seeds, { followsOf, before, changed: [...(changed ?? [])] });
-  const now = { at: before ? last.at : Date.now(), root: state.root, follows: follows?.root ?? null, kept: result.kept };
+  const now = { at: before ? last.at : Date.now(), root: state.root, follows: follows?.root ?? null, kept: result.kept, retry: [...followsOf.failed] };
   keptStandings.set(where, Promise.resolve(now));
   keep(where, now);
   return result;
@@ -755,7 +770,19 @@ const standingDB = new Promise((resolve) => {
   try {
     const open = indexedDB.open("stoa-standing", 1);
     open.onupgradeneeded = () => open.result.createObjectStore("kept");
-    open.onsuccess = () => resolve(open.result);
+    open.onsuccess = () => {
+      resolve(open.result);
+      // What is past its day is of no use to anyone: dropped.
+      try {
+        const old = open.result.transaction("kept", "readwrite").objectStore("kept").openCursor();
+        old.onsuccess = () => {
+          const at = old.result;
+          if (!at) return;
+          if (!(Date.now() - at.value?.at < KEPT_FOR)) at.delete();
+          at.continue();
+        };
+      } catch {}
+    };
     open.onerror = () => resolve(null);
   } catch {
     resolve(null);
@@ -775,11 +802,11 @@ async function lastKept(where) {
   });
   return saved && { ...saved, kept: unpack(saved.kept) };
 }
-async function keep(where, { at, root, follows, kept }) {
+async function keep(where, { at, root, follows, kept, retry }) {
   const db = await standingDB;
   if (!db || !kept.push) return;
   try {
-    db.transaction("kept", "readwrite").objectStore("kept").put({ at, root, follows, kept: pack(kept) }, where);
+    db.transaction("kept", "readwrite").objectStore("kept").put({ at, root, follows, kept: pack(kept), retry }, where);
   } catch {
     /* kept for this visit only */
   }
@@ -2231,7 +2258,9 @@ $("#settings-form").addEventListener("submit", async (event) => {
   store.set("home", settings.home);
   store.set("monikerChain", settings.moniker === MONIKER.chain.join("/") ? null : settings.moniker);
   store.set("followsChain", settings.follows === DEFAULT_FOLLOWS ? null : settings.follows);
-  // Names are read again, from the node and chains now chosen.
+  // Names are read again, from the node and chains now chosen, and standing afresh.
+  standings.clear();
+  keptStandings.clear();
   names.clear();
   profiles.clear();
   handles.clear();

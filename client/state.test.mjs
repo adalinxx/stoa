@@ -1,7 +1,7 @@
 //   node --test client/state.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { anyHost, diff, get, list } from "./state.mjs";
+import { anyHost, diff, DiffTooLarge, get, list } from "./state.mjs";
 
 // An in-memory trie in the same shape the chain serves.
 const nodes = {
@@ -129,4 +129,30 @@ test("diff finds exactly the keys that changed, reading only what differs", asyn
   for await (const change of diff(load, a, b)) found.push(change);
   assert.deepEqual(found, [["user/a1234/edges/0", "x", "y"]]);
   assert.ok(loads.length < 20, `read ${loads.length} nodes`);
+});
+
+test("diff walks through a split in step, reads only where `could` points, and stops at its budget", async () => {
+  const store = new Map();
+  let loads = 0;
+  const load = async (cid) => (loads++, { node: store.get(cid) });
+  const changes = async (a, b, options) => {
+    const found = [];
+    for await (const change of diff(load, a, b, options)) found.push(change);
+    return found.sort();
+  };
+  // Many keys under one account; a write that splits their shared prefix.
+  const before = new Map(Array.from({ length: 3000 }, (_, i) => [`user/m/junk/${i}`, "x"]));
+  before.set("user/m/edges/0", "e");
+  const after = new Map(before).set("user/m/j", "split").set("user/m/edges/0", "f");
+  const [a, b] = [trie(before, store), trie(after, store)];
+  loads = 0;
+  assert.deepEqual(await changes(a, b), [["user/m/edges/0", "e", "f"], ["user/m/j", undefined, "split"]]);
+  assert.ok(loads < 40, `through the split in step: read ${loads}`);
+  const edges = (path) => { const [space, , kind] = path.split("/"); return space === undefined || "user".startsWith(space) && (kind === undefined || "edges".startsWith(kind) || kind.startsWith("edges")); };
+  loads = 0;
+  assert.deepEqual(await changes(a, b, { could: edges }), [["user/m/edges/0", "e", "f"]]);
+  assert.ok(loads < 20, `only where wanted: read ${loads}`);
+  // A state that differs everywhere: past the budget, it gives up.
+  const other = trie(new Map(Array.from({ length: 3000 }, (_, i) => [`user/m/junk/${i}`, "y"])), store);
+  await assert.rejects(changes(a, other, { budget: 100 }), DiffTooLarge);
 });

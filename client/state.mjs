@@ -106,36 +106,86 @@ async function* entries(load, node, volume, path) {
  * The keys whose values differ between the states at roots `before` and
  * `after`, as `[key, valueBefore, valueAfter]` (undefined where a key is
  * missing), in no particular order. Only subtrees whose CIDs differ are
- * read: a new block's changes cost about the nodes on their paths. Where
- * the two tries split a prefix differently, both sides of that subtree are
- * read in full and compared.
+ * read, and only where `could(path)` says a key wanted may begin with the
+ * path (by default, anywhere): a new block's changes cost about the nodes
+ * on their paths. Where the two tries split a prefix differently, the walk
+ * goes on in step through the split. Past `budget` nodes read, it throws
+ * `DiffTooLarge`: a reader computes afresh instead.
  */
-export async function* diff(load, before, after) {
+export async function* diff(load, before, after, { could = () => true, budget = Infinity } = {}) {
   if (before === after) return;
-  const [a, b] = await Promise.all([load(before), load(after)]);
-  yield* diffNodes(load, a, b, "");
+  let read = 0;
+  const loadCounted = (cid, within) => {
+    if (++read > budget) throw new DiffTooLarge();
+    return load(cid, within);
+  };
+  const [a, b] = await Promise.all([loadCounted(before), loadCounted(after)]);
+  yield* walk(loadCounted, { ...a, rest: "" }, { ...b, rest: "" }, "", could);
 }
 
-async function* diffNodes(load, a, b, path) {
-  if (a.node.value !== b.node.value) yield [path, a.node.value, b.node.value];
+export class DiffTooLarge extends Error {
+  constructor() {
+    super("the states differ in more than the budget allows");
+  }
+}
+
+// A side of the walk: a trie node (`{ node, volume }`) with the part of its
+// prefix not yet walked, `rest`; `path` is the key walked so far.
+async function* walk(load, a, b, path, could) {
+  let common = 0;
+  while (common < a.rest.length && common < b.rest.length && a.rest[common] === b.rest[common]) common++;
+  if (common < a.rest.length && common < b.rest.length) {
+    // The two part ways here: their keys share nothing more.
+    yield* apart(load, [a, path + a.rest], [b, path + b.rest], could);
+    return;
+  }
+  if (a.rest.length > common) {
+    // `b` is at its node; `a` goes on below it: swap, walk, and swap each change back.
+    for await (const [key, x, y] of walk(load, b, a, path, could)) yield [key, y, x];
+    return;
+  }
+  const here = path + a.rest;
+  if (b.rest.length > common) {
+    // `a` is at its node; `b` goes on below it, under one of `a`'s children.
+    if (a.node.value !== undefined && could(here)) yield [here, a.node.value, undefined];
+    const next = { ...b, rest: b.rest.slice(common) };
+    for (const child of a.node.children) {
+      if (!could(here + child.key)) continue;
+      const x = await load(child.value.rawCID, a.volume);
+      if (child.key === next.rest[0]) yield* walk(load, { ...x, rest: x.node.prefix }, next, here, could);
+      else yield* apart(load, [{ ...x, rest: x.node.prefix }, here + x.node.prefix], null, could);
+    }
+    if (!a.node.children.some((child) => child.key === next.rest[0])) yield* apart(load, null, [next, here + next.rest], could);
+    return;
+  }
+  // Both at their nodes.
+  if (a.node.value !== b.node.value && could(here)) yield [here, a.node.value, b.node.value];
   const children = (node) => new Map(node.children.map((child) => [child.key, child.value.rawCID]));
   const ca = children(a.node), cb = children(b.node);
   for (const first of new Set([...ca.keys(), ...cb.keys()])) {
     const x = ca.get(first), y = cb.get(first);
-    if (x === y) continue;
+    if (x === y || !could(here + first)) continue;
     const [nx, ny] = await Promise.all([x && load(x, a.volume), y && load(y, b.volume)]);
-    if (nx && ny && nx.node.prefix === ny.node.prefix) {
-      yield* diffNodes(load, nx, ny, path + nx.node.prefix);
-      continue;
-    }
-    // One side only, or split differently: compare the subtrees whole.
-    const whole = async (n) => {
-      const found = new Map();
-      if (n) for await (const [key, value] of entries(load, n.node, n.volume, path + n.node.prefix)) found.set(key, value);
-      return found;
-    };
-    const [ea, eb] = await Promise.all([whole(nx), whole(ny)]);
-    for (const key of new Set([...ea.keys(), ...eb.keys()])) if (ea.get(key) !== eb.get(key)) yield [key, ea.get(key), eb.get(key)];
+    const side = (n) => n && { ...n, rest: n.node.prefix };
+    if (nx && ny) yield* walk(load, side(nx), side(ny), here, could);
+    else yield* apart(load, nx && [side(nx), here + nx.node.prefix], ny && [side(ny), here + ny.node.prefix], could);
+  }
+}
+
+// Two subtrees with no key in common (either may be null): every key `could` wants is a change.
+async function* apart(load, a, b, could) {
+  for (const [side, at] of [[a, 0], [b, 1]]) {
+    if (!side || !could(side[1])) continue;
+    for await (const [key, value] of wanted(load, side[0].node, side[0].volume, side[1], could)) yield at === 0 ? [key, value, undefined] : [key, undefined, value];
+  }
+}
+
+async function* wanted(load, node, volume, path, could) {
+  if (node.value !== undefined && could(path)) yield [path, node.value];
+  for (const child of node.children) {
+    if (!could(path + child.key)) continue;
+    const next = await load(child.value.rawCID, volume);
+    yield* wanted(load, next.node, next.volume, path + next.node.prefix, could);
   }
 }
 
