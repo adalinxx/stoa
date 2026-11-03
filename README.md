@@ -5,9 +5,12 @@ comments and votes. Stoa keeps its data on Lattice chains and has
 no server of its own. Each reader's client reads the data, checks it, and
 decides what to show.
 
-- A community is a chain: `Nexus/stoa/<name>`, a child of the home chain
-  `Nexus/stoa`. Anyone can create one, and communities can nest
-  (`Nexus/stoa/bitcoin/lightning`).
+- A community lives on the home chain `Nexus/stoa`, beside the others, or on
+  a chain of its own, `Nexus/stoa/<name>`, a child of the home chain. Anyone
+  can create one from the page, on the home chain: it is one record. A
+  community that outgrows the shared chain can move to a chain of its own
+  once a node operator creates it, and back, as its members choose.
+  Communities can nest (`bitcoin/lightning`).
 - `s/all`, like Reddit's r/all, shows every community's posts at once. It is
   not a chain: nobody posts to it, and a child chain named `all` is not shown.
 - Every record belongs to its author. Only the author can edit or delete it.
@@ -59,8 +62,10 @@ Home chain `Nexus/stoa`:
 |---|---|
 | `user/<a>/profile` | `{ name?, bio?, link? }`: how `<a>` appears on Stoa (name ≤ 50, bio ≤ 500, an http(s) link ≤ 300) |
 | `user/<a>/join/<community>` | `"1"`: `<a>` reads this community |
+| `index/community/<segment>/<a>` | `{ at: "home" \| "own" }`: names a community, and says where `<a>` would have its new posts go |
 
-A community chain:
+A community chain (its own chain), or a community on the home chain, with the
+keys scoped as the next section says:
 
 | Key | Value |
 |---|---|
@@ -77,6 +82,31 @@ and carry no meaning.
 
 A listing is a claim by whoever wrote it, so a reader checks it against the
 record it lists. Anything that does not parse is skipped.
+
+## Where a community lives
+
+On a chain of its own, a community's records are as above. On the home chain
+they are scoped to it (`client/places.mjs`), its name as one key segment
+(`bitcoin/lightning` → `bitcoin.lightning`):
+
+| On its own chain | On the home chain |
+|---|---|
+| `index/<rest>` | `index/c/<segment>/<rest>` |
+| `user/<a>/edges/<n>` | `user/<a>/c/<segment>/edges/<n>` |
+| `user/<a>/post/<id>` | the same key, its record adding `"c": "<name>"` |
+
+A post keeps its key, so the chain's policy holds its time on either chain,
+and its `c` keeps it out of every other community. A name is a-z, 0-9 and
+`-`, up to four `/`-separated levels; `all` is s/all's. Creating a
+community writes `index/community/<segment>/<a>` with `{ "at": "home" }`.
+
+A community that has lived in both places is read from both: its posts,
+comments and votes wherever they were written. Votes and comments are
+written where the post they are on lives; new posts go where its members
+chose. Each member's `index/community/` record names a place, and the place
+that the most member standing names wins. With no choice made, a community
+with a chain of its own stays there. Moving loses nothing: earlier posts
+stay where they were written, readable while some node serves them.
 
 ## Time
 
@@ -150,7 +180,8 @@ body to sign and send to `POST /transactions`.
 
 `chain/spec.json` is the spec every Stoa chain is created from; it names the
 policy module by CID, and `chain/stoa_policy.wasm` is that module, built from
-`policy/` (rebuild and replace both when the policy changes). A node hosts the home chain and a community with:
+`policy/` (rebuild and replace both when the policy changes). A node hosts the
+home chain, and gives a community a chain of its own, with:
 
 ```sh
 lattice child create Nexus/stoa --spec chain/spec.json \
