@@ -93,6 +93,23 @@ test("where new posts go: the place the most member standing chose", () => {
   assert.equal(at([["a", "home"], ["b", "own"], ["c", "own"]], true), "own", "a tie stays where it is");
   assert.equal(at([["a", "own"]], false), "home", "no chain of its own to go to");
   assert.equal(at([["sybil", "home"]], true), "own", "only members choose");
+  const founded = (declared, place) => places.chosenPlace({ declared: new Map(declared), standing, members, hasOwn: true, founded: place }).at;
+  assert.equal(founded([], "home"), "home", "a chain made for a community founded on the home chain doesn't move it");
+  assert.equal(founded([["a", "own"]], "home"), "own");
+});
+
+test("founding: the place of the earliest post, and the first posters there; a place moved to later adds no seeds", async () => {
+  const own = memory();
+  const home = memory();
+  // Founded on the home chain; a chain of its own made later, where others post first.
+  await home.apply(places.scopeWrites("x", write.post("alice", "p1", { title: "First", time: 100 })));
+  await home.apply(places.scopeWrites("x", write.post("bob", "p2", { title: "Second", time: 300 })));
+  await own.apply(write.post("mallory", "m1", { title: "Mine now", time: 200 }));
+  const both = places.union([own, places.scoped(home, "x")]);
+  const { at, seeds } = await places.founding(both, await read.posts(both));
+  assert.equal(at, 1);
+  assert.deepEqual(seeds, ["alice", "bob"]);
+  assert.deepEqual(await places.founding(both, []), { at: -1, seeds: [] });
 });
 
 test("declarations: listed by name and account, the rest skipped", async () => {
@@ -105,8 +122,7 @@ test("declarations: listed by name and account, the rest skipped", async () => {
     ["index/community/rust/erin/extra", JSON.stringify({ at: "home" })],
   ]);
   const got = await places.declarations(home);
-  assert.deepEqual([...got.keys()].sort(), ["bitcoin", "bitcoin/lightning", "rust"]);
+  assert.deepEqual([...got.keys()].sort(), ["bitcoin", "bitcoin/lightning"], "a record naming no place names no community");
   assert.deepEqual([...got.get("bitcoin")], [["alice", "home"]]);
   assert.deepEqual([...got.get("bitcoin/lightning")], [["bob", "own"]]);
-  assert.deepEqual([...got.get("rust")], [], "a community named without a choice is still named");
 });

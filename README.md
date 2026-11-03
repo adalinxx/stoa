@@ -104,9 +104,15 @@ A community that has lived in both places is read from both: its posts,
 comments and votes wherever they were written. Votes and comments are
 written where the post they are on lives; new posts go where its members
 chose. Each member's `index/community/` record names a place, and the place
-that the most member standing names wins. With no choice made, a community
-with a chain of its own stays there. Moving loses nothing: earlier posts
-stay where they were written, readable while some node serves them.
+that the most member standing names wins. With no choice made, or a tie,
+new posts go where the community was founded: the place of its earliest
+post. Its seeds are the first posters there, so a place it moves to adds
+members, never seeds: whoever gets a chain made for a community, or posts
+in it there first, gains no say in it. Names are first come: posts made in
+a community on the home chain before a chain of its own existed are its
+founding posts. Moving loses nothing: earlier posts stay where they were
+written, read while some node serves them, and a place no node serves is
+left out rather than hiding the rest.
 
 ## Time
 

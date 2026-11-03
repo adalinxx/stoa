@@ -129,26 +129,49 @@ export function union(views) {
 }
 
 /**
+ * Where a community was founded among the places `state` (a union) reads,
+ * and its seeds: the place of its earliest post, by the time the chain held
+ * it to, and the authors of the first `count` posts there. A place it moved
+ * to later adds posters, never seeds, so whoever gets a chain made for a
+ * community, or posts in it there first, gains no say in it. A name is
+ * first come: posts on the home chain made before a chain of its own was
+ * founding posts. `posts` as read.posts gives them; `at` is -1 for none.
+ */
+export async function founding(state, posts, count = 5) {
+  const seeds = [];
+  let at = -1;
+  for (const post of [...posts].sort((a, b) => (a.time ?? Infinity) - (b.time ?? Infinity))) {
+    const n = await state.where(`user/${post.author}/post/${post.id}`);
+    if (at < 0) at = n;
+    if (n !== at || seeds.includes(post.author)) continue;
+    seeds.push(post.author);
+    if (seeds.length === count) break;
+  }
+  return { at, seeds };
+}
+
+/**
  * Where a community's new posts go, from what its members declared
  * (`index/community/<segment>/<a>` on the home chain, `{ "at": "home" }` or
  * `{ "at": "own" }`): the place the most member standing chose. "own" counts
  * only when the community has a chain of its own (`hasOwn`); with none
- * chosen, its own chain if it has one, else the home chain.
+ * chosen, or a tie, where it was founded (`founded`, by default its own
+ * chain if it has one).
  * `declared` is a Map from account to its choice, `standing` and `members`
  * as memberVotes gives them. Returns `{ at, weights }`.
  */
-export function chosenPlace({ declared, standing, members, hasOwn }) {
+export function chosenPlace({ declared, standing, members, hasOwn, founded = hasOwn ? "own" : "home" }) {
   const weights = { home: 0, own: 0 };
   for (const [a, at] of declared) {
     if (!members.has(a) || !(at in weights) || (at === "own" && !hasOwn)) continue;
     weights[at] += standing.get(a) ?? 0;
   }
-  const fallback = hasOwn ? "own" : "home";
+  const fallback = founded === "own" && hasOwn ? "own" : "home";
   const other = fallback === "own" ? "home" : "own";
   return { at: weights[other] > weights[fallback] ? other : fallback, weights };
 }
 
-/** The declarations listed under `index/community/` on the home chain: a Map from name to a Map from account to its choice. */
+/** The declarations listed under `index/community/` on the home chain: a Map from name to a Map from account to its choice. A record that names no place names no community. */
 export async function declarations(home) {
   const byName = new Map();
   for await (const [key, value] of home.list("index/community/")) {
@@ -157,8 +180,9 @@ export async function declarations(home) {
     const name = nameOf(segment);
     if (!isName(name)) continue;
     const at = recordOf(value)?.at;
+    if (at !== "home" && at !== "own") continue;
     if (!byName.has(name)) byName.set(name, new Map());
-    if (at === "home" || at === "own") byName.get(name).set(a, at);
+    byName.get(name).set(a, at);
   }
   return byName;
 }
