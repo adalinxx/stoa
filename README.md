@@ -29,10 +29,10 @@ from a node, ranks and filters in the page, and asks
 window a passkey opens, nothing to install. Nobody needs coins: a sponsor
 takes a moment of the reader's device's work for each fee, and keeps a
 post's media for good, for work too.
-It is published at https://adalinxx.github.io/stoa/app/ and reads the Stoa
+It is published at https://stoasocial.github.io/stoa/app/ and reads the Stoa
 trial chains (`Nexus/testnet/stoa-41d5ab`) by default; see `app/README.md`.
 Its logo, colors and type follow the brand guidelines in
-[stoa-brand](https://github.com/adalinxx/stoa-brand).
+[stoa-brand](https://github.com/stoasocial/stoa-brand).
 
 ## Records
 
