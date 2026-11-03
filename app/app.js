@@ -6,8 +6,8 @@
 import * as sdk from "./vendor/lattice-sdk.js";
 import { rank } from "../client/rank.mjs";
 import * as read from "../client/read.mjs";
-import { memberVotes, seedsOf } from "../client/standing.mjs";
-import { tip, view, volumeLoader } from "../client/state.mjs";
+import { memberVotes, pack, seedsOf, unpack } from "../client/standing.mjs";
+import { diff, tip, view, volumeLoader } from "../client/state.mjs";
 import { mediaVolume } from "../client/media.mjs";
 import { StorageRefused, StorageStopped, store as storeFile, storageChain } from "../client/storage.mjs";
 import { hasher, workDevice } from "../client/work/hash.mjs";
@@ -681,7 +681,7 @@ function accountShowing(handle) {
 function followsReader() {
   const follows = stateOf(followsPath());
   follows.catch(() => {});
-  return async (a) => {
+  const reader = async (a) => {
     try {
       const state = await follows;
       const prefix = `follows/${a}/`;
@@ -693,6 +693,9 @@ function followsReader() {
       return [];
     }
   };
+  // The state read, or null if Follows couldn't be read.
+  reader.state = follows.catch(() => null);
+  return reader;
 }
 
 // A community's members and their votes, once per state read.
@@ -702,10 +705,84 @@ function standingOf(state, posts) {
   if (!standings.has(key)) {
     // One state's at a time is plenty: the last few are kept for a quick back and forth.
     if (standings.size > 8) standings.delete(standings.keys().next().value);
-    standings.set(key, (async () => memberVotes(state, seedsOf(posts ?? (await read.posts(state))), { followsOf: followsReader() }))());
+    standings.set(key, computeStanding(state, posts));
     standings.get(key).catch(() => standings.delete(key));
   }
   return standings.get(key);
+}
+
+// What each community's last computation kept, here and across visits
+// (docs/standing.md, Read cost): the next one reads again only the accounts
+// whose votes or follows changed since, found by comparing the two states'
+// tries, and goes on from there. Kept a day at most: a handle that moved
+// since (a follow of @h stands for whoever shows it) is caught then.
+const KEPT_FOR = 24 * 3600_000;
+const keptStandings = new Map(); // "node|chain" → promise of { at, root, follows, kept } or undefined
+
+async function computeStanding(state, posts) {
+  const seeds = seedsOf(posts ?? (await read.posts(state)));
+  const followsOf = followsReader();
+  const follows = await followsOf.state;
+  const where = `${settings.node}|${state.chain.join("/")}|${settings.follows}`;
+  const last = await (keptStandings.get(where) ?? lastKept(where));
+  let before, changed;
+  if (last && Date.now() - last.at < KEPT_FOR && (last.follows === null) === (follows === null)) {
+    try {
+      changed = new Set();
+      for await (const [key] of diff(state.load, last.root, state.root)) {
+        const [space, a, kind] = key.split("/");
+        if (space === "user" && kind === "edges") changed.add(a);
+      }
+      if (follows) for await (const [key] of diff(follows.load, last.follows, follows.root)) {
+        const [space, a] = key.split("/");
+        if (space === "follows") changed.add(a);
+      }
+      before = last.kept;
+    } catch {
+      // The last state is no longer served: computed afresh.
+      before = undefined;
+    }
+  }
+  const result = await memberVotes(state, seeds, { followsOf, before, changed: [...(changed ?? [])] });
+  const now = { at: before ? last.at : Date.now(), root: state.root, follows: follows?.root ?? null, kept: result.kept };
+  keptStandings.set(where, Promise.resolve(now));
+  keep(where, now);
+  return result;
+}
+
+// Kept across visits in IndexedDB; a browser that keeps nothing computes afresh each visit.
+const standingDB = new Promise((resolve) => {
+  try {
+    const open = indexedDB.open("stoa-standing", 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("kept");
+    open.onsuccess = () => resolve(open.result);
+    open.onerror = () => resolve(null);
+  } catch {
+    resolve(null);
+  }
+});
+async function lastKept(where) {
+  const db = await standingDB;
+  if (!db) return undefined;
+  const saved = await new Promise((resolve) => {
+    try {
+      const request = db.transaction("kept").objectStore("kept").get(where);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(undefined);
+    } catch {
+      resolve(undefined);
+    }
+  });
+  return saved && { ...saved, kept: unpack(saved.kept) };
+}
+async function keep(where, { at, root, follows, kept }) {
+  const db = await standingDB;
+  if (!db || !kept.push) return;
+  try {
+    db.transaction("kept", "readwrite").objectStore("kept").put({ at, root, follows, kept: pack(kept) }, where);
+  } catch {
+    /* kept for this visit only */
+  }
 }
 
 // Whether the reader is a member of a community, as its last read found:

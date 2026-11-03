@@ -26,18 +26,19 @@ import { edgeSets, edgesOf, tally } from "./read.mjs";
  * most about 1 / (restart × epsilon) nodes are read, however large the
  * graph. A walker at a node with no edges starts again at a seed.
  *
- * Returns `{ standing, read }`: standing by node id (summing to at most 1),
- * and how many nodes' edges were read.
+ * Returns `{ standing, read, push }`: standing by node id (summing to at
+ * most 1), how many nodes' edges were read, and the push's state, which
+ * `standing` continues from (as `from`) once `reweigh` has told it which
+ * nodes' edges changed.
  */
-export async function standing(seeds, edges, { restart = 0.15, epsilon = 1e-4 } = {}) {
-  if (seeds.length === 0) return { standing: new Map(), read: 0 };
-  const settled = new Map();
-  const residual = new Map();
+export async function standing(seeds, edges, { restart = 0.15, epsilon = 1e-4, from } = {}) {
+  if (seeds.length === 0) return { standing: new Map(), read: 0, push: undefined };
+  const push = from ?? { seeds, settled: new Map(), residual: new Map(seeds.map((seed) => [seed, 1 / seeds.length])), known: new Map() };
+  const { settled, residual, known } = push;
   const add = (map, id, amount) => map.set(id, (map.get(id) ?? 0) + amount);
-  for (const seed of seeds) add(residual, seed, 1 / seeds.length);
-  const known = new Map(); // id → its out-edges, once read
   for (;;) {
-    const due = [...residual].filter(([, share]) => share > epsilon).map(([id]) => id);
+    // A change of edges can leave a share below nothing: it is pushed the same way.
+    const due = [...residual].filter(([, share]) => Math.abs(share) > epsilon).map(([id]) => id);
     if (due.length === 0) break;
     const unread = due.filter((id) => !known.has(id));
     if (unread.length > 0) {
@@ -48,14 +49,35 @@ export async function standing(seeds, edges, { restart = 0.15, epsilon = 1e-4 } 
       const share = residual.get(id);
       residual.delete(id);
       add(settled, id, restart * share);
-      const out = known.get(id);
-      const total = out.reduce((sum, [, weight]) => sum + weight, 0);
-      const onward = (1 - restart) * share;
-      if (total > 0) for (const [target, weight] of out) add(residual, target, (onward * weight) / total);
-      else for (const seed of seeds) add(residual, seed, onward / seeds.length);
+      for (const [target, part] of onward(push, id)) add(residual, target, (1 - restart) * share * part);
     }
   }
-  return { standing: settled, read: known.size };
+  return { standing: settled, read: known.size, push };
+}
+
+/** Where a walker at `id` goes next, as `[target, share]` pairs summing to 1. */
+function onward({ seeds, known }, id) {
+  const out = known.get(id) ?? [];
+  const total = out.reduce((sum, [, weight]) => sum + weight, 0);
+  return total > 0 ? out.map(([target, weight]) => [target, weight / total]) : seeds.map((seed) => [seed, 1 / seeds.length]);
+}
+
+/**
+ * Tell a push (`standing`'s `push`) that `id`'s out-edges are now `out`,
+ * keeping what it has computed: the standing `id` already passed on along
+ * its old edges is moved to its new ones through the remaining shares, which
+ * the next `standing(..., { from: push })` pushes on (dynamic forward push:
+ * Zhang, Lofgren and Goel, KDD 2016). A node it has not read is left alone:
+ * its edges are read when the push reaches it.
+ */
+export function reweigh(push, id, out, { restart = 0.15 } = {}) {
+  if (!push.known.has(id)) return;
+  const passed = ((1 - restart) / restart) * (push.settled.get(id) ?? 0);
+  const before = onward(push, id);
+  push.known.set(id, out);
+  const add = (target, amount) => push.residual.set(target, (push.residual.get(target) ?? 0) + amount);
+  for (const [target, part] of before) add(target, -passed * part);
+  for (const [target, part] of onward(push, id)) add(target, passed * part);
 }
 
 /**
@@ -133,11 +155,35 @@ export function seedsOf(posts, count = 5) {
 /**
  * A community's members and their votes, from `seeds`, reading accounts'
  * edges from `state` and whom they follow with `followsOf`: `{ members,
- * votes, standing }`, `votes` as `read.tally` makes it.
+ * votes, standing, kept }`, `votes` as `read.tally` makes it.
+ *
+ * `kept` is what a later computation starts from, as `before`, with the
+ * accounts whose votes or follows `changed` since: only those are read
+ * again (if the push had read them), and the push goes on from where it
+ * stood. With other seeds it starts afresh. `before` is left as it was.
  */
-export async function memberVotes(state, seeds, { followsOf = async () => [], epsilon = 1e-4 } = {}) {
+export async function memberVotes(state, seeds, { followsOf = async () => [], epsilon = 1e-4, before, changed = [] } = {}) {
   const graph = graphOf({ edgesOf: async (a) => edgeSets(await edgesOf(state, a)), followsOf });
-  const { standing: shares } = await standing(seeds, graph.edges, { epsilon });
+  let from;
+  if (before?.push && before.push.seeds.length === seeds.length && before.push.seeds.every((seed, n) => seed === seeds[n])) {
+    const { push } = before;
+    from = { seeds, settled: new Map(push.settled), residual: new Map(push.residual), known: new Map(push.known) };
+    for (const [a, sets] of before.read) graph.read.set(a, sets);
+    const again = [...new Set(changed)].filter((a) => !a.includes("/") && from.known.has(a));
+    const fresh = await graph.edges(again);
+    for (const a of again) reweigh(from, a, fresh.get(a));
+  }
+  const { standing: shares, push } = await standing(seeds, graph.edges, { epsilon, from });
   const counted = members(shares);
-  return { members: counted, votes: tally(graph.read, (a) => counted.has(a)), standing: shares };
+  return { members: counted, votes: tally(graph.read, (a) => counted.has(a)), standing: shares, kept: { push, read: graph.read } };
 }
+
+/** `kept`, as `memberVotes` returns it, as plain JSON-able data, and back. */
+export const pack = ({ push, read }) => push && {
+  seeds: push.seeds, settled: [...push.settled], residual: [...push.residual], known: [...push.known],
+  read: [...read].map(([a, { up, down }]) => [a, [...up], [...down]]),
+};
+export const unpack = (packed) => packed && {
+  push: { seeds: packed.seeds, settled: new Map(packed.settled), residual: new Map(packed.residual), known: new Map(packed.known) },
+  read: new Map(packed.read.map(([a, up, down]) => [a, { up: new Set(up), down: new Set(down) }])),
+};

@@ -183,11 +183,16 @@ request):
   computation 14 times in Volumes and 10 times in requests. The cost is that
   a vote rewrites a record: the page waits for the reader's last vote on a
   chain to land before building the next.
-- **A return visit could read only what changed** (not built): comparing
-  the last visit's state root with the tip, a client walks only subtrees
-  whose CIDs differ, finds exactly which accounts wrote, applies their edges
-  and resumes the push: dynamic forward push (Zhang, Lofgren and Goel, KDD
-  2016).
+- **A return visit reads only what changed.** The page keeps each
+  community's last computation (in IndexedDB, for a day). Comparing the
+  state root it was made at with the tip (`state.diff`), it walks only
+  subtrees whose CIDs differ, so it finds exactly which accounts' votes
+  changed, and likewise which accounts' follows changed on Follows. It reads
+  those accounts again and resumes the push from where it stood: dynamic
+  forward push (Zhang, Lofgren and Goel, KDD 2016; `standing.reweigh`). The
+  standing an account already passed on along its old edges moves to its new
+  ones through the undistributed shares, which may go below zero and are
+  pushed the same way. The same holds within a visit, block after block.
 - **The IndexedDB cache is slower than the network at this scale**: about
   0.8 ms per cached Volume (a transaction and a "used" write per lookup).
   Its lookups should be batched into one transaction.

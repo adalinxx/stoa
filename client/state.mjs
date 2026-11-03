@@ -103,6 +103,43 @@ async function* entries(load, node, volume, path) {
 }
 
 /**
+ * The keys whose values differ between the states at roots `before` and
+ * `after`, as `[key, valueBefore, valueAfter]` (undefined where a key is
+ * missing), in no particular order. Only subtrees whose CIDs differ are
+ * read: a new block's changes cost about the nodes on their paths. Where
+ * the two tries split a prefix differently, both sides of that subtree are
+ * read in full and compared.
+ */
+export async function* diff(load, before, after) {
+  if (before === after) return;
+  const [a, b] = await Promise.all([load(before), load(after)]);
+  yield* diffNodes(load, a, b, "");
+}
+
+async function* diffNodes(load, a, b, path) {
+  if (a.node.value !== b.node.value) yield [path, a.node.value, b.node.value];
+  const children = (node) => new Map(node.children.map((child) => [child.key, child.value.rawCID]));
+  const ca = children(a.node), cb = children(b.node);
+  for (const first of new Set([...ca.keys(), ...cb.keys()])) {
+    const x = ca.get(first), y = cb.get(first);
+    if (x === y) continue;
+    const [nx, ny] = await Promise.all([x && load(x, a.volume), y && load(y, b.volume)]);
+    if (nx && ny && nx.node.prefix === ny.node.prefix) {
+      yield* diffNodes(load, nx, ny, path + nx.node.prefix);
+      continue;
+    }
+    // One side only, or split differently: compare the subtrees whole.
+    const whole = async (n) => {
+      const found = new Map();
+      if (n) for await (const [key, value] of entries(load, n.node, n.volume, path + n.node.prefix)) found.set(key, value);
+      return found;
+    };
+    const [ea, eb] = await Promise.all([whole(nx), whole(ny)]);
+    for (const key of new Set([...ea.keys(), ...eb.keys()])) if (ea.get(key) !== eb.get(key)) yield [key, ea.get(key), eb.get(key)];
+  }
+}
+
+/**
  * A node's current tip: the latest block's hash, and the general-state root
  * inside its post state. Only the hash is the node's word; the root is read
  * from the block by CID.
@@ -123,8 +160,10 @@ export async function atBlock(sdk, volumes, hash) {
   return { hash, generalStateCID: state.generalStateCID };
 }
 
-/** The state at one root as `{ get(key), list(prefix) }`, which the Stoa reads take. */
+/** The state at one root as `{ root, load, get(key), list(prefix) }`, which the Stoa reads take. */
 export const view = (load, rootCID) => ({
+  root: rootCID,
+  load,
   get: (key) => get(load, rootCID, key),
   list: (prefix) => list(load, rootCID, prefix),
 });
