@@ -913,6 +913,8 @@ async function choosePlace(state, posts) {
   if (!ownChains.has(c)) return postingPlaces.set(c, { at: onHome(c) ? "home" : "own", weights: { home: 0, own: 0 } });
   const { standing, members } = await standingOf(state, posts);
   postingPlaces.set(c, places.chosenPlace({ declared: declared.get(c) ?? new Map(), standing, members, hasOwn: true }));
+  // The aside was drawn before its members were read: it says where they chose now.
+  if (route.community === c && route.view !== "post") showAside();
 }
 
 /** Every community: those with a chain of their own, those declared on the home chain, and ones the reader is creating. */
