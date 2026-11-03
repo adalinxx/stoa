@@ -28,6 +28,8 @@ takes a moment of the reader's device's work for each fee, and keeps a
 post's media for good, for work too.
 It is published at https://adalinxx.github.io/stoa/app/ and reads the Stoa
 trial chains (`Nexus/testnet/stoa-41d5ab`) by default; see `app/README.md`.
+Its logo, colors and type follow the brand guidelines in
+[stoa-brand](https://github.com/adalinxx/stoa-brand).
 
 ## Records
 
