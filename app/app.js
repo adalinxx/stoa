@@ -89,7 +89,7 @@ const sponsorAddress = (url) => {
   }
 };
 // Follows, the follow graph every app shares.
-const DEFAULT_FOLLOWS = "Nexus/testnet/follows-ade46a";
+const DEFAULT_FOLLOWS = "Nexus/testnet/follows-449390";
 const savedMoniker = store.get("monikerChain", null);
 const savedSponsor = store.get("sponsor", null);
 const settings = {
